@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Search, FileText, Newspaper, Loader2, AlertCircle, LineChart, BarChart3, Megaphone,
   Wallet, Trophy, CalendarClock, Boxes, MessageSquare,
@@ -78,7 +79,9 @@ function ValBand({ label, m }: { label: string; m: ValMetric }) {
 }
 
 export function StockData() {
-  const [code, setCode] = useState("");
+  const [searchParams] = useSearchParams();
+  const initialCode = searchParams.get("code") || "";
+  const [code, setCode] = useState(initialCode);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [val, setVal] = useState<Valuation | null>(null);
@@ -166,6 +169,14 @@ export function StockData() {
       if (rid === runIdRef.current) setLoading(false);
     }
   };
+
+  const autoLoaded = useRef(false);
+  useEffect(() => {
+    if (initialCode && !autoLoaded.current) {
+      autoLoaded.current = true;
+      void run();
+    }
+  }, [initialCode]);
 
   const metrics = val ? [
     { k: "现价", v: fmt(val.price) },
@@ -595,7 +606,7 @@ export function StockData() {
         <GlassCard>
           <div className="py-10 text-center text-sm text-muted-foreground">
             输入一个 6 位股票代码，拉取它的行情、估值、研报与新闻。<br />
-            <span className="text-xs text-muted-foreground/60">数据来自公开源（腾讯行情 / 东财研报 / akshare）；Vibe-Research 不预置任何标的、不做推荐。</span>
+            <span className="text-xs text-muted-foreground/60">数据来自公开源（腾讯行情 / 东财研报 / akshare）；FT-Research 不预置任何标的、不做推荐。</span>
           </div>
         </GlassCard>
       )}

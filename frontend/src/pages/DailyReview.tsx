@@ -237,7 +237,7 @@ export function DailyReview() {
         {needConfig && (
           <div className="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-            还没接入 AI。<Link to="/settings" className="text-primary">先去接入你的 AI</Link>，之后一键出复盘。
+            还没配置 GLM。<Link to="/settings" className="text-primary">查看 AI 配置状态</Link>，之后一键出复盘。
           </div>
         )}
         {reviewErr && (

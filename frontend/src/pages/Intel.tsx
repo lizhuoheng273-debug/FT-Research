@@ -146,7 +146,7 @@ function InvestmentNewsPanel() {
                     <div className="mt-2"><SaveNoteButton kind="今日要点" title={`${cur.name} 今日要点`} content={dg.text} /></div>
                   </>
                 ) : dg?.needKey ? (
-                  <p className="text-sm text-muted-foreground">还没接入 AI。<Link to="/settings" className="text-primary">先接入你的 AI</Link>，即可一键提炼本赛道今日要点。</p>
+                  <p className="text-sm text-muted-foreground">还没配置 GLM。<Link to="/settings" className="text-primary">查看 AI 配置状态</Link>，即可一键提炼本赛道今日要点。</p>
                 ) : dg?.err ? (
                   <p className="text-sm text-destructive">{dg.err}</p>
                 ) : (
@@ -250,7 +250,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
   if (!codes.length) {
     return (
       <div className="rounded-lg border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground/70">
-        还没有关注股票。到<Link to="/daily-review" className="text-primary">「每日复盘」</Link>加自选（6 位代码），这里会汇总它们的{kind === "filings" ? "公告" : "新闻"}。
+        还没有关注股票。到<Link to="/finance/review" className="text-primary">「每日复盘」</Link>加自选（6 位代码），这里会汇总它们的{kind === "filings" ? "公告" : "新闻"}。
       </div>
     );
   }
@@ -311,7 +311,7 @@ export function Intel() {
 
       <div className="mb-4 flex flex-wrap gap-2">
         {TABS.map(({ key, label, icon: Icon, integrated }) => (
-          <button key={key} onClick={() => navigate(`/intel/${key}`)}
+          <button key={key} onClick={() => navigate(`/finance/news/${key}`)}
             className={cn("inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors",
               tab === key ? "bg-primary/15 font-medium text-primary shadow-glow" : "text-muted-foreground hover:bg-muted/50")}>
             <Icon className="h-4 w-4" /> {label}

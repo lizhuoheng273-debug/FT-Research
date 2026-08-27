@@ -13,6 +13,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -64,6 +65,11 @@ class CliUnavailable(RuntimeError):
 
 
 def _find_bin(name: str) -> str | None:
+    # Windows App Execution Aliases may expose a ``python3`` shim that exits
+    # immediately with a Store message.  Use the interpreter running the
+    # backend instead so tests and local helper CLIs behave consistently.
+    if os.name == "nt" and name == "python3":
+        return sys.executable
     hit = shutil.which(name)
     if hit:
         return hit

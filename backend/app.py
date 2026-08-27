@@ -1,4 +1,4 @@
-"""Vibe-Research 后端 —— A股数据层 HTTP 接口（FastAPI）。
+"""FT-Research 后端 —— A股数据层 HTTP 接口（FastAPI）。
 
 端点全部在 /api 下，前端 vite 代理 /api → localhost:8900。
 只读、无状态、按用户传入代码返回客观数据。不预置标的、不建议。
@@ -28,13 +28,16 @@ import market
 import myreports as mr
 import reflection as reflect_layer
 import signals
+import glm_config
+from aihot_api import AihotClient
 
 
 from version import read_version
 
 __version__ = read_version()
 
-app = FastAPI(title="Vibe-Research API", version=__version__)
+app = FastAPI(title="FT-Research API", version=__version__)
+aihot_client = AihotClient()
 
 # 每半小时后台刷新持仓数据
 pf.start_scheduler(1800)
@@ -78,7 +81,7 @@ def _validate(code: str) -> str:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "vibe-research-api", "version": __version__}
+    return {"ok": True, "service": "ft-research-api", "version": __version__}
 
 
 class LLMConfig(BaseModel):
@@ -91,7 +94,72 @@ class LLMConfig(BaseModel):
 class ChatReq(BaseModel):
     messages: list[dict]
     context: str = ""
-    llm: LLMConfig
+    # V1 uses the server-side GLM configuration.  The optional legacy field is
+    # accepted so old clients fail gracefully, but is never used for API calls.
+    llm: LLMConfig | None = None
+
+
+@app.get("/api/ai/status")
+def ai_status():
+    """Return redacted GLM configuration status; never expose the API key."""
+    return glm_config.public_status()
+
+
+@app.get("/api/ai/news")
+def ai_news(mode: str = "selected", window: str = "24h", limit: int = Query(50, ge=1, le=100)):
+    """AI HOT selected feed, normalized for the FT-Research frontend."""
+    try:
+        return aihot_client.items(mode=mode, window=window, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - translate upstream failure
+        raise HTTPException(502, f"AI HOT 暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/hot-topics")
+def ai_hot_topics():
+    try:
+        return aihot_client.hot_topics()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 热点榜暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/stories/{public_id}")
+def ai_story(public_id: str):
+    try:
+        return aihot_client.story(public_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 事件详情暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/snapshot")
+def ai_selected_snapshot():
+    try:
+        return aihot_client.selected_snapshot()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 快照暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/changes")
+def ai_selected_changes():
+    try:
+        return aihot_client.selected_changes()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 增量暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/dailies/latest")
+def ai_daily_latest():
+    try:
+        return aihot_client.daily()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 日报暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/dailies/{date}")
+def ai_daily(date: str):
+    try:
+        return aihot_client.daily(date)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 日报暂时不可用：{exc}") from exc
 
 
 @app.post("/api/chat")
@@ -104,22 +172,14 @@ def chat(req: ChatReq):
     """
     if not req.messages:
         raise HTTPException(400, "messages 不能为空")
-    if not req.llm.model:
-        raise HTTPException(400, "缺少模型配置，请先在「接入 AI」里选择")
-
-    is_cli = req.llm.provider.startswith("cli-")
-    if is_cli:
-        kind = req.llm.provider[4:]
-        if not cli_runtime.detect_cli(kind):
-            raise HTTPException(400, f"未检测到「{kind}」对应的本机命令。请先安装并登录该 CLI，或改用「API 接入」。")
-    elif not req.llm.apiKey or not req.llm.baseURL:
-        raise HTTPException(400, "缺少 Base URL 或 API Key，请先在「接入 AI」里填写")
-
-    cfg = req.llm.model_dump()
+    cfg = glm_config.load_glm_config()
+    if not cfg["apiKey"]:
+        raise HTTPException(400, "GLM 尚未配置：请在 backend/.env 设置 GLM_API_KEY")
+    is_cli = False
 
     def gen():
         try:
-            events = (chat_layer.run_chat_cli_stream if is_cli else chat_layer.run_chat_stream)(cfg, req.messages, req.context)
+            events = chat_layer.run_chat_stream(cfg, req.messages, req.context)
             for ev in events:
                 yield json.dumps(ev, ensure_ascii=False) + "\n"
         except Exception as e:  # noqa: BLE001 — 运行时错误以流内事件上报，不中断连接

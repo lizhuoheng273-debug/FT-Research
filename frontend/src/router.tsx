@@ -12,12 +12,23 @@ import { Watchlist } from "@/pages/Watchlist";
 import { MyReports } from "@/pages/MyReports";
 import { Notes } from "@/pages/Notes";
 import { Settings } from "@/pages/Settings";
+import { AINews } from "@/pages/AINews";
+import { AIDaily } from "@/pages/AIDaily";
 
 export const router = createBrowserRouter([
   {
     element: <Layout />,
     children: [
-      { path: "/", element: <Navigate to="/daily-review" replace /> },
+      { path: "/", element: <Navigate to="/ai/news" replace /> },
+      { path: "/ai/news", element: <AINews /> },
+      { path: "/ai/news/:tab", element: <AINews /> },
+      { path: "/ai/daily", element: <AIDaily /> },
+      { path: "/finance/news", element: <Intel /> },
+      { path: "/finance/news/:tab", element: <Intel /> },
+      { path: "/finance/review", element: <DailyReview /> },
+      { path: "/finance/watchlist", element: <Watchlist /> },
+      { path: "/finance/research", element: <StockData /> },
+      // Legacy deep links remain available for existing bookmarks.
       { path: "/daily-review", element: <DailyReview /> },
       { path: "/intel", element: <Intel /> },
       { path: "/intel/:tab", element: <Intel /> },

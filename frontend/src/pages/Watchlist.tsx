@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Plus, X, RefreshCw, Star } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -199,8 +200,8 @@ export function Watchlist() {
                   const q = quotes[c];
                   return (
                     <tr key={c} className="border-b border-border/30">
-                      <td className="px-2 py-2.5 font-medium">{q?.name || "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground">{c}</td>
+                      <td className="px-2 py-2.5 font-medium"><Link to={`/finance/research?code=${c}`} className="hover:text-primary">{q?.name || "—"}</Link></td>
+                      <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground"><Link to={`/finance/research?code=${c}`} className="hover:text-primary">{c}</Link></td>
                       <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? q.price : "—"}</td>
                       <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? pct(q.change_pct) : "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pe_ttm ?? "—"}</td>
