@@ -43,3 +43,19 @@ def test_glm_config_defaults(monkeypatch):
     assert cfg["baseURL"] == "https://open.bigmodel.cn/api/paas/v4"
     assert cfg["model"] == "glm-5.3-flash"
     assert cfg["apiKey"] == ""
+
+
+def test_glm_config_reads_backend_env_file_without_overriding_process_env(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("GLM_API_KEY=file-key\nGLM_MODEL=glm-file\nGLM_BASE_URL=https://file.example/v4\n", encoding="utf-8")
+    monkeypatch.setattr(glm_config, "ENV_FILE", env_file)
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.delenv("GLM_MODEL", raising=False)
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+    cfg = glm_config.load_glm_config()
+    assert cfg["apiKey"] == "file-key"
+    assert cfg["model"] == "glm-file"
+    assert cfg["baseURL"] == "https://file.example/v4"
+
+    monkeypatch.setenv("GLM_API_KEY", "process-key")
+    assert glm_config.load_glm_config()["apiKey"] == "process-key"
