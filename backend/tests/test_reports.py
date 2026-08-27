@@ -50,6 +50,23 @@ def test_parse_period_report_html_extracts_themes_media_and_links():
     assert report["themes"][0]["stories"][0]["publishedAt"] == "2026-08-23T10:00:00Z"
 
 
+def test_parse_aihot_period_classes_and_relative_item_links():
+    html = """
+    <h1>AI HOT周报</h1>
+    <section class="period-lead"><h2 class="period-lead-headline">基础设施与安全并进</h2><p class="period-lead-overview">本周主线摘要</p></section>
+    <section class="period-stats"><div class="period-stat"><div class="period-stat-value">47</div><div class="period-stat-label">独立事件</div></div></section>
+    <section class="daily-section"><h2 class="daily-section-title">算力扩张</h2><p class="period-theme-intro">主题摘要</p><div class="period-stories"><article class="period-story"><h3 class="period-story-title"><a href="/items/event-1">事件标题</a></h3><span class="period-story-source">媒体 A</span></article></div></section>
+    """
+    report = parse_report_html(html, kind="weekly", period="2026-W34", source_url="https://aihot.virxact.com/weekly")
+    assert report["lead"] == "本周主线摘要"
+    assert report["stats"] == {"独立事件": 47}
+    assert report["themes"][0]["title"] == "算力扩张"
+    story = report["themes"][0]["stories"][0]
+    assert story["title"] == "事件标题"
+    assert story["source"] == "媒体 A"
+    assert story["links"]["original"] == "https://aihot.virxact.com/items/event-1"
+
+
 def test_report_endpoints_proxy_daily_and_period(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "report_archive", ReportArchive(tmp_path))
     app.report_archive.save_daily("2026-08-27", hot_topics=[{"rank": 1}], items=[])
@@ -83,3 +100,9 @@ def test_period_fetch_uses_cached_report_when_upstream_fails(tmp_path, monkeypat
     cached = client.fetch_period("weekly", "2026-W34")
     assert cached["report"]["title"] == "已缓存周报"
     assert cached["stale"] is True
+
+
+def test_period_client_uses_html_headers_for_aihot_pages(tmp_path):
+    client = AihotReportClient(archive=ReportArchive(tmp_path))
+    assert client._session.headers["User-Agent"].startswith("Mozilla/5.0")
+    assert "zh-CN" in client._session.headers["Accept-Language"]

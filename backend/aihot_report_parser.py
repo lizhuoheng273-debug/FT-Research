@@ -26,6 +26,9 @@ class _Node:
                 found.extend(child.find_all(tag, attr))
         return found
 
+    def find_class(self, class_name: str) -> list["_Node"]:
+        return [node for node in self.find_all() if class_name in node.attrs.get("class", "").split()]
+
 
 class _TreeParser(HTMLParser):
     def __init__(self):
@@ -64,7 +67,7 @@ def parse_report_html(html: str, *, kind: str, period: str, source_url: str) -> 
     parser = _TreeParser()
     parser.feed(html)
     root = parser.root
-    lead_nodes = root.find_all(attr=("data-lead", ""))
+    lead_nodes = root.find_class("period-lead-overview") or root.find_all(attr=("data-lead", ""))
     lead = lead_nodes[0].text().replace("本期主线", "", 1).strip() if lead_nodes else ""
     stats: dict[str, int] = {}
     for node in root.find_all(attr=("data-stat", "")):
@@ -76,25 +79,39 @@ def parse_report_html(html: str, *, kind: str, period: str, source_url: str) -> 
             raw = node.text().replace(",", "").strip()
             if raw.isdigit():
                 stats[node.attrs["data-stat"]] = int(raw)
+    for stat in root.find_class("period-stat"):
+        value_nodes = stat.find_class("period-stat-value")
+        label_nodes = stat.find_class("period-stat-label")
+        raw = value_nodes[0].text().replace(",", "").strip() if value_nodes else ""
+        label = label_nodes[0].text() if label_nodes else ""
+        if label and raw.isdigit():
+            stats[label] = int(raw)
 
     themes: list[dict[str, Any]] = []
-    for section in root.find_all(attr=("data-theme", "")):
-        heading = _first_text(section, "h2") or _first_text(section, "h3") or "未命名主题"
+    sections = root.find_class("daily-section") or root.find_all(attr=("data-theme", ""))
+    for section in sections:
+        heading_nodes = section.find_class("daily-section-title")
+        heading = (heading_nodes[0].text() if heading_nodes else "") or _first_text(section, "h2") or _first_text(section, "h3") or "未命名主题"
+        intro_nodes = section.find_class("period-theme-intro")
         stories: list[dict[str, Any]] = []
-        for article in section.find_all("article"):
+        for article in section.find_class("period-story") or section.find_all("article"):
             links: dict[str, str] = {}
             for link in article.find_all("a"):
                 href = link.attrs.get("href", "")
                 if not href:
                     continue
+                if href.startswith("/"):
+                    href = "https://aihot.virxact.com" + href
                 if "aihot.virxact.com" in href:
                     links["aihot"] = href
+                    if "/items/" in href and "original" not in links:
+                        links["original"] = href
                     if "/story/" in href:
                         links["story"] = href
                 elif "original" not in links:
                     links["original"] = href
             story: dict[str, Any] = {
-                "title": _first_text(article, "h3") or _first_text(article, "h2"),
+                "title": (article.find_class("period-story-title") or [None])[0].text() if article.find_class("period-story-title") else (_first_text(article, "h3") or _first_text(article, "h2")),
                 "summary": _first_text(article, "p"),
                 "source": "",
                 "links": links,
@@ -107,11 +124,11 @@ def parse_report_html(html: str, *, kind: str, period: str, source_url: str) -> 
                 story["publishedAt"] = published
             if article.attrs.get("data-story-id"):
                 story["storyId"] = article.attrs["data-story-id"]
-            source_nodes = article.find_all(attr=("data-source", ""))
+            source_nodes = article.find_class("period-story-source") or article.find_all(attr=("data-source", ""))
             if source_nodes:
                 story["source"] = source_nodes[0].text()
             stories.append(story)
-        themes.append({"title": heading, "summary": _first_text(section, "p"), "stories": stories})
+        themes.append({"title": heading, "summary": intro_nodes[0].text() if intro_nodes else _first_text(section, "p"), "stories": stories})
     if not themes:
         fallback_stories: list[dict[str, Any]] = []
         seen: set[str] = set()

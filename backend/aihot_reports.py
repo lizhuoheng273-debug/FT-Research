@@ -18,6 +18,11 @@ class AihotReportClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._session = requests.Session()
+        self._session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        })
 
     def _url(self, kind: str, period: str | None = None) -> str:
         root = "weekly" if kind == "weekly" else "monthly"
@@ -38,6 +43,7 @@ class AihotReportClient:
                 try:
                     response = self._session.get(candidate, timeout=self.timeout, headers={"Accept": "text/html"})
                     response.raise_for_status()
+                    response.encoding = "utf-8"
                     report = parse_report_html(response.text, kind=kind, period=resolved_period, source_url=candidate)
                     return self.archive.save_period(kind, resolved_period, report, fetched_at=datetime.now(timezone.utc).isoformat(), stale=False)
                 except Exception as exc:  # noqa: BLE001
