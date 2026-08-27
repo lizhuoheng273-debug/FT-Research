@@ -16,7 +16,7 @@ test("AI report center provides daily weekly monthly switching and shareable per
 });
 
 test("AI report archive uses a dual-column rail with month groups and daily headlines", () => {
-  assert.match(daily, /lg:grid-cols-\[250px/);
+  assert.match(daily, /report-layout/);
   assert.match(daily, /按月份归档/);
   assert.match(daily, /headline/);
 });
