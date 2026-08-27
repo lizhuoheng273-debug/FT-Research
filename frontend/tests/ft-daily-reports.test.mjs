@@ -15,6 +15,12 @@ test("AI report center provides daily weekly monthly switching and shareable per
   assert.match(router, /\/ai\/daily/);
 });
 
+test("AI report archive uses a dual-column rail with month groups and daily headlines", () => {
+  assert.match(daily, /lg:grid-cols-\[250px/);
+  assert.match(daily, /按月份归档/);
+  assert.match(daily, /headline/);
+});
+
 test("daily report reuses hotspot board and story detail navigation", () => {
   assert.match(daily, /hotTopics/);
   assert.match(sharedFeed, /展开全部 10 条/);

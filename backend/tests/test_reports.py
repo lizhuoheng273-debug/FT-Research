@@ -19,7 +19,7 @@ def test_daily_archive_roundtrip_and_index(tmp_path):
     )
     assert saved["kind"] == "daily"
     assert archive.load_daily("2026-08-27")["hotTopics"][0]["storyId"] == "story-1"
-    assert archive.list_periods("daily") == [{"kind": "daily", "period": "2026-08-27", "hotCount": 1}]
+    assert archive.list_periods("daily") == [{"kind": "daily", "period": "2026-08-27", "hotCount": 1, "headline": "热点"}]
 
 
 def test_daily_archive_does_not_overwrite_existing_snapshot(tmp_path):

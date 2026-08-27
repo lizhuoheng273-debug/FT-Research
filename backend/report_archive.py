@@ -90,7 +90,13 @@ class ReportArchive:
             except (OSError, ValueError, TypeError):
                 continue
             if kind == "daily":
-                output.append({"kind": kind, "period": payload.get("period", path.stem), "hotCount": len(payload.get("hotTopics") or [])})
+                topics = payload.get("hotTopics") or []
+                output.append({
+                    "kind": kind,
+                    "period": payload.get("period", path.stem),
+                    "hotCount": len(topics),
+                    "headline": topics[0].get("title", "") if topics and isinstance(topics[0], dict) else "",
+                })
             else:
                 output.append({"kind": kind, "period": payload.get("period", path.stem), "title": payload.get("title", "")})
         return output
