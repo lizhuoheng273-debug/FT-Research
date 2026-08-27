@@ -30,6 +30,9 @@ import reflection as reflect_layer
 import signals
 import glm_config
 from aihot_api import AihotClient
+from aihot_reports import AihotReportClient
+from report_archive import ReportArchive
+from report_scheduler import DailyReportScheduler
 
 
 from version import read_version
@@ -38,9 +41,12 @@ __version__ = read_version()
 
 app = FastAPI(title="FT-Research API", version=__version__)
 aihot_client = AihotClient()
+report_archive = ReportArchive()
+aihot_reports = AihotReportClient(report_archive)
 
 # 每半小时后台刷新持仓数据
 pf.start_scheduler(1800)
+DailyReportScheduler(report_archive, aihot_client).start()
 
 # CORS：默认放开（本地自托管友好）；公网部署时用 VR_ALLOW_ORIGINS 收紧成白名单。
 #   例：VR_ALLOW_ORIGINS="https://myhost"  （逗号分隔多个）
@@ -160,6 +166,53 @@ def ai_daily(date: str):
         return aihot_client.daily(date)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"AI HOT 日报暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/reports/index")
+def ai_reports_index(kind: str = Query("daily")):
+    if kind not in {"daily", "weekly", "monthly"}:
+        raise HTTPException(400, "kind 必须是 daily、weekly 或 monthly")
+    if kind == "daily":
+        items = report_archive.list_periods(kind)
+    else:
+        items = aihot_reports.list_periods(kind)
+    return {"kind": kind, "items": items}
+
+
+@app.get("/api/ai/reports/daily/latest")
+def ai_report_daily_latest():
+    periods = report_archive.list_periods("daily")
+    if not periods:
+        raise HTTPException(404, "暂无日报快照")
+    return {"kind": "daily", "period": periods[0]["period"], "report": report_archive.load_daily(periods[0]["period"]), "stale": False}
+
+
+@app.get("/api/ai/reports/daily/{date}")
+def ai_report_daily(date: str):
+    report = report_archive.load_daily(date)
+    if not report:
+        raise HTTPException(404, "该日期暂无日报快照")
+    return {"kind": "daily", "period": date, "report": report, "stale": False}
+
+
+@app.get("/api/ai/reports/{kind}/latest")
+def ai_report_period_latest(kind: str):
+    if kind not in {"weekly", "monthly"}:
+        raise HTTPException(400, "kind 必须是 weekly 或 monthly")
+    try:
+        return aihot_reports.fetch_period(kind)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT {kind} 暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/reports/{kind}/{period}")
+def ai_report_period(kind: str, period: str):
+    if kind not in {"weekly", "monthly"}:
+        raise HTTPException(400, "kind 必须是 weekly 或 monthly")
+    try:
+        return aihot_reports.fetch_period(kind, period)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT {kind} 暂时不可用：{exc}") from exc
 
 
 @app.post("/api/chat")

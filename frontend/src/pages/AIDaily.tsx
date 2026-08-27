@@ -1,13 +1,74 @@
-import { useEffect, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { useEffect, useMemo, useState } from "react";
+import { ExternalLink, RefreshCw } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/AIHotFeed";
 import { authHeaders } from "@/lib/api";
 
+type ReportKind = "daily" | "weekly" | "monthly";
+interface ArchiveItem { kind: ReportKind; period: string; title?: string; hotCount?: number }
+interface DailyReport { kind: "daily"; period: string; generatedAt?: string; windowStart?: string; windowEnd?: string; hotTopics?: HotFeedTopic[]; items?: HotFeedItem[] }
+interface PeriodStory { title?: string; summary?: string; source?: string; publishedAt?: string; links?: { original?: string; aihot?: string }; storyId?: string }
+interface PeriodTheme { title: string; summary?: string; stories?: PeriodStory[] }
+interface PeriodReport { kind: "weekly" | "monthly"; period: string; title?: string; lead?: string; stats?: Record<string, number>; themes?: PeriodTheme[]; source?: { url?: string } }
+
+const validKind = (value: string | null): ReportKind => value === "weekly" || value === "monthly" ? value : "daily";
+const storyId = (story: PeriodStory) => story.storyId || story.links?.aihot?.split("/").pop() || "";
+
+function ArchiveRail({ kind, items, period, onSelect }: { kind: ReportKind; items: ArchiveItem[]; period: string; onSelect: (value: string) => void }) {
+  return <aside className="space-y-2 lg:sticky lg:top-5 lg:self-start"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">{kind === "daily" ? "日报日期" : kind === "weekly" ? "周报周期" : "月报周期"}</p>{items.length === 0 ? <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">暂无归档</p> : <div className="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-1">{items.map((item) => <button key={item.period} onClick={() => onSelect(item.period)} className={`min-w-[132px] rounded-lg border px-3 py-2 text-left text-sm transition-colors lg:w-full ${item.period === period ? "border-primary/50 bg-primary/10 text-primary" : "border-border/60 hover:border-primary/30"}`}><span className="block font-medium">{item.period}</span>{kind === "daily" && <span className="text-xs text-muted-foreground">{item.hotCount ?? 0} 条热点</span>}{kind !== "daily" && item.title && <span className="block truncate text-xs text-muted-foreground">{item.title}</span>}</button>)}</div>}</aside>;
+}
+
+function PeriodReport({ report }: { report: PeriodReport }) {
+  const navigate = useNavigate();
+  return <div className="space-y-4"><GlassCard glow><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">AI HOT {report.kind === "weekly" ? "WEEKLY" : "MONTHLY"}</p><h2 className="mt-1 text-xl font-bold">{report.title || (report.kind === "weekly" ? "AI 周报" : "AI 月报")}</h2><p className="mt-1 text-sm text-muted-foreground">{report.period}</p></div>{report.source?.url && <a href={report.source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">打开 AI HOT 原文报告 <ExternalLink className="h-3.5 w-3.5" /></a>}</div>{report.lead && <div className="mt-5 border-t border-border/50 pt-4"><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">本期主线</p><p className="leading-relaxed">{report.lead}</p></div>}{report.stats && <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">{Object.entries(report.stats).map(([key, value]) => <div key={key} className="rounded-lg bg-muted/30 p-3"><p className="text-xl font-bold text-primary">{value}</p><p className="text-xs text-muted-foreground">{key}</p></div>)}</div>}</GlassCard>{(report.themes || []).map((theme) => <GlassCard key={theme.title}><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">主题</p><h3 className="text-lg font-semibold">{theme.title}</h3>{theme.summary && <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{theme.summary}</p>}<div className="mt-4 space-y-3">{(theme.stories || []).map((story, index) => <article key={`${story.title}-${index}`} className="rounded-lg border border-border/50 p-3"><div className="flex items-start justify-between gap-3"><div><h4 className="font-medium">{story.title || "未命名事件"}</h4><p className="mt-1 text-sm leading-relaxed text-muted-foreground">{story.summary || "暂无摘要"}</p></div>{story.links?.original && <a href={story.links.original} target="_blank" rel="noreferrer" className="shrink-0 text-xs text-primary hover:underline">原文</a>}</div><p className="mt-2 text-xs text-muted-foreground/70"><span className="sr-only">媒体：</span>{story.source || "AI HOT"}{story.publishedAt ? ` · ${story.publishedAt}` : ""}</p><button onClick={() => storyId(story) && navigate(`/ai/news/story/${storyId(story)}`, { state: { fallback: { title: story.title, summary: story.summary, source: story.source, publishedAt: story.publishedAt, links: story.links } } })} className="mt-2 text-xs text-primary hover:underline">查看事件详情</button></article>)}</div></GlassCard>)}</div>;
+}
+
 export function AIDaily() {
-  const [daily, setDaily] = useState<any>(null);
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const kind = validKind(searchParams.get("kind"));
+  const requestedPeriod = searchParams.get("period") || "";
+  const [archive, setArchive] = useState<ArchiveItem[]>([]);
+  const [period, setPeriod] = useState(requestedPeriod);
+  const [report, setReport] = useState<DailyReport | PeriodReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [stale, setStale] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { fetch("/api/ai/dailies/latest", { headers: authHeaders() }).then((r) => r.ok ? r.json() : Promise.reject(new Error("日报暂不可用"))).then(setDaily).catch((e) => setError(e.message)); }, []);
-  const content = daily?.content || daily?.summary || daily?.markdown || "AI HOT 日报将在 V2 数据同步后显示。";
-  return <div><PageHeader title="AI 日报" subtitle="按日整理 AI 领域的重要事件与原始来源" />{error && <p className="mb-3 rounded-lg border border-warning/30 p-3 text-sm text-muted-foreground">{error}</p>}<GlassCard><div className="prose prose-sm max-w-none dark:prose-invert"><ReactMarkdown>{typeof content === "string" ? content : JSON.stringify(content, null, 2)}</ReactMarkdown></div></GlassCard></div>;
+
+  const load = async (targetKind: ReportKind, targetPeriod?: string) => {
+    setLoading(true); setError(null);
+    try {
+      const headers = authHeaders();
+      const indexResponse = await fetch(`/api/ai/reports/index?kind=${targetKind}`, { headers });
+      const indexBody = await indexResponse.json();
+      if (!indexResponse.ok) throw new Error(indexBody.detail || "报告索引暂不可用");
+      const entries = (indexBody.items || []) as ArchiveItem[];
+      setArchive(entries);
+      const selected = targetPeriod || entries[0]?.period || "";
+      setPeriod(selected);
+      let response: Response;
+      if (targetKind === "daily") response = await fetch(selected ? `/api/ai/reports/daily/${selected}` : "/api/ai/reports/daily/latest", { headers });
+      else response = await fetch(selected ? `/api/ai/reports/${targetKind}/${selected}` : `/api/ai/reports/${targetKind}/latest`, { headers });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "报告暂不可用");
+      setReport((body.report || body) as DailyReport | PeriodReport);
+      setStale(Boolean(body.stale));
+      setFetchedAt(body.fetchedAt || body.report?.fetchedAt || body.report?.generatedAt);
+      if (selected && (selected !== requestedPeriod || targetKind !== kind)) setSearchParams({ kind: targetKind, period: selected }, { replace: true });
+    } catch (e) { setReport(null); setFetchedAt(undefined); setError(e instanceof Error ? e.message : "报告暂不可用"); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { void load(kind, requestedPeriod); }, [kind, requestedPeriod]);
+  const dailyReport = report?.kind === "daily" ? report : null;
+  const periodReport = report?.kind !== "daily" ? report : null;
+  const topics = dailyReport?.hotTopics || [];
+  const items = dailyReport?.items || [];
+  const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
+  const openStory = (topic: HotFeedTopic, item?: HotFeedItem) => { const id = topic.links?.story?.split("/").pop() || item?.links?.story?.split("/").pop() || topic.id; navigate(`/ai/news/story/${id}`, { state: { fallback: { title: topic.title, summary: item?.summary, reason: item?.reason, category: item?.category, score: item?.score ?? topic.score, source: item?.source || topic.source, publishedAt: item?.publishedAt || topic.latestAt, links: { original: item?.links?.original || topic.links?.original } } } }); };
+
+  return <div><PageHeader title="AI 日报" subtitle="日报、周报、月报 · FT-Research AI 资讯档案" actions={<button onClick={() => void load(kind, period)} className="rounded-lg border border-border px-3 py-1.5 text-sm"><RefreshCw className="mr-1 inline h-4 w-4" />刷新</button>} /><div className="mb-5 flex gap-2 rounded-xl border border-border/60 bg-muted/20 p-1">{(["daily", "weekly", "monthly"] as ReportKind[]).map((value) => <button key={value} onClick={() => { setSearchParams({ kind: value, period: "" }); }} className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium ${kind === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{value === "daily" ? "日报" : value === "weekly" ? "周报" : "月报"}</button>)}</div>{stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">当前展示缓存内容{fetchedAt ? `，缓存时间：${new Date(fetchedAt).toLocaleString("zh-CN")}` : ""}。</p>}{error && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">{error}</p>}<div className="grid gap-5 lg:grid-cols-[190px_minmax(0,1fr)]"><ArchiveRail kind={kind} items={archive} period={period} onSelect={(value) => setSearchParams({ kind, period: value })} /><main>{loading ? <div className="space-y-3"><div className="h-32 animate-pulse rounded-xl bg-muted/40" /><div className="h-48 animate-pulse rounded-xl bg-muted/40" /></div> : kind === "daily" ? <><div className="mb-4 rounded-lg border border-border/50 bg-muted/20 p-3 text-sm text-muted-foreground">{dailyReport?.period || period || "暂无日期"} · 前一自然日 AI 热点快照{dailyReport?.hotTopics?.length ? ` · ${dailyReport.hotTopics.length} 条热点` : ""}</div><AIHotFeed topics={topics} items={items} onOpenStory={openStory} />{itemById.size === 0 && topics.length > 0 && <p className="mt-3 text-xs text-muted-foreground">部分事件摘要将在详情页补充。</p>}</> : periodReport ? <PeriodReport report={periodReport} /> : <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">暂无{kind === "weekly" ? "周报" : "月报"}内容。</p>}</main></div></div>;
 }

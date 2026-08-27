@@ -6,7 +6,7 @@ V1 已完成金融板块产品化、FT-Research 品牌切换，以及后端托�
 
 左侧导航固定为两级：
 
-- AI 板块：AI 资讯、AI 日报
+- AI 板块：AI 热点资讯、AI 日报
 - 金融板块：金融市场资讯、每日复盘、自选股、AI 投研
 
 原有持仓、板块中心、研报、研究记录、多空辩论仍保留旧路由以兼容书签，但不再出现在产品导航中。
@@ -45,6 +45,17 @@ npm run dev
 - `GET /api/ai/news/hot-topics`：热点榜
 - `GET /api/ai/news/stories/{public_id}`：事件详情
 - `GET /api/ai/dailies/latest`：最新日报
+
+## AI 日报 / 周报 / 月报
+
+`/ai/daily` 是周期报告中心。日报由 FT-Research 每天北京时间 08:00 将前一自然日的 AI 热点榜和精选事件固化到 `backend/.cache/ft-reports/daily/`，页面复用热点榜、事件卡片和 `/ai/news/story/:storyId` 详情页。周报和月报目前没有 AI HOT 的正式 API，后端仅在本地或私有环境抓取其网页、解析为结构化主题和媒体报道并缓存；上游不可用时继续展示最近缓存并标注 `stale`。
+
+报告接口：
+
+- `GET /api/ai/reports/index?kind=daily|weekly|monthly`
+- `GET /api/ai/reports/daily/latest`、`/daily/{date}`
+- `GET /api/ai/reports/weekly/latest`、`/weekly/{period}`
+- `GET /api/ai/reports/monthly/latest`、`/monthly/{period}`
 
 ## 测试边界
 
