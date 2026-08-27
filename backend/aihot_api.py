@@ -22,9 +22,14 @@ def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
         "summary": raw.get("summary") or "",
         "score": raw.get("score"),
         "reason": raw.get("reason") or "",
+        "category": raw.get("category") or "",
         "publishedAt": raw.get("publishedAt") or raw.get("discoveredAt"),
         "source": source.get("name") if isinstance(source, dict) else str(source),
-        "links": {"aihot": links.get("aihot"), "original": links.get("original")},
+        "links": {
+            "aihot": links.get("aihot"),
+            "original": links.get("original"),
+            "story": links.get("story"),
+        },
     }
 
 
@@ -89,7 +94,15 @@ class AihotClient:
         return payload
 
     def hot_topics(self, **params: Any) -> dict[str, Any]:
-        return self._get("/api/v1/hot-topics", params)
+        payload = self._get("/api/v1/hot-topics", params)
+        payload["items"] = [
+            {
+                **item,
+                "source": (item.get("source") or {}).get("name") if isinstance(item.get("source"), dict) else item.get("source"),
+            }
+            for item in payload.get("items", [])
+        ]
+        return payload
 
     def story(self, public_id: str) -> dict[str, Any]:
         return self._get(f"/api/v1/stories/{public_id}")

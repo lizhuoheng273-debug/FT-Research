@@ -14,6 +14,7 @@ import { Notes } from "@/pages/Notes";
 import { Settings } from "@/pages/Settings";
 import { AINews } from "@/pages/AINews";
 import { AIDaily } from "@/pages/AIDaily";
+import { AINewsDetail } from "@/pages/AINewsDetail";
 
 export const router = createBrowserRouter([
   {
@@ -21,6 +22,7 @@ export const router = createBrowserRouter([
     children: [
       { path: "/", element: <Navigate to="/ai/news" replace /> },
       { path: "/ai/news", element: <AINews /> },
+      { path: "/ai/news/story/:storyId", element: <AINewsDetail /> },
       { path: "/ai/news/:tab", element: <AINews /> },
       { path: "/ai/daily", element: <AIDaily /> },
       { path: "/finance/news", element: <Intel /> },

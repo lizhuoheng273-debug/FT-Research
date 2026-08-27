@@ -8,12 +8,12 @@ def test_normalize_aihot_item_keeps_links_and_score():
         "id": "cmt_1", "title": "标题", "summary": "摘要", "score": 88,
         "reason": "多源报道", "publishedAt": "2026-08-27T10:00:00Z",
         "source": {"name": "Example"},
-        "links": {"aihot": "https://aihot/item", "original": "https://source/item"},
+        "links": {"aihot": "https://aihot/item", "original": "https://source/item", "story": "https://aihot/story/uuid"},
     })
     assert item == {
         "id": "cmt_1", "title": "标题", "summary": "摘要", "score": 88,
-        "reason": "多源报道", "publishedAt": "2026-08-27T10:00:00Z", "source": "Example",
-        "links": {"aihot": "https://aihot/item", "original": "https://source/item"},
+        "reason": "多源报道", "category": "", "publishedAt": "2026-08-27T10:00:00Z", "source": "Example",
+        "links": {"aihot": "https://aihot/item", "original": "https://source/item", "story": "https://aihot/story/uuid"},
     }
 
 
@@ -48,3 +48,9 @@ def test_aihot_items_endpoint_maps_items(monkeypatch):
     response = TestClient(app.app).get("/api/ai/news")
     assert response.status_code == 200
     assert response.json()["items"][0]["title"] == "热点"
+
+
+def test_normalize_hot_topic_source_is_string(monkeypatch):
+    client = AihotClient(base_url="https://example.test")
+    monkeypatch.setattr(client, "_get", lambda *args, **kwargs: {"items": [{"id": "x", "source": {"name": "来源"}}]})
+    assert client.hot_topics()["items"][0]["source"] == "来源"
