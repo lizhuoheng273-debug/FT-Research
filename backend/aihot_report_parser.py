@@ -92,6 +92,8 @@ def parse_report_html(html: str, *, kind: str, period: str, source_url: str) -> 
     for section in sections:
         heading_nodes = section.find_class("daily-section-title")
         heading = (heading_nodes[0].text() if heading_nodes else "") or _first_text(section, "h2") or _first_text(section, "h3") or "未命名主题"
+        if "往期 AI" in heading or "往期AI" in heading:
+            continue
         intro_nodes = section.find_class("period-theme-intro")
         stories: list[dict[str, Any]] = []
         for article in section.find_class("period-story") or section.find_all("article"):

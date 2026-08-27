@@ -56,11 +56,13 @@ def test_parse_aihot_period_classes_and_relative_item_links():
     <section class="period-lead"><h2 class="period-lead-headline">基础设施与安全并进</h2><p class="period-lead-overview">本周主线摘要</p></section>
     <section class="period-stats"><div class="period-stat"><div class="period-stat-value">47</div><div class="period-stat-label">独立事件</div></div></section>
     <section class="daily-section"><h2 class="daily-section-title">算力扩张</h2><p class="period-theme-intro">主题摘要</p><div class="period-stories"><article class="period-story"><h3 class="period-story-title"><a href="/items/event-1">事件标题</a></h3><span class="period-story-source">媒体 A</span></article></div></section>
+    <section class="daily-section"><h2 class="daily-section-title">往期 AI 周报</h2><div class="period-stories"><article class="period-story"><h3 class="period-story-title">旧报告</h3></article></div></section>
     """
     report = parse_report_html(html, kind="weekly", period="2026-W34", source_url="https://aihot.virxact.com/weekly")
     assert report["lead"] == "本周主线摘要"
     assert report["stats"] == {"独立事件": 47}
     assert report["themes"][0]["title"] == "算力扩张"
+    assert len(report["themes"]) == 1
     story = report["themes"][0]["stories"][0]
     assert story["title"] == "事件标题"
     assert story["source"] == "媒体 A"
