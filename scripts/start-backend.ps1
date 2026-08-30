@@ -12,13 +12,13 @@ if (Test-Path -LiteralPath $venvPython) {
 } else {
   $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
   if (-not $pythonCommand) {
-    throw "未找到 Python。请先安装 Python 3.11+，或在 backend\.venv 中创建虚拟环境。"
+    throw "Python not found. Install Python 3.11+ or create backend\\.venv."
   }
   $python = $pythonCommand.Source
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $backendRoot "app.py"))) {
-  throw "找不到 FastAPI 入口：$backendRoot\app.py"
+  throw "FastAPI entrypoint not found: $backendRoot\\app.py"
 }
 
 Set-Location -LiteralPath $backendRoot

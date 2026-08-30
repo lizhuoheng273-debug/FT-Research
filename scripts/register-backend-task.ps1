@@ -3,7 +3,7 @@ $taskName = "FT-Research Backend"
 $startScript = Join-Path $PSScriptRoot "start-backend.ps1"
 
 if (-not (Test-Path -LiteralPath $startScript)) {
-  throw "找不到启动脚本：$startScript"
+  throw "Start script not found: $startScript"
 }
 
 $action = New-ScheduledTaskAction `
@@ -22,5 +22,5 @@ Register-ScheduledTask `
   -RunLevel Limited `
   -Force | Out-Null
 
-Write-Host "已注册登录自启动任务：$taskName"
-Write-Host "如需取消，请运行 scripts\unregister-backend-task.ps1"
+Write-Host "Registered logon startup task: $taskName"
+Write-Host "To remove it, run scripts\\unregister-backend-task.ps1"
