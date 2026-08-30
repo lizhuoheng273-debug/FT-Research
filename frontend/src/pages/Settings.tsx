@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, KeyRound, ShieldCheck, X } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
-import { authHeaders, loadAccessKey, saveAccessKey } from "@/lib/api";
+import { apiUrl, authHeaders, loadAccessKey, saveAccessKey } from "@/lib/api";
 
 interface AiStatus { configured: boolean; model: string; base_url: string; key_present: boolean }
 
@@ -12,7 +12,7 @@ export function Settings() {
   const [accessKey, setAccessKey] = useState(loadAccessKey);
 
   useEffect(() => {
-    fetch("/api/ai/status", { headers: authHeaders() })
+    fetch(apiUrl("/ai/status"), { headers: authHeaders() })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(setStatus)
       .catch(() => setError("暂时无法读取后端状态，请确认 FastAPI 已启动"));

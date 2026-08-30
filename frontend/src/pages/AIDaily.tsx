@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/AIHotFeed";
-import { authHeaders } from "@/lib/api";
+import { apiUrl, authHeaders } from "@/lib/api";
 
 type ReportKind = "daily" | "weekly" | "monthly";
 interface ArchiveItem { kind: ReportKind; period: string; title?: string; hotCount?: number; headline?: string }
@@ -62,7 +62,7 @@ export function AIDaily() {
     setLoading(true); setError(null);
     try {
       const headers = authHeaders();
-      const indexResponse = await fetch(`/api/ai/reports/index?kind=${targetKind}`, { headers });
+      const indexResponse = await fetch(apiUrl(`/ai/reports/index?kind=${targetKind}`), { headers });
       const indexBody = await indexResponse.json();
       if (!indexResponse.ok) throw new Error(indexBody.detail || "报告索引暂不可用");
       const entries = (indexBody.items || []) as ArchiveItem[];
@@ -70,8 +70,8 @@ export function AIDaily() {
       const selected = targetPeriod || entries[0]?.period || "";
       setPeriod(selected);
       let response: Response;
-      if (targetKind === "daily") response = await fetch(selected ? `/api/ai/reports/daily/${selected}` : "/api/ai/reports/daily/latest", { headers });
-      else response = await fetch(selected ? `/api/ai/reports/${targetKind}/${selected}` : `/api/ai/reports/${targetKind}/latest`, { headers });
+      if (targetKind === "daily") response = await fetch(apiUrl(selected ? `/ai/reports/daily/${selected}` : "/ai/reports/daily/latest"), { headers });
+      else response = await fetch(apiUrl(selected ? `/ai/reports/${targetKind}/${selected}` : `/ai/reports/${targetKind}/latest`), { headers });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || "报告暂不可用");
       setReport((body.report || body) as DailyReport | PeriodReport);

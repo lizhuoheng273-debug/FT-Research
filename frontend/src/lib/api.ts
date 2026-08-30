@@ -7,6 +7,19 @@ export class ApiError extends Error {
   }
 }
 
+// 生产托管前端可以通过 VITE_API_URL 指向本机或远端 FastAPI；
+// 未配置时返回相对路径，继续交给 Vite 开发代理处理。
+const API_BASE = String(import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const apiPath = normalized === "/api" || normalized.startsWith("/api/")
+    ? normalized
+    : `/api${normalized}`;
+  return `${API_BASE}${apiPath}`;
+}
+
 // 后端访问密钥（对应后端部署时的 VR_API_KEY，公网部署防蹭用）。只存本地浏览器。
 const ACCESS_KEY = "vr-access-key";
 
@@ -38,7 +51,7 @@ export interface MyReport {
 
 // 下载/预览研报：带鉴权头 fetch → blob → 触发浏览器下载（<a download> 无法带 Authorization，故走 blob）。
 export async function downloadReport(id: string, name: string): Promise<void> {
-  const resp = await fetch(`/api/myreports/file/${id}`, { headers: authHeaders() });
+  const resp = await fetch(apiUrl(`/myreports/file/${id}`), { headers: authHeaders() });
   if (!resp.ok) throw new ApiError(`下载失败 HTTP ${resp.status}`, resp.status);
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);
@@ -61,7 +74,7 @@ async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET
   }
   if (Object.keys(headers).length > 0) opts.headers = headers;
   try {
-    resp = await fetch(`/api${path}`, opts);
+    resp = await fetch(apiUrl(path), opts);
   } catch {
     throw new ApiError("连接不到后端，请先启动 backend（uvicorn app:app --port 8900）", 0);
   }
@@ -87,6 +100,8 @@ export interface Quote {
   pe_ttm: number; pb: number; mcap_yi: number; turnover_pct: number;
   limit_up: number; limit_down: number;
 }
+
+export interface StockSearchResult { code: string; name: string }
 
 export interface Valuation {
   name: string; code: string; price: number; mcap_yi: number;
@@ -302,6 +317,7 @@ export const api = {
     request<PortfolioData>("/portfolio/close", "POST", { code, date, price, shares, cost }),
   removeClosed: (index: number) => request<PortfolioData>(`/portfolio/close?index=${index}`, "DELETE"),
   valuation: (code: string) => get<Valuation>(`/valuation?code=${code}`),
+  stockSearch: (query: string, limit = 10) => get<StockSearchResult[]>(`/stock/search?q=${encodeURIComponent(query)}&limit=${limit}`),
   percentile: (code: string) => get<ValPercentile>(`/valuation/percentile?code=${code}`),
   financials: (code: string) => get<Financials>(`/financials?code=${code}`),
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),

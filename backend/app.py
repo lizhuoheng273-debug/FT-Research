@@ -537,6 +537,23 @@ def quote(codes: str = Query(..., description="逗号分隔的 6 位代码")):
         raise HTTPException(502, f"行情源异常：{e}") from e
 
 
+@app.get("/api/stock/search")
+def stock_search(q: str = Query("", max_length=40), limit: int = Query(20, ge=1, le=50)):
+    """A 股代码/名称搜索，返回可进入详情页的候选标的。"""
+    query = q.strip()
+    if not query:
+        raise HTTPException(400, "搜索内容不能为空")
+    try:
+        rows = astock.search_a_stocks(query, limit=limit)
+        seen: set[str] = set()
+        unique = [row for row in rows if row.get("code") and not (row["code"] in seen or seen.add(row["code"]))]
+        return {"data": unique[:limit]}
+    except astock.DependencyMissing as e:
+        raise HTTPException(501, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"股票搜索暂时不可用：{e}") from e
+
+
 import time as _time
 _PCT_CACHE: dict = {}
 

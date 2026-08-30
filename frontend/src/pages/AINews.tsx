@@ -4,7 +4,7 @@ import { RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { AskAiButton } from "@/components/ui/AskAiButton";
 import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/AIHotFeed";
-import { authHeaders } from "@/lib/api";
+import { apiUrl, authHeaders } from "@/lib/api";
 
 const storyId = (topic: HotFeedTopic, item?: HotFeedItem) => {
   const url = topic.links?.story || item?.links?.story || "";
@@ -24,8 +24,8 @@ export function AINews() {
     try {
       const headers = authHeaders();
       const [hotResponse, itemResponse] = await Promise.all([
-        fetch("/api/ai/news/hot-topics", { headers }),
-        fetch("/api/ai/news?mode=selected&window=24h&limit=50", { headers }),
+        fetch(apiUrl("/ai/news/hot-topics"), { headers }),
+        fetch(apiUrl("/ai/news?mode=selected&window=24h&limit=50"), { headers }),
       ]);
       const read = async (response: Response) => { const body = await response.json(); if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`); return body; };
       const [hot, feed] = await Promise.all([read(hotResponse), read(itemResponse)]);

@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { AskAiButton } from "@/components/ui/AskAiButton";
-import { authHeaders } from "@/lib/api";
+import { apiUrl, authHeaders } from "@/lib/api";
 import { storageGet, storageSet } from "@/lib/storage";
 
 interface Report { id?: string; title?: string; summary?: string; source?: { name?: string } | string; publishedAt?: string; links?: { original?: string; aihot?: string } }
@@ -26,7 +26,7 @@ export function AINewsDetail() {
 
   const load = () => {
     setLoading(true); setError(null);
-    fetch(`/api/ai/news/stories/${storyId}`, { headers: authHeaders() })
+    fetch(apiUrl(`/ai/news/stories/${storyId}`), { headers: authHeaders() })
       .then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.detail || "详情暂不可用"); return body; })
       .then((body) => setStory(body.story || body))
       .catch((e) => setError(e.message || "详情暂不可用"))

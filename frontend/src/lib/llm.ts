@@ -2,7 +2,7 @@
 
 import { storageSet, storageRemove } from "@/lib/storage";
 
-import { ApiError, authHeaders } from "./api";
+import { ApiError, apiUrl, authHeaders } from "./api";
 import type { ProviderId } from "./ai-models";
 
 export interface LlmConfig {
@@ -61,7 +61,7 @@ export interface ChatHandlers {
 export async function chatStream(messages: ChatMsg[], context: string, handlers: ChatHandlers = {}, signal?: AbortSignal): Promise<ChatResult> {
   let resp: Response;
   try {
-    resp = await fetch("/api/chat", {
+    resp = await fetch(apiUrl("/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ messages, context }),

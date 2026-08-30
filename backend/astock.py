@@ -207,6 +207,59 @@ def stock_news(code: str, limit: int = 20) -> list[dict]:
     return df.head(limit).to_dict("records") if df is not None and not df.empty else []
 
 
+_A_STOCK_UNIVERSE_TTL = 6 * 60 * 60
+_a_stock_universe: list[dict[str, str]] = []
+_a_stock_universe_at = 0.0
+
+
+def _load_a_stock_universe() -> list[dict[str, str]]:
+    """加载并缓存 A 股代码-名称列表，避免名称搜索每次都抓取全市场。"""
+    global _a_stock_universe, _a_stock_universe_at
+    if _a_stock_universe and time.time() - _a_stock_universe_at < _A_STOCK_UNIVERSE_TTL:
+        return _a_stock_universe
+
+    ak = _akshare()
+    df = ak.stock_info_a_code_name()
+    rows: list[dict[str, str]] = []
+    if df is not None and not df.empty:
+        for raw in df.to_dict("records"):
+            code = str(raw.get("code", "")).strip()
+            name = str(raw.get("name", "")).strip()
+            if re.fullmatch(r"\d{6}", code) and name:
+                rows.append({"code": code, "name": name})
+    if rows:
+        _a_stock_universe = rows
+        _a_stock_universe_at = time.time()
+    return _a_stock_universe
+
+
+def search_a_stocks(query: str, limit: int = 20) -> list[dict[str, str]]:
+    """按 A 股代码或名称（支持部分名称）搜索，代码优先精确匹配。"""
+    needle = re.sub(r"\s+", "", (query or "")).casefold()
+    if not needle:
+        return []
+
+    rows = _load_a_stock_universe()
+    if needle.isdigit():
+        exact = [row for row in rows if row["code"] == needle]
+        if exact:
+            return exact[:limit]
+        return [row for row in rows if needle in row["code"]][:limit]
+
+    exact: list[dict[str, str]] = []
+    starts: list[dict[str, str]] = []
+    contains: list[dict[str, str]] = []
+    for row in rows:
+        name = re.sub(r"\s+", "", row["name"]).casefold()
+        if name == needle:
+            exact.append(row)
+        elif name.startswith(needle):
+            starts.append(row)
+        elif needle in name:
+            contains.append(row)
+    return (exact + starts + contains)[:limit]
+
+
 def individual_info(code: str) -> dict:
     """个股基本面（东财）：行业 / 总股本 / 上市时间等。"""
     ak = _akshare()
