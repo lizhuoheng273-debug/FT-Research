@@ -8,6 +8,7 @@ import { Disclaimer } from "@/components/ui/Disclaimer";
 import { debateStream, type DebateStage } from "@/lib/agents";
 import { addNote } from "@/lib/notes";
 import { ApiError } from "@/lib/api";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 
 interface StageBox {
   stage: DebateStage;
@@ -44,8 +45,9 @@ export function Debate() {
     setStatus(""); setProgress([]); setMissing([]); setStages([]); setError(""); setSaved(false);
   };
 
-  async function start() {
-    const c = code.trim();
+  async function start(requestedCode = code) {
+    const c = requestedCode.trim();
+    setCode(c);
     if (!/^\d{6}$/.test(c)) { setError("请输入 6 位 A 股代码"); return; }
     reset();
     setRunning(true);
@@ -101,13 +103,14 @@ export function Debate() {
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
-            <input
+            <StockSearchInput
               value={code}
-              onChange={(e) => setCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}
-              onKeyDown={(e) => { if (e.key === "Enter" && !running) start(); }}
+              onChange={(value) => setCode(value.replace(/\D/g, "").slice(0, 6))}
+              onSelect={(result) => setCode(result.code)}
+              onSubmitCode={(value) => { if (!running) void start(value); }}
               placeholder="6 位代码，如 600519"
               disabled={running}
-              className="w-44 rounded-lg border border-border/60 bg-background/60 px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
+              className="w-44 border-border/60 bg-background/60 font-mono focus:border-primary/60"
             />
           </div>
           <div>
@@ -128,7 +131,7 @@ export function Debate() {
               <Square className="h-4 w-4" /> 中止
             </button>
           ) : (
-            <button onClick={start}
+            <button onClick={() => void start()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary/90 px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary">
               <Play className="h-4 w-4" /> 开始辩论
             </button>

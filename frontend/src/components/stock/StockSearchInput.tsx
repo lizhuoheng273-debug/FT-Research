@@ -57,7 +57,7 @@ export function StockSearchInput({
       search.close();
       return;
     }
-    if (allowExternalSymbols && value.trim()) {
+    if (allowExternalSymbols && /^[A-Za-z0-9.]+$/.test(value.trim())) {
       onSubmitCode(value.trim().toUpperCase());
       search.close();
     }

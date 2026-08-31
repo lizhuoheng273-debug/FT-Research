@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Search, FileText, Newspaper, Loader2, AlertCircle, LineChart, BarChart3, Megaphone,
   Wallet, Trophy, CalendarClock, Boxes, MessageSquare,
@@ -16,6 +16,7 @@ import {
   type GlobalStock, type HkCashflow,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 
 // 金额格式化（后端资金单位：元 / 万元）
 const yi = (v: number) => `${(v / 1e8).toFixed(2)} 亿`;
@@ -80,9 +81,9 @@ function ValBand({ label, m }: { label: string; m: ValMetric }) {
 
 export function StockData({ initialCode: providedInitialCode, embedded = false }: { initialCode?: string; embedded?: boolean } = {}) {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const initialCode = providedInitialCode || searchParams.get("code") || "";
   const [code, setCode] = useState(initialCode);
-  const [searchResults, setSearchResults] = useState<{ code: string; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [val, setVal] = useState<Valuation | null>(null);
@@ -111,7 +112,7 @@ export function StockData({ initialCode: providedInitialCode, embedded = false }
     const c = (requestedCode ?? code).trim().toUpperCase();
     if (!c) { setErr("请输入代码"); return; }
     const rid = ++runIdRef.current;
-    setLoading(true); setErr(null); setDepNote(null); setVal(null); setReports([]); setNews([]); setPctl(null); setFin(null); setAnns([]); setSearchResults([]);
+    setLoading(true); setErr(null); setDepNote(null); setVal(null); setReports([]); setNews([]); setPctl(null); setFin(null); setAnns([]);
     setMargin([]); setBlockT([]); setHolders([]); setDividend([]); setFundFlow([]); setDt(null); setLockup(null); setBlocks(null); setHotCon([]); setQa([]);
     setGStock(null); setCashflow(null);
 
@@ -178,15 +179,6 @@ export function StockData({ initialCode: providedInitialCode, embedded = false }
     return () => { runIdRef.current += 1; };
   }, [initialCode]);
 
-  useEffect(() => {
-    if (code.trim().length < 2 || code.trim() === initialCode) { setSearchResults([]); return; }
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      api.stockSearch(code.trim(), 8).then((rows) => { if (!cancelled) setSearchResults(rows); }).catch(() => { if (!cancelled) setSearchResults([]); });
-    }, 180);
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [code, initialCode]);
-
   const metrics = val ? [
     { k: "现价", v: fmt(val.price) },
     { k: "PE(TTM)", v: fmt(val.pe_ttm) },
@@ -237,12 +229,14 @@ export function StockData({ initialCode: providedInitialCode, embedded = false }
 
       {/* 查询框 */}
       {!embedded && <div className="relative mb-5 flex gap-2">
-        <input
+        <StockSearchInput
           value={code}
-          onChange={(e) => setCode(e.target.value.replace(/[^a-zA-Z0-9.]/g, "").toUpperCase().slice(0, 12))}
-          onKeyDown={(e) => e.key === "Enter" && run()}
-          placeholder="股票代码或名称（如 贵州茅台 / 600519）"
-          className="w-80 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+          onChange={(value) => setCode(value.replace(/[^a-zA-Z0-9.\u3400-\u9fff]/g, "").toUpperCase().slice(0, 12))}
+          onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+          onSubmitCode={(value) => void run(value)}
+          allowExternalSymbols
+          placeholder="股票代码或名称（如 贵州茅台 / 600519；外围如 AAPL / 00700）"
+          className="w-80"
         />
         <button
           onClick={() => void run()}
@@ -252,7 +246,6 @@ export function StockData({ initialCode: providedInitialCode, embedded = false }
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
           查询
         </button>
-        {searchResults.length > 0 && <div className="absolute z-10 mt-11 w-80 overflow-hidden rounded-lg border border-border bg-background shadow-lg"><p className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">搜索结果</p>{searchResults.map((result) => <Link key={result.code} to={`/finance/stocks/${result.code}`} className="flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/40"><span>{result.name}</span><span className="font-mono text-xs text-muted-foreground">{result.code}</span></Link>)}</div>}
       </div>}
 
       {err && (
