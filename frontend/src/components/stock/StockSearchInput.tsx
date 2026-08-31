@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useStockSearch } from "@/hooks/useStockSearch";
 import { normalizeAStockCode, type StockSearchItem } from "@/lib/stock-search";
 import { cn } from "@/lib/utils";
@@ -25,9 +26,12 @@ export function StockSearchInput({
   className,
 }: StockSearchInputProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const skipSyncRef = useRef(false);
   const listId = useId();
   const search = useStockSearch(value);
+  const { open: searchOpen } = search;
+  const [overlayRect, setOverlayRect] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {
     if (skipSyncRef.current) {
@@ -40,11 +44,34 @@ export function StockSearchInput({
   useEffect(() => {
     const closeOnOutsideClick = (event: MouseEvent) => {
       const target = event.target;
-      if (target instanceof Node && !rootRef.current?.contains(target)) search.close();
+      if (target instanceof Node && !rootRef.current?.contains(target) && !listRef.current?.contains(target)) search.close();
     };
     document.addEventListener("mousedown", closeOnOutsideClick);
     return () => document.removeEventListener("mousedown", closeOnOutsideClick);
   }, [search]);
+
+  useEffect(() => {
+    if (!searchOpen) {
+      setOverlayRect(null);
+      return undefined;
+    }
+
+    const updateOverlayPosition = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(Math.max(rect.width, 256), window.innerWidth - 16);
+      const left = Math.min(Math.max(rect.left, 8), window.innerWidth - width - 8);
+      setOverlayRect({ top: rect.bottom + 4, left, width });
+    };
+
+    updateOverlayPosition();
+    window.addEventListener("resize", updateOverlayPosition);
+    window.addEventListener("scroll", updateOverlayPosition, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener("resize", updateOverlayPosition);
+      window.removeEventListener("scroll", updateOverlayPosition, { capture: true });
+    };
+  }, [searchOpen]);
 
   const selectResult = (result: StockSearchItem) => {
     skipSyncRef.current = true;
@@ -106,8 +133,14 @@ export function StockSearchInput({
         className={cn("rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100", className)}
       />
 
-      {search.open && (
-        <div id={listId} role="listbox" className="absolute left-0 top-full z-30 mt-1 w-full min-w-64 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+      {searchOpen && overlayRect && createPortal(
+        <div
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          className="min-w-64 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg"
+          style={{ position: "fixed", top: overlayRect.top, left: overlayRect.left, width: overlayRect.width, zIndex: 1000 }}
+        >
           {search.loading && <p className="px-3 py-2 text-xs text-slate-500">搜索中…</p>}
           {!search.loading && search.error && <p className="px-3 py-2 text-xs text-rose-600">{search.error}</p>}
           {!search.loading && !search.error && search.results.length === 0 && <p className="px-3 py-2 text-xs text-slate-500">暂无匹配股票</p>}
@@ -126,7 +159,8 @@ export function StockSearchInput({
               <span className="shrink-0 text-xs text-slate-500"><span className="font-mono">{result.code}</span><span className="ml-2">A股</span></span>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
