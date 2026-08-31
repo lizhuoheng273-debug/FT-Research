@@ -121,6 +121,31 @@ def _rows_to_points(rows: Any) -> list[dict[str, Any]]:
     return sorted((point for point in points if point), key=lambda item: item["time"])
 
 
+def _apply_intraday_vwap(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Replace per-bar OHLC averages with the market-standard daily cumulative VWAP."""
+    result: list[dict[str, Any]] = []
+    current_day = ""
+    cumulative_volume = 0.0
+    cumulative_amount = 0.0
+    last_average: float | None = None
+    for point in points:
+        day = point["time"][:10]
+        if day != current_day:
+            current_day = day
+            cumulative_volume = 0.0
+            cumulative_amount = 0.0
+            last_average = None
+        volume = max(float(point.get("volume") or 0), 0.0)
+        amount = max(float(point.get("amount") or 0), 0.0)
+        cumulative_volume += volume
+        cumulative_amount += amount
+        if cumulative_volume > 0 and cumulative_amount > 0:
+            last_average = cumulative_amount / cumulative_volume
+        average = last_average if last_average is not None else float(point["close"])
+        result.append({**point, "average": average})
+    return result
+
+
 def _aggregate(points: list[dict[str, Any]], granularity: str) -> list[dict[str, Any]]:
     if granularity == "daily":
         return points
@@ -274,6 +299,8 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
 
 def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     points = _rows_to_points(_akshare_rows(asset, code, period, adjust))
+    if period in {"intraday", "five_day"}:
+        points = _apply_intraday_vwap(points)
     quote_points = list(points)
     if period == "five_day":
         dates = {point["time"][:10] for point in points}

@@ -163,6 +163,30 @@ def test_rows_to_points_drops_non_finite_prices():
     assert [point["time"] for point in points] == ["2026-08-31T14:40"]
 
 
+def test_intraday_average_is_cumulative_vwap_and_resets_each_trading_day():
+    points = [
+        {"time": "2026-08-28T09:31", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.1, "average": 10.05, "volume": 100.0, "amount": 1_000.0},
+        {"time": "2026-08-28T09:32", "open": 10.1, "high": 12.2, "low": 10.0, "close": 12.0, "average": 11.075, "volume": 300.0, "amount": 3_600.0},
+        {"time": "2026-08-31T09:31", "open": 20.0, "high": 20.2, "low": 19.9, "close": 20.1, "average": 20.05, "volume": 200.0, "amount": 4_000.0},
+        {"time": "2026-08-31T09:32", "open": 20.1, "high": 22.2, "low": 20.0, "close": 22.0, "average": 21.075, "volume": 200.0, "amount": 4_400.0},
+    ]
+
+    result = market_chart._apply_intraday_vwap(points)
+
+    assert [point["average"] for point in result] == [10.0, 11.5, 20.0, 21.0]
+
+
+def test_intraday_vwap_keeps_last_value_for_zero_volume_bar():
+    points = [
+        {"time": "2026-08-31T09:31", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "average": 10.0, "volume": 100.0, "amount": 1_000.0},
+        {"time": "2026-08-31T09:32", "open": 10.1, "high": 10.1, "low": 10.1, "close": 10.1, "average": 10.1, "volume": 0.0, "amount": 0.0},
+    ]
+
+    result = market_chart._apply_intraday_vwap(points)
+
+    assert result[-1]["average"] == 10.0
+
+
 def test_cache_ttl_is_longer_outside_a_share_trading_hours():
     during_market = datetime(2026, 8, 31, 10, 0)
     after_market = datetime(2026, 8, 31, 18, 0)
