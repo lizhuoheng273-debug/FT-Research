@@ -30,7 +30,7 @@ function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.l
     <div className="divide-y divide-border/40 px-4">
       {visible.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">等待后台生成第一份资讯快照</p> : visible.map((item, index) => <Link key={item.id} to={`/finance/news/story/${item.id}`} state={{ fallback: item }} className="group flex w-full gap-3 py-3 text-left">
         <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold", index < 3 ? "bg-primary/15 text-primary" : "bg-muted/60 text-muted-foreground")}>{index + 1}</span>
-        <span className="min-w-0 flex-1"><span className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-primary">{item.title}</span><span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground"><span>{item.source}</span><span>{formatTime(item.publishedAt)}</span><span>{item.scoreReasons?.slice(0, 2).join(" · ")}</span></span></span>
+        <span className="min-w-0 flex-1"><span className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-primary">{item.title}</span><span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground"><span>{item.source}</span><span>{formatTime(item.publishedAt)}</span><span>{item.scoreReasons?.slice(0, 3).join(" · ")}</span></span></span>
         <span className="shrink-0 font-mono text-sm font-semibold text-primary">{item[scoreKey]}</span>
       </Link>)}
     </div>

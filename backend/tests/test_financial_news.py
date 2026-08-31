@@ -38,6 +38,7 @@ def test_hot_score_uses_sources_authority_recency_breadth_and_continuity():
     )
     assert score == 100
     assert "5 个独立来源" in reasons[0]
+    assert "10 分钟内更新" in reasons
 
 
 def test_future_dated_rss_is_not_treated_as_just_published():

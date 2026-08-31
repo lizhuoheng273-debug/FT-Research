@@ -125,7 +125,13 @@ def hot_score(
     recency = 25 if age <= 60 else 20 if age <= 360 else 12 if age <= 1440 else 5 if age <= 4320 else 0
     breadth = 10 if category_count >= 2 else 0
     continuity = 5 if update_count >= 3 else 3 if update_count == 2 else 0
-    reasons = [f"{related_source_count} 个独立来源", "高权威来源" if authority >= 16 else "公开来源"]
+    recency_reason = (
+        "发布时间尚未到达" if age >= 10_000 else
+        "10 分钟内更新" if age <= 10 else
+        f"{max(1, round(age))} 分钟内更新" if age <= 60 else
+        f"{max(1, round(age / 60))} 小时内更新"
+    )
+    reasons = [f"{related_source_count} 个独立来源", recency_reason, "高权威来源" if authority >= 16 else "公开来源"]
     if breadth:
         reasons.append(f"覆盖 {category_count} 个赛道")
     if continuity:
