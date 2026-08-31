@@ -7,6 +7,7 @@ const input = await read("../src/components/stock/StockSearchInput.tsx");
 const detail = await read("../src/pages/StockDetail.tsx");
 const dailyReview = await read("../src/pages/DailyReview.tsx");
 const watchlist = await read("../src/pages/Watchlist.tsx");
+const intel = await read("../src/pages/Intel.tsx");
 
 test("shared stock search uses a white high-contrast field and result panel", () => {
   assert.match(input, /bg-white/);
@@ -30,4 +31,9 @@ test("stock detail keeps a visible add-to-watchlist action", () => {
   assert.match(detail, /addCodes/);
   assert.match(detail, /saveWatch/);
   assert.doesNotMatch(detail, /hidden lg:inline/);
+});
+
+test("empty watchlist guidance points users to stock detail", () => {
+  assert.doesNotMatch(intel, /每日复盘.*加自选/);
+  assert.match(intel, /详情页|搜索股票/);
 });

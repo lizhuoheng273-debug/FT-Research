@@ -250,7 +250,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
   if (!codes.length) {
     return (
       <div className="rounded-lg border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground/70">
-        还没有关注股票。到<Link to="/finance/review" className="text-primary">「每日复盘」</Link>加自选（6 位代码），这里会汇总它们的{kind === "filings" ? "公告" : "新闻"}。
+        还没有关注股票。先到<Link to="/finance/watchlist" className="text-primary">「自选股」</Link>搜索股票，进入详情页加入自选股，这里会汇总它们的{kind === "filings" ? "公告" : "新闻"}。
       </div>
     );
   }
