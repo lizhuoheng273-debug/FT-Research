@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -32,6 +34,8 @@ import myreports as mr
 import reflection as reflect_layer
 import signals
 import glm_config
+from financial_news import FinancialNewsScheduler, FinancialNewsService
+from market_impact import build_default_provider
 from aihot_api import AihotClient
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
@@ -42,7 +46,21 @@ from version import read_version
 
 __version__ = read_version()
 
-app = FastAPI(title="FT-Research API", version=__version__)
+financial_news_service = FinancialNewsService(market_provider=build_default_provider())
+financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if "pytest" not in sys.modules:
+        financial_news_scheduler.start()
+    try:
+        yield
+    finally:
+        financial_news_scheduler.stop()
+
+
+app = FastAPI(title="FT-Research API", version=__version__, lifespan=lifespan)
 aihot_client = AihotClient()
 report_archive = ReportArchive()
 aihot_reports = AihotReportClient(report_archive)
@@ -435,6 +453,30 @@ def radar_refresh():
         return {"data": newsradar.fetch_radar()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"资讯雷达刷新失败：{e}") from e
+
+
+@app.get("/api/finance/news/overview")
+def financial_news_overview():
+    """紧要快讯、热门事件与来源状态；只读取后台缓存。"""
+    return {"data": financial_news_service.overview()}
+
+
+@app.get("/api/finance/news/feed")
+def financial_news_feed(category: str = Query("all"), source: str = Query(""), limit: int = Query(60, ge=1, le=200)):
+    return {"data": financial_news_service.feed(category=category, source=source, limit=limit)}
+
+
+@app.get("/api/finance/news/events/{event_id}")
+def financial_news_event(event_id: str):
+    event = financial_news_service.event(event_id)
+    if not event:
+        raise HTTPException(404, "金融资讯事件不存在或缓存已更新")
+    return {"data": event}
+
+
+@app.get("/api/finance/news/status")
+def financial_news_status():
+    return {"data": financial_news_service.status()}
 
 
 @app.get("/api/signals/gpu-rent")

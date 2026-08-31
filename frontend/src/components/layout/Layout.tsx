@@ -21,8 +21,8 @@ const MAIL_URL = "mailto:simonlin0423@gmail.com";
 const NAV = [
   { to: "/ai/news", icon: Radar, label: "AI 热点资讯", section: "AI 板块" },
   { to: "/ai/daily", icon: FileText, label: "AI 日报" },
-  { to: "/finance/news", icon: Newspaper, label: "金融市场资讯", section: "金融板块" },
-  { to: "/finance/review", icon: Activity, label: "每日复盘" },
+  { to: "/finance/review", icon: Activity, label: "每日复盘", section: "金融板块" },
+  { to: "/finance/news", icon: Newspaper, label: "金融市场资讯" },
   { to: "/finance/watchlist", icon: Star, label: "自选股" },
   { to: "/finance/research", icon: Search, label: "AI 投研" },
 ];

@@ -224,6 +224,60 @@ export interface RadarData {
   stats: { industries: number; total_sources: number; failed_sources?: number };
 }
 
+export interface FinancialNewsReport {
+  id: string; title: string; summary: string; publishedAt: string | null;
+  source: string; originalUrl: string; category: string; sourceTier?: number; sourceLevel?: string;
+}
+export interface FinancialNewsImpactBreakdown {
+  marketReaction: number; sectorSpread: number; causalRelation: number; authority: number; timeliness: number;
+}
+export interface FinancialNewsMarketEvidence {
+  status?: string; observedAt?: string; stocks?: Array<Record<string, unknown>>;
+  sectors?: Array<Record<string, unknown>>; reverseChecks?: Record<string, Record<string, unknown>>;
+  verifiedStocks?: string[]; verifiedSectors?: string[]; error?: string;
+}
+export interface FinancialNewsTransmissionPath {
+  catalyst: string; industry: string; aShareSectors: string[]; relatedStocks: string[];
+  marketEvidence: string[]; verified: boolean;
+}
+export interface FinancialNewsSourceTimeline {
+  title?: string; source: string; publishedAt: string | null; originalUrl: string; independent: boolean;
+}
+export interface FinancialNewsItem extends FinancialNewsReport {
+  sourceTier: number; sourceLevel?: string; urgencyScore: number; hotScore: number;
+  scoreReasons: string[]; urgencyReasons?: string[]; hotReasons?: string[];
+  relatedSourceCount: number; relatedSources: string[];
+  relatedStocks: string[]; reports?: FinancialNewsReport[]; firstReportAt?: string;
+  latestAt?: string; status?: string; aiDigest?: string; impactTags?: string[]; stale: boolean;
+  independentSourceCount?: number; independentSources?: string[]; sourceTimeline?: FinancialNewsSourceTimeline[];
+  aShareImpactScore?: number; impactBreakdown?: FinancialNewsImpactBreakdown; impactReasons?: string[];
+  marketEvidence?: FinancialNewsMarketEvidence; transmissionPath?: FinancialNewsTransmissionPath;
+  confidence?: "high" | "medium" | "low"; mainBoardEligible?: boolean; candidate?: boolean;
+  globalObservation?: boolean; recheckDueAt?: Record<string, string>;
+}
+export interface FinancialNewsSourceStatus {
+  source: string; ok: boolean; count?: number; fetchedAt?: string; error?: string;
+}
+export interface FinancialNewsOverview {
+  generatedAt: string | null; stale: boolean; urgent: FinancialNewsItem[];
+  staleComponents?: { quick: boolean; rss: boolean };
+  freshness?: {
+    quick?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
+    rss?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
+  };
+  hot: FinancialNewsItem[]; aShareHot?: FinancialNewsItem[]; candidates?: FinancialNewsItem[];
+  globalObservation?: FinancialNewsItem[]; feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
+  eventLibraryHours?: number;
+}
+export interface FinancialNewsStatus {
+  quickIntervalSeconds: number; rssIntervalSeconds: number; officialIntervalSeconds?: number;
+  eventLibraryHours?: number; generatedAt: string | null;
+  stale: boolean; staleComponents?: { quick: boolean; rss: boolean };
+  freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[];
+  sourceRegistry?: { total: number; valid: number; invalid: number; tiers: Record<string, number> };
+  marketProbe?: { configured: boolean; recheckMinutes: number[] };
+}
+
 // 产业信号 · GPU 租金
 export interface GpuSpot {
   gpu: string; median?: number; asof_ts?: number;
@@ -342,6 +396,10 @@ export const api = {
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
+  financialNewsOverview: () => get<FinancialNewsOverview>("/finance/news/overview"),
+  financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),
+  financialNewsEvent: (eventId: string) => get<FinancialNewsItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
+  financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),
   gpuRent: () => get<GpuRentData>("/signals/gpu-rent"),
   gpuRentRefresh: () => request<GpuRentData>("/signals/gpu-rent/refresh", "POST"),
   portfolio: () => get<PortfolioData>("/portfolio"),
