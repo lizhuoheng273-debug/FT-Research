@@ -138,7 +138,7 @@ export function MarketChart({ asset, code, onData }: Props) {
       </div>
       <button onClick={() => void load()} disabled={loading} className="rounded-md p-2 text-muted-foreground hover:text-primary" title="刷新图表"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button>
     </div>
-    {data?.stale && <p className="mt-2 text-xs text-warning">当前为缓存 / fixture 数据，可能已过期。</p>}
+    {data?.stale && <p className="mt-2 text-xs text-warning">当前为最近一次真实行情缓存，可能已过期。</p>}
     {error && <p className="mt-3 flex items-center gap-1 text-xs text-warning"><AlertCircle className="h-3.5 w-3.5" />{error} · 可点击刷新重试</p>}
     {option ? <EChart option={option} height={390} /> : <div className="flex h-[390px] items-center justify-center text-sm text-muted-foreground">{loading ? "图表加载中…" : "暂无图表数据"}</div>}
     <p className="mt-2 text-[11px] text-muted-foreground/60">来源：{data?.source || "—"} · 更新时间：{data?.fetchedAt ? new Date(data.fetchedAt).toLocaleString("zh-CN") : "—"}{data?.stale ? " · 缓存/过期" : ""}</p>

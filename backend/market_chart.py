@@ -1,14 +1,14 @@
 """统一的 A 股股票 / 指数行情图表服务。
 
 该模块只负责图表所需的 OHLCV 数据：上游适配、轻量进程缓存、过期降级和
-离线 fixture。详情页的财务/研报等数据仍由现有接口提供。
+离线测试样本。详情页的财务/研报等数据仍由现有接口提供；测试样本不会由运行时接口返回。
 """
 
 from __future__ import annotations
 
-import os
 import re
 import time
+import math
 from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -94,13 +94,15 @@ def _field(row: dict[str, Any], *keys: str) -> Any:
 
 
 def _point(row: dict[str, Any]) -> dict[str, Any] | None:
-    stamp = _field(row, "time", "时间", "日期", "date", "Date", "datetime")
+    stamp = _field(row, "time", "时间", "日期", "date", "Date", "datetime", "day")
     close = _number(_field(row, "close", "收盘", "收盘价", "最新价", "最新"))
-    if not stamp or close == 0:
+    if not stamp or close == 0 or not math.isfinite(close):
         return None
     opening = _number(_field(row, "open", "开盘", "开盘价")) or close
     high = _number(_field(row, "high", "最高", "最高价")) or max(opening, close)
     low = _number(_field(row, "low", "最低", "最低价")) or min(opening, close)
+    if not all(math.isfinite(value) for value in (opening, high, low)):
+        return None
     average = _number(_field(row, "average", "均价", "均价")) or (opening + high + low + close) / 4
     return {
         "time": _date_key(stamp), "open": opening, "high": high, "low": low,
@@ -188,6 +190,36 @@ def fixture_points(asset: str, code: str, period: str) -> list[dict[str, Any]]:
     return points
 
 
+def _has_rows(rows: Any) -> bool:
+    try:
+        return rows is not None and len(rows) > 0
+    except TypeError:
+        return False
+
+
+def _stock_market_symbol(code: str) -> str:
+    return ("sh" if code.startswith(("5", "6", "9")) else "sz") + code
+
+
+def _with_fallback(primary, fallback, label: str, primary_name: str = "新浪", fallback_name: str = "东方财富") -> Any:
+    errors: list[str] = []
+    try:
+        rows = primary()
+        if _has_rows(rows):
+            return rows
+        errors.append(f"{primary_name}返回空数据")
+    except Exception as exc:
+        errors.append(f"{primary_name}: {exc}")
+    try:
+        rows = fallback()
+        if _has_rows(rows):
+            return rows
+        errors.append(f"{fallback_name}返回空数据")
+    except Exception as exc:
+        errors.append(f"{fallback_name}: {exc}")
+    raise ChartUnavailable(f"{label}不可用；" + "；".join(errors))
+
+
 def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
     try:
         import akshare as ak
@@ -195,27 +227,49 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
         raise ChartUnavailable("akshare 未安装") from exc
     if asset == "stock":
         if period in {"intraday", "five_day"}:
-            fn = getattr(ak, "stock_zh_a_hist_min_em", None)
-            if fn is None:
+            eastmoney = getattr(ak, "stock_zh_a_hist_min_em", None)
+            sina = getattr(ak, "stock_zh_a_minute", None)
+            if eastmoney is None or sina is None:
                 raise ChartUnavailable("AKShare 缺少 A 股分时接口")
             end = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             start = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")
-            return fn(symbol=code, start_date=start, end_date=end, period="1", adjust=adjust)
-        fn = getattr(ak, "stock_zh_a_hist", None)
-        if fn is None:
+            return _with_fallback(
+                lambda: sina(symbol=_stock_market_symbol(code), period="1", adjust=""),
+                lambda: eastmoney(symbol=code, start_date=start, end_date=end, period="1", adjust=""),
+                "A 股分时行情",
+            )
+        eastmoney = getattr(ak, "stock_zh_a_hist", None)
+        sina = getattr(ak, "stock_zh_a_daily", None)
+        if eastmoney is None or sina is None:
             raise ChartUnavailable("AKShare 缺少 A 股历史接口")
-        return fn(symbol=code, period="daily", adjust=adjust)
+        start = (datetime.now() - timedelta(days=1095)).strftime("%Y%m%d")
+        end = datetime.now().strftime("%Y%m%d")
+        return _with_fallback(
+            lambda: sina(symbol=_stock_market_symbol(code), start_date=start, end_date=end, adjust=adjust),
+            lambda: eastmoney(symbol=code, period="daily", adjust=adjust),
+            "A 股历史行情",
+        )
     if period in {"intraday", "five_day"}:
-        fn = getattr(ak, "index_zh_a_hist_min_em", None)
-        if fn is None:
+        eastmoney = getattr(ak, "index_zh_a_hist_min_em", None)
+        sina = getattr(ak, "stock_zh_a_minute", None)
+        if eastmoney is None or sina is None:
             raise ChartUnavailable("AKShare 缺少指数分时接口")
         end = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         start = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")
-        return fn(symbol=code, start_date=start, end_date=end, period="1")
-    fn = getattr(ak, "index_zh_a_hist", None)
-    if fn is None:
+        return _with_fallback(
+            lambda: sina(symbol=INDEX_CODES[code][1], period="1", adjust=""),
+            lambda: eastmoney(symbol=code, start_date=start, end_date=end, period="1"),
+            "指数分时行情",
+        )
+    eastmoney = getattr(ak, "index_zh_a_hist", None)
+    sina = getattr(ak, "stock_zh_index_daily", None)
+    if eastmoney is None or sina is None:
         raise ChartUnavailable("AKShare 缺少指数历史接口")
-    return fn(symbol=code, period="daily")
+    return _with_fallback(
+        lambda: sina(symbol=INDEX_CODES[code][1]),
+        lambda: eastmoney(symbol=code, period="daily"),
+        "指数历史行情",
+    )
 
 
 def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
@@ -290,11 +344,7 @@ def get_chart(asset: str, code: str, period: str, adjust: str = "qfq") -> dict[s
             _CACHE.move_to_end(key)
             return payload
         _CACHE.pop(key, None)
-        if os.environ.get("VR_ENABLE_MARKET_CHART_FIXTURE", "").lower() in {"1", "true", "yes"}:
-            source, points, stale = "fixture", fixture_points(asset, code, period), True
-            quote_points = fixture_points(asset, code, "five_day") if period == "intraday" else points
-        else:
-            raise ChartUnavailable(str(exc)) from exc
+        raise ChartUnavailable(str(exc)) from exc
     name = INDEX_CODES[code][0] if asset == "index" else code
     payload = {
         "asset": asset, "code": code, "name": name, "period": period, "adjust": adjust,

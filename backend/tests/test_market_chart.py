@@ -16,23 +16,15 @@ def test_normalize_asset_code_keeps_index_namespace_separate():
         market_chart.normalize_asset_code("stock", "sh000001")
 
 
-def test_fixture_chart_has_uniform_response_and_ohlcv_points(monkeypatch):
-    monkeypatch.setenv("VR_ENABLE_MARKET_CHART_FIXTURE", "1")
-    monkeypatch.setattr(market_chart, "_fetch_from_akshare", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
-    result = market_chart.get_chart("stock", "600519", "daily", "qfq")
-    assert set(result) == {"asset", "code", "name", "period", "adjust", "source", "fetchedAt", "stale", "quote", "points"}
-    assert result["asset"] == "stock"
-    assert result["code"] == "600519"
-    assert result["points"]
-    assert {"time", "open", "high", "low", "close", "average", "volume", "amount"} <= set(result["points"][0])
-    assert result["stale"] is True
+def test_fixture_generator_has_uniform_ohlcv_points():
+    points = market_chart.fixture_points("stock", "600519", "daily")
+    assert points
+    assert {"time", "open", "high", "low", "close", "average", "volume", "amount"} <= set(points[0])
 
 
-def test_five_day_fixture_contains_five_trading_dates(monkeypatch):
-    monkeypatch.setenv("VR_ENABLE_MARKET_CHART_FIXTURE", "1")
-    monkeypatch.setattr(market_chart, "_fetch_from_akshare", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
-    result = market_chart.get_chart("stock", "600519", "five_day", "qfq")
-    dates = {point["time"][:10] for point in result["points"]}
+def test_five_day_fixture_contains_five_trading_dates():
+    points = market_chart.fixture_points("stock", "600519", "five_day")
+    dates = {point["time"][:10] for point in points}
     assert len(dates) == 5
 
 
@@ -64,37 +56,34 @@ def test_market_chart_endpoint_rejects_non_supported_index(monkeypatch):
     assert response.status_code == 400
 
 
-def test_index_intraday_uses_installed_akshare_adapter(monkeypatch):
+def test_index_intraday_uses_sina_adapter(monkeypatch):
     import akshare as ak
 
     seen = {}
 
     def fake_index_minute(**kwargs):
         seen.update(kwargs)
-        return []
+        return [{"day": "2026-08-31 09:30:00", "close": 3952.0}]
 
-    monkeypatch.setattr(ak, "index_zh_a_hist_min_em", fake_index_minute)
+    monkeypatch.setattr(ak, "stock_zh_a_minute", fake_index_minute)
     market_chart._akshare_rows("index", "000001", "intraday", "qfq")
-    assert seen["symbol"] == "000001"
+    assert seen["symbol"] == "sh000001"
     assert seen["period"] == "1"
-    start = datetime.strptime(seen["start_date"], "%Y-%m-%d %H:%M:%S")
-    end = datetime.strptime(seen["end_date"], "%Y-%m-%d %H:%M:%S")
-    assert (end - start).days >= 30
+    assert seen["adjust"] == ""
 
 
-def test_index_daily_uses_a_share_index_adapter(monkeypatch):
+def test_index_daily_uses_sina_index_adapter(monkeypatch):
     import akshare as ak
 
     seen = {}
 
     def fake_index_history(**kwargs):
         seen.update(kwargs)
-        return []
+        return [{"日期": "2026-08-28", "收盘": 3952.0}]
 
-    monkeypatch.setattr(ak, "index_zh_a_hist", fake_index_history)
+    monkeypatch.setattr(ak, "stock_zh_index_daily", fake_index_history)
     market_chart._akshare_rows("index", "000001", "daily", "qfq")
-    assert seen["symbol"] == "000001"
-    assert seen["period"] == "daily"
+    assert seen["symbol"] == "sh000001"
 
 
 def test_upstream_failure_without_cache_never_returns_fake_market_data(monkeypatch):
@@ -109,7 +98,7 @@ def test_upstream_failure_without_cache_never_returns_fake_market_data(monkeypat
         market_chart.get_chart("stock", "600519", "daily", "qfq")
 
 
-def test_fixture_requires_explicit_development_switch(monkeypatch):
+def test_legacy_fixture_switch_cannot_put_fake_data_on_runtime_api(monkeypatch):
     market_chart.clear_cache()
     monkeypatch.setenv("VR_ENABLE_MARKET_CHART_FIXTURE", "1")
     monkeypatch.setattr(
@@ -117,9 +106,61 @@ def test_fixture_requires_explicit_development_switch(monkeypatch):
         "_fetch_from_akshare",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
     )
-    result = market_chart.get_chart("stock", "600519", "daily", "qfq")
-    assert result["source"] == "fixture"
-    assert result["stale"] is True
+    with pytest.raises(market_chart.ChartUnavailable, match="offline"):
+        market_chart.get_chart("stock", "600519", "daily", "qfq")
+
+
+def test_index_daily_falls_back_to_eastmoney_when_sina_fails(monkeypatch):
+    import akshare as ak
+
+    expected = [{"date": "2026-08-28", "close": 3952.179}]
+    monkeypatch.setattr(ak, "stock_zh_index_daily", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("sina offline")))
+    monkeypatch.setattr(ak, "index_zh_a_hist", lambda **kwargs: expected if kwargs["symbol"] == "000001" else [])
+    assert market_chart._akshare_rows("index", "000001", "daily", "") == expected
+
+
+def test_index_daily_prefers_working_sina_source_without_waiting_for_eastmoney(monkeypatch):
+    import akshare as ak
+
+    expected = [{"date": "2026-08-28", "close": 3952.179}]
+    monkeypatch.setattr(ak, "stock_zh_index_daily", lambda **kwargs: expected)
+    monkeypatch.setattr(ak, "index_zh_a_hist", lambda **kwargs: pytest.fail("不应先请求当前不可用的东方财富源"))
+    assert market_chart._akshare_rows("index", "000001", "daily", "") == expected
+
+
+def test_stock_minute_falls_back_to_eastmoney_when_sina_fails(monkeypatch):
+    import akshare as ak
+
+    expected = [{"day": "2026-08-31 14:40:00", "close": 153.45}]
+    monkeypatch.setattr(ak, "stock_zh_a_minute", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("sina offline")))
+    monkeypatch.setattr(
+        ak,
+        "stock_zh_a_hist_min_em",
+        lambda **kwargs: expected if kwargs["symbol"] == "600183" and kwargs["period"] == "1" else [],
+    )
+    assert market_chart._akshare_rows("stock", "600183", "five_day", "qfq") == expected
+
+
+def test_stock_minute_uses_unadjusted_prices_so_current_session_is_not_nan(monkeypatch):
+    import akshare as ak
+
+    seen = {}
+    monkeypatch.setattr(
+        ak,
+        "stock_zh_a_minute",
+        lambda **kwargs: seen.update(kwargs) or [{"day": "2026-08-31 14:48:00", "close": 153.15}],
+    )
+    market_chart._akshare_rows("stock", "600183", "five_day", "qfq")
+    assert seen["adjust"] == ""
+
+
+def test_rows_to_points_drops_non_finite_prices():
+    rows = [
+        {"day": "2026-08-31 14:40:00", "open": 153.0, "high": 154.0, "low": 152.0, "close": 153.5},
+        {"day": "2026-08-31 14:41:00", "open": float("nan"), "high": float("nan"), "low": float("nan"), "close": float("nan")},
+    ]
+    points = market_chart._rows_to_points(rows)
+    assert [point["time"] for point in points] == ["2026-08-31T14:40"]
 
 
 def test_cache_ttl_is_longer_outside_a_share_trading_hours():
