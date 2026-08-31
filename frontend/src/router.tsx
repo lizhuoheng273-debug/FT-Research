@@ -17,6 +17,7 @@ import { AIDaily } from "@/pages/AIDaily";
 import { AINewsDetail } from "@/pages/AINewsDetail";
 import { StockDetail } from "@/pages/StockDetail";
 import { IndexDetail } from "@/pages/IndexDetail";
+import { StockAiWorkspace } from "@/pages/StockAiWorkspace";
 
 function LegacyResearch() {
   const [params] = useSearchParams();
@@ -39,6 +40,7 @@ export const router = createBrowserRouter([
       { path: "/finance/review", element: <DailyReview /> },
       { path: "/finance/watchlist", element: <Watchlist /> },
       { path: "/finance/stocks/:code", element: <StockDetail /> },
+      { path: "/finance/stocks/:code/ai", element: <StockAiWorkspace /> },
       { path: "/finance/indices/:code", element: <IndexDetail /> },
       { path: "/finance/research", element: <LegacyResearch /> },
       // Legacy deep links remain available for existing bookmarks.

@@ -112,6 +112,13 @@ export interface CompanyProfile {
   companyHistory: string; source: string; fetchedAt: string; stale: boolean; partial: boolean;
 }
 
+export interface AiStatus {
+  configured: boolean;
+  model: string;
+  base_url: string;
+  key_present: boolean;
+}
+
 export interface StockSearchResult { code: string; name: string }
 
 export interface Valuation {
@@ -325,6 +332,7 @@ export interface HkCashflow {
 
 export const api = {
   health: () => get<{ ok: boolean }>("/health"),
+  aiStatus: () => get<AiStatus>("/ai/status"),
   indices: () => get<IndexQuote[]>("/indices"),
   marketOverview: () => get<MarketOverview>("/market/overview"),
   emotion: () => get<ShortTermEmotion>("/market/emotion"),

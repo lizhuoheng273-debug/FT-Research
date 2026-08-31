@@ -29,6 +29,7 @@ const NAV = [
 
 export function Layout() {
   const { pathname } = useLocation();
+  const stockAiWorkspace = /^\/finance\/stocks\/\d{6}\/ai$/.test(pathname);
   const { dark, toggle } = useDarkMode();
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
   useEffect(() => {
@@ -130,7 +131,7 @@ export function Layout() {
 
       {/* Main */}
       <main className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6">
+        <div className={cn("mx-auto", stockAiWorkspace ? "max-w-none px-3 py-3" : "max-w-6xl px-6 py-6")}>
           <Outlet />
         </div>
       </main>

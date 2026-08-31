@@ -11,6 +11,7 @@ const watchlist = fs.readFileSync(new URL("pages/Watchlist.tsx", root), "utf8");
 const review = fs.readFileSync(new URL("pages/DailyReview.tsx", root), "utf8");
 const stockData = fs.readFileSync(new URL("pages/StockData.tsx", root), "utf8");
 const researchTabsUrl = new URL("components/stock/StockResearchTabs.tsx", root);
+const liveQuote = fs.readFileSync(new URL("hooks/useLiveStockQuote.ts", root), "utf8");
 
 test("router exposes stock and index detail routes while preserving research entry", () => {
   assert.match(router, /\/finance\/stocks\/:code/);
@@ -51,8 +52,8 @@ test("chart requests and embedded stock data guard route changes", () => {
   assert.match(chartPanel, /requestIdRef\.current/);
   assert.doesNotMatch(stockData, /autoLoaded/);
   assert.match(stockData, /run\(initialCode\)/);
-  assert.match(detail, /quoteRequestIdRef/);
-  assert.match(detail, /setLiveQuote\(null\)/);
+  assert.match(liveQuote, /requestIdRef/);
+  assert.match(liveQuote, /setQuote\(null\)/);
 });
 
 test("stock detail relies on the embedded analysis disclaimer only once", () => {
@@ -65,9 +66,9 @@ test("stock detail header only uses the independent live quote", () => {
   assert.doesNotMatch(detail, /data\?\.quote/);
   assert.doesNotMatch(detail, /\["涨跌"/);
   assert.doesNotMatch(detail, /amplitude_pct/);
-  assert.match(detail, /document\.visibilityState/);
-  assert.match(detail, /15_000/);
-  assert.match(detail, /catch\(\(\) => \{[^}]*setLiveQuote\(null\)/s);
+  assert.match(liveQuote, /document\.visibilityState/);
+  assert.match(liveQuote, /15_000/);
+  assert.match(liveQuote, /catch\(\(\) => \{[^}]*setQuote\(null\)/s);
 });
 
 test("stock detail uses URL-backed lazy horizontal research panels", () => {

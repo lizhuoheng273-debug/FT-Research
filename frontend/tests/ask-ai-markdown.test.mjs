@@ -20,7 +20,7 @@ test("the existing markdown stack renders common AI response formatting", () => 
 
 test("Ask AI renders assistant messages with the markdown stack", async () => {
   const source = await readFile(
-    new URL("../src/components/ui/AskAiButton.tsx", import.meta.url),
+    new URL("../src/components/ai/AiConversation.tsx", import.meta.url),
     "utf8",
   );
 
