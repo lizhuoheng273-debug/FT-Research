@@ -44,6 +44,11 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _reaction_pct(row: dict[str, Any]) -> float:
+    value = row.get("pct")
+    return _number(value if value not in (None, "") else row.get("change_pct"))
+
+
 def a_share_impact_score(event: dict[str, Any], *, now: datetime | None = None) -> tuple[int, dict[str, int], list[str]]:
     """Return the fixed 100-point score, its five components, and reasons."""
     current = now or _now()
@@ -51,10 +56,13 @@ def a_share_impact_score(event: dict[str, Any], *, now: datetime | None = None) 
     stocks = [row for row in _list(evidence.get("stocks")) if isinstance(row, dict) and str(row.get("code") or "")]
     sectors = [row for row in _list(evidence.get("sectors")) if isinstance(row, dict) and str(row.get("name") or "")]
     reverse = evidence.get("reverseChecks") if isinstance(evidence.get("reverseChecks"), dict) else {}
-    explicit_stocks = [str(code) for code in _list(event.get("relatedStocks")) if str(code)]
+    evidence_codes = {
+        str(row.get("code")) for row in stocks if row.get("code")
+    } | {str(code) for code in reverse if str(code)}
+    explicit_stocks = [str(code) for code in _list(event.get("relatedStocks")) if str(code) in evidence_codes]
     verified_reverse = sum(1 for value in reverse.values() if isinstance(value, dict) and any(_list(value.get(key)) for key in ("news", "announcements", "investorQa", "boards")))
 
-    reaction_strength = sum(min(10.0, abs(_number(row.get("pct")))) for row in stocks)
+    reaction_strength = sum(min(10.0, abs(_reaction_pct(row))) for row in stocks)
     market_reaction = min(30, round(len(stocks) * 8 + min(14, reaction_strength))) if stocks else 0
     breadth = sum(1 for row in sectors if _number(row.get("breadth")) > 0)
     spread_bonus = min(5, max(max(0, len(stocks) - 1) * 5, breadth * 2))
@@ -172,12 +180,25 @@ class MarketImpactEnricher:
 
     def enrich_event(self, event: dict[str, Any]) -> dict[str, Any]:
         result = dict(event)
-        evidence = self._observe(event)
+        raw_evidence = self._observe(event)
+        event_codes = {str(code) for code in _list(event.get("relatedStocks")) if str(code)}
+        raw_reverse = raw_evidence.get("reverseChecks") if isinstance(raw_evidence.get("reverseChecks"), dict) else {}
+        reverse = {code: value for code, value in raw_reverse.items() if str(code) in event_codes and isinstance(value, dict)}
+        verified_stocks = sorted({str(row.get("code")) for row in _list(raw_evidence.get("stocks")) if isinstance(row, dict) and str(row.get("code") or "") in event_codes})
+        board_names = {
+            str(board.get("name")) for check in reverse.values() for board in _list(check.get("boards"))
+            if isinstance(board, dict) and board.get("name")
+        }
+        event_blob = " ".join(str(event.get(key) or "") for key in ("title", "summary", "track", "category"))
+        linked_sectors = [row for row in _list(raw_evidence.get("sectors")) if isinstance(row, dict) and (
+            str(row.get("name") or "") in board_names
+            or str(row.get("name") or "") in event_blob
+            or bool(set(str(code) for code in _list(row.get("relatedStocks"))) & event_codes)
+        )]
+        sector_names = sorted({str(row.get("name")) for row in linked_sectors if row.get("name")})
+        evidence = {**raw_evidence, "stocks": [row for row in _list(raw_evidence.get("stocks")) if isinstance(row, dict) and str(row.get("code") or "") in event_codes], "sectors": linked_sectors, "reverseChecks": reverse}
         result["marketEvidence"] = evidence
-        sector_names = sorted({str(row.get("name")) for row in _list(evidence.get("sectors")) if isinstance(row, dict) and row.get("name")})
-        verified_stocks = sorted({str(row.get("code")) for row in _list(evidence.get("stocks")) if isinstance(row, dict) and row.get("code")})
         stocks = sorted(set(str(code) for code in _list(event.get("relatedStocks")) if str(code)) | set(verified_stocks))
-        reverse = evidence.get("reverseChecks") if isinstance(evidence.get("reverseChecks"), dict) else {}
         reverse_count = sum(1 for code in stocks if code in reverse and isinstance(reverse[code], dict) and any(_list(reverse[code].get(key)) for key in ("news", "announcements", "investorQa", "boards")))
         transmission = {
             "catalyst": str(event.get("title") or ""),

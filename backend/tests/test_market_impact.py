@@ -73,6 +73,24 @@ def test_market_reverse_check_builds_verified_transmission_path_and_main_board()
     assert result["recheckDueAt"]["15m"] == (NOW + timedelta(minutes=15)).isoformat()
 
 
+def test_market_evidence_only_scores_event_linked_sectors_and_real_quote_field():
+    class Provider:
+        def observe(self):
+            return {
+                "observedAt": NOW.isoformat(),
+                "stocks": [{"code": "300413", "name": "芒果超媒", "change_pct": 9.8}, {"code": "600000", "name": "无关股票", "change_pct": 10.0}],
+                "sectors": [{"name": "影视传媒", "pct": 4.6, "breadth": 18}, {"name": "无关板块", "pct": 9.0, "breadth": 30}],
+                "reverseChecks": {"300413": {"boards": [{"name": "影视传媒"}]}, "600000": {"boards": [{"name": "无关板块"}]}},
+            }
+
+    result = MarketImpactEnricher(Provider(), now_fn=lambda: NOW).enrich_event(_event())
+
+    assert result["marketEvidence"]["verifiedStocks"] == ["300413"]
+    assert result["marketEvidence"]["verifiedSectors"] == ["影视传媒"]
+    assert result["impactBreakdown"]["marketReaction"] > 0
+    assert result["impactBreakdown"]["sectorSpread"] == 12
+
+
 def test_overseas_event_without_a_share_evidence_is_global_observation_only():
     event = _event(
         title="英伟达财报超预期",
@@ -102,6 +120,14 @@ def test_single_rumor_without_verified_market_evidence_cannot_enter_main_board()
 
     assert score < 45
     assert main_board_eligible({**event, "aShareImpactScore": score, "confidence": "low"}) is False
+
+
+def test_unverified_related_stock_does_not_receive_causal_points():
+    event = _event(marketEvidence={"stocks": [], "sectors": [], "reverseChecks": {}})
+
+    _, breakdown, _ = a_share_impact_score(event, now=NOW)
+
+    assert breakdown["causalRelation"] == 0
 
 
 def test_enricher_is_safe_when_market_provider_fails():

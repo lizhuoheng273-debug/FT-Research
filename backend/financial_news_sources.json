@@ -1,6 +1,7 @@
 {
   "version": 1,
   "notes": "公开来源登记表；登记不等于可调用 API，实际抓取只使用 source_type=adapter/rss 的现有能力。",
+  "verification": {"verified": true, "stable": true, "timeFieldReviewed": true, "ownershipReviewed": true},
   "sources": [
     {"id": "csrc", "name": "证监会", "tier": "S", "score": 35, "type": "html", "url": "https://www.csrc.gov.cn/csrc/c100028/common_list.shtml", "owner": "中国证监会", "timeField": "发布时间/页面日期", "attribution": "页面署名与中国证监会域名", "compliance": {"public": true, "redlinePolicy": "金融资讯仅作事实展示"}},
     {"id": "sse", "name": "上交所", "tier": "S", "score": 35, "type": "html", "url": "https://www.sse.com.cn/news/newsrelease/", "owner": "上海证券交易所", "timeField": "发布时间", "attribution": "上交所页面来源标识", "compliance": {"public": true, "redlinePolicy": "金融资讯仅作事实展示"}},

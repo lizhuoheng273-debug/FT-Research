@@ -99,6 +99,14 @@ def test_sina_content_only_schema_is_normalized(tmp_path):
     assert items[0]["title"] == "新浪快讯正文可作为标题"
 
 
+def test_external_urls_accept_only_http_protocols(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    items = service.normalize_quick_rows(
+        [{"标题": "不安全链接", "链接": "javascript:alert(1)"}], source="新浪财经快讯"
+    )
+    assert items[0]["originalUrl"] == ""
+
+
 def test_service_normalizes_ths_and_cls_and_clusters_same_event(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     ths = service.normalize_quick_rows(
@@ -257,6 +265,61 @@ def test_glm_refinement_rejects_ungrounded_numbers_and_prompt_instructions(tmp_p
     assert "aiDigest" not in event
 
 
+def test_glm_failure_does_not_consume_budget_or_make_candidate_permanently_cached(tmp_path, monkeypatch):
+    import chat
+    import glm_config
+    import json
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test"})
+    calls = []
+
+    def fake_call(_cfg, _messages, use_tools):
+        calls.append(use_tools)
+        if len(calls) == 1:
+            raise RuntimeError("temporary outage")
+        return {"choices": [{"message": {"content": json.dumps([{"id": "event-1", "digest": "恢复后的导读", "impactTags": []},], ensure_ascii=False)}}]}
+
+    monkeypatch.setattr(chat, "_call_llm", fake_call)
+    first = {**_item(id="event-1"), "relatedSourceCount": 2, "relatedSources": ["A", "B"], "hotScore": 80}
+    service._apply_ai_refinements([first])
+    second = {**first}
+    service._apply_ai_refinements([second])
+
+    assert len(calls) == 2
+    assert second["aiDigest"] == "恢复后的导读"
+
+
+def test_sqlite_failure_keeps_last_snapshot_and_ai_cache_failure_is_non_fatal(tmp_path, monkeypatch):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    original = service.normalize_quick_rows([{"标题": "缓存中的政策事件", "发布时间": "2026-08-31 15:55:00"}], source="新浪财经快讯")[0]
+    service._compose([original], [], [])
+    monkeypatch.setattr(service.store, "load_reports", lambda hours: (_ for _ in ()).throw(RuntimeError("db offline")))
+    monkeypatch.setattr(service.store, "get_ai_cache", lambda key: (_ for _ in ()).throw(RuntimeError("cache offline")))
+
+    result = service._compose([], [], [])
+
+    assert result["feed"][0]["title"] == "缓存中的政策事件"
+
+
+def test_due_market_check_reenriches_event_and_marks_checkpoint(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    event = {**_item(id="event-1"), "recheckDueAt": {"15m": "2026-08-31T07:59:00+00:00"}, "marketChecksCompleted": []}
+    service.save_payload({"feed": [event], "urgent": [], "hot": [], "aShareHot": [], "candidates": [], "globalObservation": []})
+    calls = []
+
+    def enrich(row):
+        calls.append(row["id"])
+        return {**row, "aShareImpactScore": 61}
+
+    service.market_enricher.enrich_event = enrich
+    result = service.refresh_due_market_checks()
+
+    assert calls == ["event-1"]
+    assert result["feed"][0]["marketChecksCompleted"] == ["15m"]
+    assert result["feed"][0]["aShareImpactScore"] == 61
+
+
 def test_scheduler_uses_single_process_leader_and_contains_refresh_errors(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path / "cache", now_fn=lambda: NOW)
     first = FinancialNewsScheduler(service, lock_file=tmp_path / "scheduler.lock")
@@ -317,6 +380,9 @@ def test_reposts_are_visible_in_timeline_but_do_not_count_as_independent_sources
     assert event["relatedSourceCount"] == 2
     assert event["independentSourceCount"] == 1
     assert len(event["reports"]) == 2
+    single = service.cluster_items([rows[0]])[0]
+    assert event["urgencyScore"] == single["urgencyScore"]
+    assert event["hotScore"] == single["hotScore"]
 
 
 def test_overseas_event_without_linkage_is_capped_in_global_observation(tmp_path):

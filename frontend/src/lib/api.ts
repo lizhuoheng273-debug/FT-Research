@@ -241,7 +241,7 @@ export interface FinancialNewsTransmissionPath {
   marketEvidence: string[]; verified: boolean;
 }
 export interface FinancialNewsSourceTimeline {
-  source: string; publishedAt: string | null; originalUrl: string; independent: boolean;
+  title?: string; source: string; publishedAt: string | null; originalUrl: string; independent: boolean;
 }
 export interface FinancialNewsItem extends FinancialNewsReport {
   sourceTier: number; sourceLevel?: string; urgencyScore: number; hotScore: number;

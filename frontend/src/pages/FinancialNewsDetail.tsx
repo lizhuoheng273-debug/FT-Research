@@ -15,6 +15,10 @@ type TimelineRow = {
   originalUrl?: string;
 };
 
+function safeHref(value?: string | null) {
+  return value && /^https?:\/\//i.test(value) ? value : undefined;
+}
+
 export function FinancialNewsDetail() {
   const { eventId = "" } = useParams();
   const navigate = useNavigate();
@@ -50,7 +54,7 @@ export function FinancialNewsDetail() {
 
   const timeline: TimelineRow[] = event?.sourceTimeline?.length
     ? event.sourceTimeline.map((row: FinancialNewsSourceTimeline) => ({
-      title: row.source,
+      title: row.title || row.source,
       source: row.source,
       publishedAt: row.publishedAt,
       originalUrl: row.originalUrl,
@@ -83,7 +87,7 @@ export function FinancialNewsDetail() {
         <h1 className="text-2xl font-bold leading-tight">{event.title}</h1>
         <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <span>{event.source}</span><span>·</span><span>{event.latestAt || event.publishedAt}</span>
-          {event.originalUrl && <a href={event.originalUrl} target="_blank" rel="noreferrer" className="ml-auto inline-flex items-center gap-1 text-primary">打开原文 <ExternalLink className="h-3.5 w-3.5" /></a>}
+          {safeHref(event.originalUrl) && <a href={safeHref(event.originalUrl)} target="_blank" rel="noreferrer" className="ml-auto inline-flex items-center gap-1 text-primary">打开原文 <ExternalLink className="h-3.5 w-3.5" /></a>}
         </div>
       </GlassCard>
 
@@ -114,7 +118,7 @@ export function FinancialNewsDetail() {
                 <p className="font-medium">{report.title}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{report.source} · {report.publishedAt}</p>
                 {report.summary && <p className="mt-1 text-sm text-muted-foreground">{report.summary}</p>}
-                {report.originalUrl && <a href={report.originalUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-primary">原文 <ExternalLink className="h-3 w-3" /></a>}
+                {safeHref(report.originalUrl) && <a href={safeHref(report.originalUrl)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-primary">原文 <ExternalLink className="h-3 w-3" /></a>}
               </div>)}
             </div>
           </GlassCard>

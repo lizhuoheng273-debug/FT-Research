@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import newsradar
 from financial_news_store import FinancialNewsStore
@@ -45,6 +46,7 @@ _SOURCE_TIERS = {
     "上交所": 35,
     "深交所": 35,
 }
+_REPOST_CHANNELS = {"同花顺快讯", "东方财富快讯", "新浪财经快讯", "财联社电报"}
 
 
 def _now() -> datetime:
@@ -180,21 +182,32 @@ def _pick(row: dict[str, Any], *keys: str) -> Any:
     return ""
 
 
+def _safe_http_url(value: Any) -> str:
+    url = str(value or "").strip()
+    parsed = urlparse(url)
+    return url if parsed.scheme in {"http", "https"} and bool(parsed.netloc) else ""
+
+
 def _report_story_key(report: dict[str, Any]) -> str:
     return _normalized_title(f"{report.get('title', '')} {report.get('summary', '')[:120]}")
 
 
 def _independent_source_names(reports: list[dict[str, Any]]) -> list[str]:
     """Collapse same-story reposts while retaining every report in the timeline."""
-    seen_story_keys: set[str] = set()
+    seen_story_sources: dict[str, set[str]] = {}
     names: list[str] = []
     for report in reports:
         story_key = _report_story_key(report)
         source = str(report.get("source") or "公开来源")
-        if story_key and story_key in seen_story_keys:
-            continue
         if story_key:
-            seen_story_keys.add(story_key)
+            prior_sources = seen_story_sources.setdefault(story_key, set())
+            is_repost = bool(
+                source in prior_sources
+                or (source in _REPOST_CHANNELS and bool(prior_sources) and prior_sources <= _REPOST_CHANNELS)
+            )
+            prior_sources.add(source)
+            if is_repost:
+                continue
         names.append(source)
     return names
 
@@ -242,7 +255,7 @@ class FinancialNewsService:
             date_value = _pick(row, "发布日期", "date")
             published = _parse_datetime(_pick(row, "发布时间", "时间", "rtime", "ctime"), date_value=date_value)
             level = str(_pick(row, "等级", "level") or source_grade(source, self.registry))
-            url = str(_pick(row, "链接", "url", "新闻链接")).strip()
+            url = _safe_http_url(_pick(row, "链接", "url", "新闻链接"))
             output.append({
                 "id": _stable_id(f"{source}:{title}"), "title": title, "summary": summary,
                 "publishedAt": published.isoformat() if published else None, "category": self.classify(title, summary),
@@ -286,7 +299,7 @@ class FinancialNewsService:
                     "id": _stable_id(f"{source}:{title}"), "title": title,
                     "summary": str(raw.get("summary") or ""), "publishedAt": published.isoformat() if published else None,
                     "category": self.classify(title, str(raw.get("summary") or ""), track), "track": track,
-                    "source": source, "sourceTier": tier, "sourceLevel": source_grade(source, self.registry), "originalUrl": str(raw.get("url") or ""),
+                    "source": source, "sourceTier": tier, "sourceLevel": source_grade(source, self.registry), "originalUrl": _safe_http_url(raw.get("url")),
                     "relatedStocks": self.related_stocks(title, str(raw.get("summary") or "")), "stale": False,
                 })
         return output
@@ -317,9 +330,10 @@ class FinancialNewsService:
             categories = {str(item.get("category") or "产业") for item in reports}
             latest_published = reports[0].get("publishedAt")
             scoring_item = {**lead, "publishedAt": latest_published}
-            urgency, urgency_reasons = urgency_score(scoring_item, now=self.now_fn(), related_source_count=len(sources))
+            independent_count = len(independent_sources)
+            urgency, urgency_reasons = urgency_score(scoring_item, now=self.now_fn(), related_source_count=independent_count)
             heat, heat_reasons = hot_score(
-                scoring_item, now=self.now_fn(), related_source_count=len(sources), category_count=len(categories), update_count=len(reports),
+                scoring_item, now=self.now_fn(), related_source_count=independent_count, category_count=len(categories), update_count=independent_count,
             )
             event = {
                 **lead, "publishedAt": latest_published, "id": _stable_id(lead["title"]), "urgencyScore": urgency, "hotScore": heat,
@@ -330,7 +344,7 @@ class FinancialNewsService:
                 "reports": reports, "firstReportAt": reports[-1].get("publishedAt"),
                 "latestAt": reports[0].get("publishedAt"), "status": "持续更新" if len(reports) > 1 else "最新",
                 "sourceTimeline": [{
-                    "source": report.get("source"), "publishedAt": report.get("publishedAt"),
+                    "title": report.get("title"), "source": report.get("source"), "publishedAt": report.get("publishedAt"),
                     "originalUrl": report.get("originalUrl"), "independent": report.get("source") in independent_sources,
                 } for report in reports],
                 "reportIds": [report.get("_storeReportId") for report in reports if report.get("_storeReportId")],
@@ -360,6 +374,19 @@ class FinancialNewsService:
         self._write(self.snapshot_file, complete)
         return complete
 
+    def _safe_ai_cache_get(self, key: str) -> dict[str, Any] | None:
+        try:
+            return self.store.get_ai_cache(key)
+        except Exception:
+            logger.exception("financial news ai cache read failed")
+            return None
+
+    def _safe_ai_cache_put(self, key: str, payload: dict[str, Any]) -> None:
+        try:
+            self.store.put_ai_cache(key, payload)
+        except Exception:
+            logger.exception("financial news ai cache write failed")
+
     def _apply_ai_refinements(self, events: list[dict[str, Any]]) -> None:
         cache = self._read(self.ai_file) or {}
         metadata = cache.get("_meta") if isinstance(cache.get("_meta"), dict) else {}
@@ -373,7 +400,7 @@ class FinancialNewsService:
         missing = []
         for event in candidates:
             key = fingerprint(event)
-            stored = self.store.get_ai_cache(f"financial-news:{key}")
+            stored = self._safe_ai_cache_get(f"financial-news:{key}")
             if stored:
                 event.update({name: value for name, value in stored.items() if not name.startswith("_")})
                 continue
@@ -382,6 +409,7 @@ class FinancialNewsService:
                 continue
             missing.append(event)
         missing = missing[:max(0, 30 - used_today)]
+        llm_succeeded = False
         if missing:
             try:
                 import chat
@@ -398,6 +426,7 @@ class FinancialNewsService:
                         {"role": "user", "content": prompt},
                     ]
                     data = chat._call_llm(cfg, messages, use_tools=False)
+                    llm_succeeded = True
                     content = data["choices"][0]["message"].get("content") or "[]"
                     content = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.I).strip()
                     rows = json.loads(content)
@@ -421,19 +450,19 @@ class FinancialNewsService:
                             if accepted:
                                 ai_payload.update({"aiDigest": digest.strip(), "impactTags": tags})
                                 cache[row["id"]].update({"aiDigest": digest.strip(), "impactTags": tags})
-                            self.store.put_ai_cache(f"financial-news:{key}", ai_payload)
+                            self._safe_ai_cache_put(f"financial-news:{key}", ai_payload)
                             changed = True
             except Exception:
-                for event in missing:
-                    self.store.put_ai_cache(f"financial-news:{fingerprint(event)}", {"_rejected": True, "_error": "glm unavailable"})
-            used_today += len(missing)
-            cache["_meta"] = {"date": today, "candidateCount": used_today}
-            changed = True
+                logger.exception("financial news glm refinement unavailable; leaving candidates retryable")
+            if llm_succeeded:
+                used_today += len(missing)
+                cache["_meta"] = {"date": today, "candidateCount": used_today}
+                changed = True
         if changed:
             self._write(self.ai_file, cache)
         for event in events:
             key = fingerprint(event)
-            stored = self.store.get_ai_cache(f"financial-news:{key}")
+            stored = self._safe_ai_cache_get(f"financial-news:{key}")
             refinement = ({name: value for name, value in stored.items() if not name.startswith("_")} if stored else {
                 key: value for key, value in cache.get(event["id"], {}).items() if not key.startswith("_")
             })
@@ -444,14 +473,22 @@ class FinancialNewsService:
         *, stale_components: dict[str, bool] | None = None, freshness: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         incoming = quick + radar
+        cached_events: list[dict[str, Any]] | None = None
         try:
             if incoming:
                 self.store.upsert_reports(incoming)
             rolling = [{**row, "_storeReportId": row.get("id")} for row in self.store.load_reports(hours=EVENT_LIBRARY_HOURS)]
         except Exception:
-            logger.exception("financial news sqlite store unavailable; using current batch")
+            logger.exception("financial news sqlite store unavailable; using the last JSON snapshot")
             rolling = incoming
+            cached_snapshot = self._read(self.snapshot_file) or {}
+            if cached_snapshot.get("feed"):
+                cached_events = list(cached_snapshot["feed"])
         events = self.cluster_items(rolling)
+        if cached_events is not None:
+            merged = {event.get("id"): event for event in cached_events if event.get("id")}
+            merged.update({event.get("id"): event for event in events if event.get("id")})
+            events = list(merged.values())
         enriched: list[dict[str, Any]] = []
         for event in events:
             try:
@@ -497,6 +534,41 @@ class FinancialNewsService:
             "sourceStatus": source_status, "staleComponents": component_state,
             "freshness": component_freshness, "stale": any(component_state.values()),
         })
+
+    def refresh_due_market_checks(self) -> dict[str, Any]:
+        """Refresh each event at its immediate/15m/45m/90m checkpoints."""
+        with self._lock:
+            payload = self.overview()
+            now = self.now_fn()
+            changed = False
+            refreshed: dict[str, dict[str, Any]] = {}
+            for event in payload.get("feed") or []:
+                completed = set(event.get("marketChecksCompleted") or [])
+                due = event.get("recheckDueAt") if isinstance(event.get("recheckDueAt"), dict) else {}
+                due_labels = [label for label in ("immediate", "15m", "45m", "90m") if label not in completed and (parsed := _parse_datetime(due.get(label))) is not None and parsed <= now]
+                if not due_labels:
+                    refreshed[event.get("id")] = event
+                    continue
+                try:
+                    updated = self.market_enricher.enrich_event(event)
+                    updated["marketChecksCompleted"] = sorted(completed | set(due_labels))
+                    refreshed[event.get("id")] = updated
+                    changed = True
+                except Exception:
+                    logger.exception("financial news due market check failed")
+                    refreshed[event.get("id")] = event
+            if not changed:
+                return payload
+            feed = [refreshed.get(event.get("id"), event) for event in payload.get("feed") or []]
+            payload["feed"] = feed
+            for key in ("urgent", "hot", "aShareHot", "candidates", "globalObservation"):
+                payload[key] = [refreshed.get(event.get("id"), event) for event in payload.get(key) or []]
+            payload["marketCheckedAt"] = now.isoformat()
+            try:
+                self.store.save_events(feed)
+            except Exception:
+                logger.exception("could not persist due market checks")
+            return self.save_payload(payload)
 
     def refresh_quick(self) -> dict[str, Any]:
         with self._lock:
@@ -705,9 +777,12 @@ class FinancialNewsScheduler:
         self._stop_event.clear()
 
         def run() -> None:
-            next_quick = next_rss = 0.0
+            next_quick = next_rss = next_market = 0.0
             while not self._stop_event.is_set():
                 current = time.monotonic()
+                if current >= next_market:
+                    next_market = current + 30
+                    self._refresh_safely(self.service.refresh_due_market_checks)
                 if current >= next_quick:
                     next_quick = current + QUICK_INTERVAL_SECONDS
                     self._refresh_safely(self.service.refresh_quick)

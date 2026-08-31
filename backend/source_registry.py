@@ -64,7 +64,7 @@ def source_tier(name: str, registry: dict[str, Any] | None = None) -> int:
     target = str(name or "").strip().lower()
     for source in payload.get("sources") or []:
         registered = str(source.get("name") or "").strip().lower()
-        if target == registered or (registered and registered in target):
+        if target == registered:
             return int(source.get("score") or _TIER_SCORES[source["tier"]])
     return 8
 
@@ -74,7 +74,7 @@ def source_grade(name: str, registry: dict[str, Any] | None = None) -> str:
     target = str(name or "").strip().lower()
     for source in payload.get("sources") or []:
         registered = str(source.get("name") or "").strip().lower()
-        if target == registered or (registered and registered in target):
+        if target == registered:
             return str(source.get("tier") or "C")
     return "C"
 
@@ -83,11 +83,15 @@ def registry_status(registry: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = registry or load_registry()
     tiers = {tier: 0 for tier in _TIER_SCORES}
     valid = 0
+    registry_verification = payload.get("verification")
+    registry_verified = isinstance(registry_verification, dict) and all(
+        registry_verification.get(key) is True for key in ("verified", "stable", "timeFieldReviewed", "ownershipReviewed")
+    )
     for source in payload.get("sources") or []:
         tier = source.get("tier")
         if tier in tiers:
             tiers[tier] += 1
-        if not validate_source(source):
+        if registry_verified and not validate_source(source):
             valid += 1
     total = len(payload.get("sources") or [])
     return {"total": total, "valid": valid, "invalid": total - valid, "tiers": {k: v for k, v in tiers.items() if v}}

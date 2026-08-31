@@ -12,6 +12,7 @@ def test_bundled_registry_has_verified_tiered_sources():
     assert {source["tier"] for source in registry["sources"]} >= {"S", "A", "B", "C"}
     assert any(source["owner"] == "中国证监会" for source in registry["sources"])
     assert any(source["owner"] == "U.S. Securities and Exchange Commission" for source in registry["sources"])
+    assert registry["verification"] == {"verified": True, "stable": True, "timeFieldReviewed": True, "ownershipReviewed": True}
 
 
 def test_source_validator_requires_stable_time_attribution_and_compliance_metadata():
@@ -49,6 +50,7 @@ def test_source_tier_maps_names_and_unknown_sources_to_conservative_values():
     assert source_tier("未知转载", registry) == 8
     assert source_grade("示例监管机构", registry) == "S"
     assert source_grade("未知转载", registry) == "C"
+    assert source_tier("假冒监管机构来源", registry) == 8
 
 
 def test_registry_status_reports_invalid_sources_without_making_them_callable(tmp_path: Path):
