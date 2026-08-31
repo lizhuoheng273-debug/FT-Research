@@ -7,6 +7,19 @@ export class ApiError extends Error {
   }
 }
 
+// 生产托管前端可以通过 VITE_API_URL 指向本机或远端 FastAPI；
+// 未配置时返回相对路径，继续交给 Vite 开发代理处理。
+const API_BASE = String(import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const apiPath = normalized === "/api" || normalized.startsWith("/api/")
+    ? normalized
+    : `/api${normalized}`;
+  return `${API_BASE}${apiPath}`;
+}
+
 // 后端访问密钥（对应后端部署时的 VR_API_KEY，公网部署防蹭用）。只存本地浏览器。
 const ACCESS_KEY = "vr-access-key";
 
@@ -38,7 +51,7 @@ export interface MyReport {
 
 // 下载/预览研报：带鉴权头 fetch → blob → 触发浏览器下载（<a download> 无法带 Authorization，故走 blob）。
 export async function downloadReport(id: string, name: string): Promise<void> {
-  const resp = await fetch(`/api/myreports/file/${id}`, { headers: authHeaders() });
+  const resp = await fetch(apiUrl(`/myreports/file/${id}`), { headers: authHeaders() });
   if (!resp.ok) throw new ApiError(`下载失败 HTTP ${resp.status}`, resp.status);
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);
@@ -61,7 +74,7 @@ async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET
   }
   if (Object.keys(headers).length > 0) opts.headers = headers;
   try {
-    resp = await fetch(`/api${path}`, opts);
+    resp = await fetch(apiUrl(path), opts);
   } catch {
     throw new ApiError("连接不到后端，请先启动 backend（uvicorn app:app --port 8900）", 0);
   }
@@ -84,9 +97,29 @@ const get = <T>(path: string) => request<T>(path, "GET");
 
 export interface Quote {
   name: string; price: number; last_close: number; change_pct: number;
+  open: number; high: number; low: number; change_amt: number; volume: number;
+  amount_wan: number; amplitude_pct: number; float_mcap_yi: number; vol_ratio: number;
   pe_ttm: number; pb: number; mcap_yi: number; turnover_pct: number;
   limit_up: number; limit_down: number;
 }
+
+export interface CompanyProfile {
+  code: string; shortName: string; fullName: string; englishName: string;
+  market: string; industry: string; legalRepresentative: string;
+  registeredCapitalWan: number | null; establishedDate: string; listedDate: string;
+  website: string; email: string; phone: string; registeredAddress: string;
+  officeAddress: string; mainBusiness: string; businessScope: string;
+  companyHistory: string; source: string; fetchedAt: string; stale: boolean; partial: boolean;
+}
+
+export interface AiStatus {
+  configured: boolean;
+  model: string;
+  base_url: string;
+  key_present: boolean;
+}
+
+export interface StockSearchResult { code: string; name: string }
 
 export interface Valuation {
   name: string; code: string; price: number; mcap_yi: number;
@@ -126,7 +159,23 @@ export interface NewsItem {
 }
 
 export interface IndexQuote {
+  code: string;
   name: string; price: number; change_pct: number; change_amt: number;
+}
+
+export type ChartPeriod = "intraday" | "five_day" | "daily" | "weekly" | "monthly";
+export interface ChartPoint {
+  time: string; open: number; high: number; low: number; close: number;
+  average: number; volume: number; amount: number;
+}
+export interface MarketChart {
+  asset: "stock" | "index"; code: string; name: string; period: ChartPeriod;
+  adjust: "qfq" | "hfq" | ""; source: string; fetchedAt: string; stale: boolean;
+  quote: {
+    price: number; change: number; changePct: number; open: number; high: number;
+    low: number; prevClose: number; volume: number; amount: number;
+  };
+  points: ChartPoint[];
 }
 
 export interface MarketSentiment {
@@ -283,6 +332,7 @@ export interface HkCashflow {
 
 export const api = {
   health: () => get<{ ok: boolean }>("/health"),
+  aiStatus: () => get<AiStatus>("/ai/status"),
   indices: () => get<IndexQuote[]>("/indices"),
   marketOverview: () => get<MarketOverview>("/market/overview"),
   emotion: () => get<ShortTermEmotion>("/market/emotion"),
@@ -302,10 +352,14 @@ export const api = {
     request<PortfolioData>("/portfolio/close", "POST", { code, date, price, shares, cost }),
   removeClosed: (index: number) => request<PortfolioData>(`/portfolio/close?index=${index}`, "DELETE"),
   valuation: (code: string) => get<Valuation>(`/valuation?code=${code}`),
+  stockSearch: (query: string, limit = 10) => get<StockSearchResult[]>(`/stock/search?q=${encodeURIComponent(query)}&limit=${limit}`),
   percentile: (code: string) => get<ValPercentile>(`/valuation/percentile?code=${code}`),
   financials: (code: string) => get<Financials>(`/financials?code=${code}`),
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),
+  companyInfo: (code: string) => get<CompanyProfile>(`/info?code=${code}`),
   quote: (codes: string) => get<Record<string, Quote>>(`/quote?codes=${codes}`),
+  marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq") =>
+    get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}`),
   reports: (code: string) => get<Report[]>(`/reports?code=${code}`),
   news: (code: string) => get<NewsItem[]>(`/news?code=${code}`),
   margin: (code: string) => get<MarginRow[]>(`/margin?code=${code}`),

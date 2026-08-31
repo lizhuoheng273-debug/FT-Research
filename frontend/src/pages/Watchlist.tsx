@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
-import { Plus, X, RefreshCw, Star } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { X, RefreshCw, Star } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { AskAiButton } from "@/components/ui/AskAiButton";
-import { loadWatch, saveWatch, addCodes } from "@/lib/watchlist";
+import { loadWatch, saveWatch } from "@/lib/watchlist";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 import { useLiveQuotes, isTradingHours } from "@/hooks/useLiveQuotes";
 import { cn } from "@/lib/utils";
 
@@ -33,9 +35,9 @@ const saveLive = (on: boolean) => {
 };
 
 export function Watchlist() {
+  const navigate = useNavigate();
   const [codes, setCodes] = useState<string[]>(loadWatch);
-  const [input, setInput] = useState("");
-  const [hint, setHint] = useState<string | null>(null);
+  const [searchCode, setSearchCode] = useState("");
   // 实时行情默认**关闭**——开着会持续请求，让用户自己决定要不要开。
   const [live, setLive] = useState(loadLive);
 
@@ -49,15 +51,6 @@ export function Watchlist() {
     });
   };
 
-  const add = () => {
-    const { next, added } = addCodes(codes, input);
-    if (added === 0) {
-      setHint(input.trim() ? "没识别到新的 6 位代码（可能已在自选里）" : null);
-      setInput("");
-      return;
-    }
-    setCodes(next); saveWatch(next); setInput(""); setHint(`已添加 ${added} 只`);
-  };
   const remove = (c: string) => {
     const next = codes.filter((x) => x !== c);
     setCodes(next); saveWatch(next);
@@ -83,7 +76,7 @@ export function Watchlist() {
     <div>
       <PageHeader
         title="自选股"
-        subtitle="批量添加、一屏总览你关注的标的。数据只存本地、不上传。"
+        subtitle="搜索股票进入详情，在详情页加入自选股。数据只存本地、不上传。"
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -121,28 +114,13 @@ export function Watchlist() {
       />
 
       <GlassCard className="mb-4">
-        <label className="mb-1.5 block text-xs text-muted-foreground">
-          批量添加 —— 粘贴一串代码即可（逗号 / 空格 / 换行都行，自动识别 6 位 A 股代码）
-        </label>
-        <div className="flex gap-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) add();
-            }}
-            rows={2}
-            placeholder={"如：600519 000858, 002463\n300750 688017"}
-            className="flex-1 resize-y rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
-          />
-          <button
-            onClick={add}
-            className="inline-flex h-9 shrink-0 items-center gap-1.5 self-start rounded-lg bg-primary/15 px-4 text-sm font-medium text-primary shadow-glow hover:bg-primary/25"
-          >
-            <Plus className="h-4 w-4" /> 添加
-          </button>
-        </div>
-        {hint && <p className="mt-2 text-xs text-muted-foreground/70">{hint}</p>}
+        <StockSearchInput
+          value={searchCode}
+          onChange={setSearchCode}
+          onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+          onSubmitCode={(value) => navigate(`/finance/stocks/${value}`)}
+          placeholder="搜索股票名称或代码，点击进入详情"
+        />
       </GlassCard>
 
       <GlassCard glow>
@@ -180,7 +158,7 @@ export function Watchlist() {
         </div>
         {codes.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground/60">
-            还没有自选股，用上面的框粘贴一串代码批量添加。
+            还没有自选股，请搜索股票并在详情页加入。
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -198,14 +176,14 @@ export function Watchlist() {
                 {codes.map((c) => {
                   const q = quotes[c];
                   return (
-                    <tr key={c} className="border-b border-border/30">
-                      <td className="px-2 py-2.5 font-medium">{q?.name || "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground">{c}</td>
-                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? q.price : "—"}</td>
-                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? pct(q.change_pct) : "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pe_ttm ?? "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pb ?? "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.turnover_pct ?? "—"}</td>
+                    <tr key={c} className="border-b border-border/30 transition-colors hover:bg-muted/20">
+                      <td className="font-medium"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50">{q?.name || "—"}</Link></td>
+                      <td className="font-mono text-xs text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{c}</Link></td>
+                      <td className={cn("font-mono", color(q?.change_pct))}><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q ? q.price : "—"}</Link></td>
+                      <td className={cn("font-mono", color(q?.change_pct))}><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q ? pct(q.change_pct) : "—"}</Link></td>
+                      <td className="font-mono text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q?.pe_ttm ?? "—"}</Link></td>
+                      <td className="font-mono text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q?.pb ?? "—"}</Link></td>
+                      <td className="font-mono text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q?.turnover_pct ?? "—"}</Link></td>
                       <td className="px-2 py-2.5">
                         <button
                           onClick={() => remove(c)}

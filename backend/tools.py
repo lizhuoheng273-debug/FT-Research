@@ -17,6 +17,7 @@ import astock
 import gstock
 import market
 import newsradar
+import research_chart
 import signals
 
 # ——— schema 简写：让 20+ 个工具定义保持一屏可读 ———
@@ -59,6 +60,14 @@ TOOLS: list[dict] = [
         "period": {"type": "string", "enum": ["day", "week", "month"], "description": "周期，默认 day"},
         "count": {"type": "integer", "description": "取最近多少根，默认 60，最大 250"}},
        ["code"]),
+    _t("query_market_chart",
+       "查个股、指数或板块的历史量价研究摘要：区间涨跌、高低点、EMA5/10/20/60、平均成交量、量比和波动；不返回整段原始 K 线。板块仅唯一精确匹配时取数。",
+       {
+        "asset": {"type": "string", "enum": ["stock", "index", "sector"], "description": "研究对象类型"},
+        "identifier": {"type": "string", "description": "股票/指数传 6 位代码，板块传公开板块名称"},
+        "period": {"type": "string", "enum": ["day", "week", "month"], "description": "周期，默认 day"},
+        "count": {"type": "integer", "description": "摘要使用最近多少根，默认 60，最大 250"}},
+       ["asset", "identifier"]),
 
     # —— 基本面 ——
     _t("query_financials",
@@ -422,6 +431,9 @@ _HANDLERS = {
     "query_valuation": lambda a: astock.full_valuation(str(a["code"])),
     "query_valuation_percentile": lambda a: astock.valuation_percentile(str(a["code"])),
     "query_kline": _kline,
+    "query_market_chart": lambda a: research_chart.fetch_chart_summary(
+        str(a.get("asset") or ""), str(a.get("identifier") or ""),
+        str(a.get("period") or "day"), max(5, min(int(a.get("count") or 60), 250))),
     "query_financials": lambda a: astock.financials(str(a["code"])),
     "query_company_info": _company_info,
     "query_reports": lambda a: _pick(astock.eastmoney_reports(str(a["code"]), max_pages=1),

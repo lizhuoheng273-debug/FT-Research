@@ -27,7 +27,7 @@ def get_prefix(code: str) -> str:
     """6 位代码 → 交易所前缀。5 开头是沪市基金/ETF（51/56/58 等），深市基金 15/16 开头走默认 sz。"""
     if code.startswith(("6", "9", "5")):
         return "sh"
-    if code.startswith("8"):
+    if code.startswith(("4", "8")):
         return "bj"
     return "sz"
 
@@ -73,6 +73,7 @@ def _parse_gtimg(data: str) -> dict[str, dict]:
             "change_pct": num(32),
             "high": num(33),
             "low": num(34),
+            "volume": num(36),
             "amount_wan": num(37),
             "turnover_pct": num(38),
             "pe_ttm": num(39),
@@ -105,7 +106,7 @@ def index_quote() -> list[dict]:
     for full in A_INDICES:
         q = parsed.get(full[2:])
         if q:
-            out.append({"name": q["name"], "price": q["price"], "change_pct": q["change_pct"], "change_amt": q["change_amt"]})
+            out.append({"code": full[2:], "name": q["name"], "price": q["price"], "change_pct": q["change_pct"], "change_amt": q["change_amt"]})
     return out
 
 
@@ -205,6 +206,59 @@ def stock_news(code: str, limit: int = 20) -> list[dict]:
     ak = _akshare()
     df = ak.stock_news_em(symbol=code)
     return df.head(limit).to_dict("records") if df is not None and not df.empty else []
+
+
+_A_STOCK_UNIVERSE_TTL = 6 * 60 * 60
+_a_stock_universe: list[dict[str, str]] = []
+_a_stock_universe_at = 0.0
+
+
+def _load_a_stock_universe() -> list[dict[str, str]]:
+    """加载并缓存 A 股代码-名称列表，避免名称搜索每次都抓取全市场。"""
+    global _a_stock_universe, _a_stock_universe_at
+    if _a_stock_universe and time.time() - _a_stock_universe_at < _A_STOCK_UNIVERSE_TTL:
+        return _a_stock_universe
+
+    ak = _akshare()
+    df = ak.stock_info_a_code_name()
+    rows: list[dict[str, str]] = []
+    if df is not None and not df.empty:
+        for raw in df.to_dict("records"):
+            code = str(raw.get("code", "")).strip()
+            name = str(raw.get("name", "")).strip()
+            if re.fullmatch(r"\d{6}", code) and name:
+                rows.append({"code": code, "name": name})
+    if rows:
+        _a_stock_universe = rows
+        _a_stock_universe_at = time.time()
+    return _a_stock_universe
+
+
+def search_a_stocks(query: str, limit: int = 20) -> list[dict[str, str]]:
+    """按 A 股代码或名称（支持部分名称）搜索，代码优先精确匹配。"""
+    needle = re.sub(r"\s+", "", (query or "")).casefold()
+    if not needle:
+        return []
+
+    rows = _load_a_stock_universe()
+    if needle.isdigit():
+        exact = [row for row in rows if row["code"] == needle]
+        if exact:
+            return exact[:limit]
+        return [row for row in rows if needle in row["code"]][:limit]
+
+    exact: list[dict[str, str]] = []
+    starts: list[dict[str, str]] = []
+    contains: list[dict[str, str]] = []
+    for row in rows:
+        name = re.sub(r"\s+", "", row["name"]).casefold()
+        if name == needle:
+            exact.append(row)
+        elif name.startswith(needle):
+            starts.append(row)
+        elif needle in name:
+            contains.append(row)
+    return (exact + starts + contains)[:limit]
 
 
 def individual_info(code: str) -> dict:

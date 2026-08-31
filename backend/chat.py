@@ -20,6 +20,7 @@ import requests
 import astock
 import cli_runtime
 import gstock
+import research_framework
 import tools
 
 # 工具定义与执行统一由 tools.py 提供（chat / mcp_server / debate 共用一套）。
@@ -30,28 +31,9 @@ _exec_tool = tools.exec_tool
 MAX_ROUNDS = 6  # 工具调用最大轮数，防死循环
 _TOOL_RESULT_CAP = 6000  # 单次工具结果注入上限（控 token）
 
-# 投研分析框架：用户要「分析个股 / 给判断 / 下结论」时，AI 一律按这五维组织，
-# 让弱模型也能输出结构化、覆盖全、不漏项的专业解读。焊进 SYSTEM_PROMPT，不做成 UI 选项——
-# 用户就问，给出的就是这套框架的结论。合规：框架只规定「怎么读数据」，每维只陈述事实与相对位置，
-# 最后不给买卖结论。
-ANALYSIS_FRAMEWORK = """【投研分析框架】当用户要你分析个股、给判断或下结论时，按下面五个维度依次组织分析，每维用一两句讲清数据事实与相对位置，最后只做客观归纳、不给买卖结论：
-1. 估值：PE / PB / PS 的绝对水平 + 处在历史区间的高 / 中 / 低位 + 同业对比 + 机构一致预期的前向估值。
-2. 资金面：主力资金流方向与强度 + 融资融券趋势 + 股东户数（筹码集中 / 分散）+ 龙虎榜 / 大宗异动。
-3. 财报质量：营收与扣非净利增速是否匹配 + 经营现金流含金量 + 毛利 / 净利率趋势 + 资产负债率。
-4. 行业景气：板块 / 概念归属 + 板块近期强弱 + 行业内相对排名 + 关联热门概念热度。
-5. 事件催化与风险：重要公告 + 解禁 + 分红 + 舆情，客观分列「催化」与「风险」两栏。
+SYSTEM_PROMPT = """你是 FT-Research 里的投研助理。你可以调用工具获取客观数据来支撑回答，A 股工具一律传 6 位代码：
 
-输出组织（像专业研报那样排版，但只陈述客观事实、不做任何买卖/评级/目标价建议）：
-- 结论先行：开头一句话客观概括当前基本面 / 估值 / 资金面处于什么状态，再附「关键数据速览」。
-- 每个维度用「**加粗小标题** + 一小段展开」，别堆流水账数字。
-- 有对比就上小表格（如估值 vs 同业、财报同比）。
-- 末尾分列「关键观察」与「风险点」两栏。
-（简单的事实性问题——如"现价多少"——直接答，不必套用整个框架。）"""
-
-# 用 f-string 先把框架焊进去，只留 {{context}} 给运行时 .format() 填——4 处调用点无需改。
-SYSTEM_PROMPT = f"""你是 Vibe-Research 里的投研助理。你可以调用工具获取客观数据来支撑回答，A 股工具一律传 6 位代码：
-
-- 行情估值：query_quote（批量行情）/ query_valuation（前向 PE、PEG）/ query_valuation_percentile（估值历史分位）/ query_kline（K 线与区间涨跌）
+- 行情估值：query_quote（批量行情）/ query_valuation（前向 PE、PEG）/ query_valuation_percentile（估值历史分位）/ query_kline（个股原有 K 线）/ query_market_chart（个股、指数、板块统一量价摘要）
 - 基本面：query_financials（营收净利 ROE 毛利率）/ query_company_info / query_reports（研报）/ query_news
 - 资金筹码：query_fund_flow（主力净流入）/ query_margin（两融）/ query_holders（股东户数）/ query_block_trade / query_dragon_tiger / query_dividend
 - 事件风险：query_announcements（公告）/ query_lockup（解禁）/ query_investor_qa（互动易）
@@ -62,16 +44,21 @@ SYSTEM_PROMPT = f"""你是 Vibe-Research 里的投研助理。你可以调用工
 用工具的方式：**先想清楚要回答什么，再挑最相关的 2-5 个工具**，不要一次把所有工具都调一遍。
 估值贵贱看 query_valuation_percentile，资金动向看 query_fund_flow，风险排查看 query_announcements + query_lockup。
 
-硬性规则（务必遵守）：
-- 只做信息整理、数据解读与多视角分析；不推荐任何具体买卖、不预测涨跌与价位、不给买卖时机、不承诺收益、不打分排名。
-- 需要数据时先调工具拿客观数据，再基于数据回答；不要编造数字。
-- 涉及个股时用工具查到的真实数据；讲清多空两面与风险，让用户自己判断。
-- 用简洁中文回答。
-
-{ANALYSIS_FRAMEWORK}
+{research_guidance}
 
 当前页面上下文：
-{{context}}"""
+{context}"""
+
+
+def build_system_prompt(
+    context: str = "",
+    analysis_scope: research_framework.AnalysisScope = "general",
+    user_messages: list[dict] | None = None,
+) -> str:
+    return SYSTEM_PROMPT.format(
+        context=context or "（无）",
+        research_guidance=research_framework.build_guidance(analysis_scope, user_messages),
+    )
 
 
 # —— 防 SSRF：用户可自带 OpenAI 兼容端点，但后端替其发请求前要挡住指向云元数据/内网的地址 ——
@@ -136,14 +123,14 @@ def _call_llm(cfg: dict, messages: list, use_tools: bool) -> dict:
     return r.json()
 
 
-def run_chat(cfg: dict, user_messages: list, context: str = "") -> dict:
+def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general") -> dict:
     """跑一轮完整对话（含 function calling 循环）。
 
     cfg: {baseURL, apiKey, model}
     user_messages: [{role, content}, ...]
     返回: {content, trace:[{tool,args}], rounds}
     """
-    messages = [{"role": "system", "content": SYSTEM_PROMPT.format(context=context or "（无）")}]
+    messages = [{"role": "system", "content": build_system_prompt(context, analysis_scope, user_messages)}]
     messages.extend(user_messages)
     trace: list[dict] = []
 
@@ -175,7 +162,7 @@ def run_chat(cfg: dict, user_messages: list, context: str = "") -> dict:
     return {"content": data["choices"][0]["message"].get("content") or "", "trace": trace, "rounds": MAX_ROUNDS}
 
 
-def run_chat_cli(cfg: dict, user_messages: list, context: str = "") -> dict:
+def run_chat_cli(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general") -> dict:
     """订阅接入：用本机已登录的 CLI 一次性作答（无 function-calling）。
 
     CLI 不能像 API 那条自己调数据工具，所以数据必须已在 context 里（每日复盘 / 今日要点 /
@@ -183,7 +170,7 @@ def run_chat_cli(cfg: dict, user_messages: list, context: str = "") -> dict:
     """
     provider = str(cfg.get("provider", ""))
     kind = provider[4:] if provider.startswith("cli-") else provider
-    system = SYSTEM_PROMPT.format(context=context or "（无）")
+    system = build_system_prompt(context, analysis_scope, user_messages)
     user = "\n\n".join(m.get("content", "") for m in user_messages if m.get("content")) or "（无问题）"
     content = cli_runtime.run_cli(kind, system, user)
     return {"content": content, "trace": [], "rounds": 1}
@@ -244,9 +231,9 @@ def _iter_sse_deltas(resp):
                 yield choices[0].get("delta") or {}
 
 
-def run_chat_stream(cfg: dict, user_messages: list, context: str = ""):
+def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general"):
     """API 接入流式：function-calling 循环，边流答案边推工具调用事件。"""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT.format(context=context or "（无）")}]
+    messages = [{"role": "system", "content": build_system_prompt(context, analysis_scope, user_messages)}]
     messages.extend(user_messages)
     trace: list[dict] = []
 
@@ -309,11 +296,11 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = ""):
     yield {"type": "done", "trace": trace, "rounds": MAX_ROUNDS}
 
 
-def run_chat_cli_stream(cfg: dict, user_messages: list, context: str = ""):
+def run_chat_cli_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general"):
     """订阅接入流式：CLI stdout 边出边推 delta。"""
     provider = str(cfg.get("provider", ""))
     kind = provider[4:] if provider.startswith("cli-") else provider
-    system = SYSTEM_PROMPT.format(context=context or "（无）")
+    system = build_system_prompt(context, analysis_scope, user_messages)
     user = "\n\n".join(m.get("content", "") for m in user_messages if m.get("content")) or "（无问题）"
     for chunk in cli_runtime.run_cli_stream(kind, system, user):
         yield {"type": "delta", "text": chunk}

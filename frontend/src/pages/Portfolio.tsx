@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { Plus, ShieldCheck, RefreshCw, Loader2, Trash2, AlertCircle } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -6,6 +7,7 @@ import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { api, ApiError, type PortfolioData } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 
 const REFRESH_MS = 30 * 60 * 1000; // 每半小时自动刷新
 const pnlColor = (v: number) => (v > 0 ? "text-danger" : v < 0 ? "text-success" : "text-muted-foreground");
@@ -14,6 +16,7 @@ const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 
 const fmtPx = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
 
 export function Portfolio() {
+  const navigate = useNavigate();
   const [data, setData] = useState<PortfolioData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -47,13 +50,14 @@ export function Portfolio() {
     return () => clearInterval(t);
   }, [load]);
 
-  const add = async () => {
-    if (!/^\d{6}$/.test(code.trim())) { setErr("请输入 6 位股票代码"); return; }
+  const add = async (requestedCode = code) => {
+    const normalizedCode = requestedCode.trim();
+    if (!/^\d{6}$/.test(normalizedCode)) { setErr("请输入 6 位股票代码"); return; }
     const s = parseFloat(shares), c = parseFloat(cost);
     if (!(s > 0) || !Number.isFinite(c)) { setErr("数量须大于 0，成本价请填数字（可为负）"); return; }
     setAdding(true); setErr(null);
     try {
-      setData(await api.addHolding(code.trim(), s, c));
+      setData(await api.addHolding(normalizedCode, s, c));
       setCode(""); setShares(""); setCost("");
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "添加失败");
@@ -66,14 +70,15 @@ export function Portfolio() {
     try { setData(await api.removeHolding(c)); } catch { /* ignore */ }
   };
 
-  const addClose = async () => {
-    if (!/^\d{6}$/.test(cCode.trim())) { setErr("清仓记录：请输入 6 位代码"); return; }
+  const addClose = async (requestedCode = cCode) => {
+    const normalizedCode = requestedCode.trim();
+    if (!/^\d{6}$/.test(normalizedCode)) { setErr("清仓记录：请输入 6 位代码"); return; }
     const p = parseFloat(cPrice), s = parseFloat(cShares), c = parseFloat(cCost);
     if (!cDate) { setErr("请选清仓日期"); return; }
     if (!(p > 0) || !(s > 0) || !Number.isFinite(c)) { setErr("清仓价 / 股数须大于 0，成本请填数字（可为负）"); return; }
     setClosing(true); setErr(null);
     try {
-      setData(await api.closePosition(cCode.trim(), cDate, p, s, c));
+      setData(await api.closePosition(normalizedCode, cDate, p, s, c));
       setCCode(""); setCDate(""); setCPrice(""); setCShares(""); setCCost("");
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "添加清仓记录失败");
@@ -143,8 +148,14 @@ export function Portfolio() {
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
-            <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位代码"
-              className="w-28 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
+            <StockSearchInput
+              value={code}
+              onChange={setCode}
+              onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+              onSubmitCode={(value) => void add(value)}
+              placeholder="股票名称或 6 位代码"
+              className="w-40"
+            />
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">数量（股）</label>
@@ -156,7 +167,7 @@ export function Portfolio() {
             <input value={cost} onChange={(e) => setCost(e.target.value.replace(/[^\d.-]/g, "").replace(/(?!^)-/g, ""))} placeholder="如 12.5，可负"
               className="w-28 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
           </div>
-          <button onClick={add} disabled={adding}
+          <button onClick={() => void add()} disabled={adding}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
             {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} 添加
           </button>
@@ -220,8 +231,14 @@ export function Portfolio() {
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
-            <input value={cCode} onChange={(e) => setCCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位代码"
-              className="w-24 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
+            <StockSearchInput
+              value={cCode}
+              onChange={setCCode}
+              onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+              onSubmitCode={(value) => void addClose(value)}
+              placeholder="股票名称或 6 位代码"
+              className="w-36"
+            />
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">清仓日期</label>
@@ -243,7 +260,7 @@ export function Portfolio() {
             <input value={cCost} onChange={(e) => setCCost(e.target.value.replace(/[^\d.-]/g, "").replace(/(?!^)-/g, ""))} placeholder="成本价，可负"
               className="w-24 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
           </div>
-          <button onClick={addClose} disabled={closing}
+          <button onClick={() => void addClose()} disabled={closing}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
             {closing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} 记录
           </button>

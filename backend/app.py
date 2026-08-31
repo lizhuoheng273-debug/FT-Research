@@ -1,4 +1,4 @@
-"""Vibe-Research 后端 —— A股数据层 HTTP 接口（FastAPI）。
+"""FT-Research 后端 —— A股数据层 HTTP 接口（FastAPI）。
 
 端点全部在 /api 下，前端 vite 代理 /api → localhost:8900。
 只读、无状态、按用户传入代码返回客观数据。不预置标的、不建议。
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,19 +26,30 @@ import gstock
 import newsradar
 import portfolio as pf
 import market
+import market_chart
+import company_profile
 import myreports as mr
 import reflection as reflect_layer
 import signals
+import glm_config
+from aihot_api import AihotClient
+from aihot_reports import AihotReportClient
+from report_archive import ReportArchive
+from report_scheduler import DailyReportScheduler
 
 
 from version import read_version
 
 __version__ = read_version()
 
-app = FastAPI(title="Vibe-Research API", version=__version__)
+app = FastAPI(title="FT-Research API", version=__version__)
+aihot_client = AihotClient()
+report_archive = ReportArchive()
+aihot_reports = AihotReportClient(report_archive)
 
 # 每半小时后台刷新持仓数据
 pf.start_scheduler(1800)
+DailyReportScheduler(report_archive, aihot_client).start()
 
 # CORS：默认放开（本地自托管友好）；公网部署时用 VR_ALLOW_ORIGINS 收紧成白名单。
 #   例：VR_ALLOW_ORIGINS="https://myhost"  （逗号分隔多个）
@@ -78,7 +90,7 @@ def _validate(code: str) -> str:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "vibe-research-api", "version": __version__}
+    return {"ok": True, "service": "ft-research-api", "version": __version__}
 
 
 class LLMConfig(BaseModel):
@@ -91,7 +103,120 @@ class LLMConfig(BaseModel):
 class ChatReq(BaseModel):
     messages: list[dict]
     context: str = ""
-    llm: LLMConfig
+    analysis_scope: Literal["general", "market", "index", "sector", "stock"] = "general"
+    # V1 uses the server-side GLM configuration.  The optional legacy field is
+    # accepted so old clients fail gracefully, but is never used for API calls.
+    llm: LLMConfig | None = None
+
+
+@app.get("/api/ai/status")
+def ai_status():
+    """Return redacted GLM configuration status; never expose the API key."""
+    return glm_config.public_status()
+
+
+@app.get("/api/ai/news")
+def ai_news(mode: str = "selected", window: str = "24h", limit: int = Query(50, ge=1, le=100)):
+    """AI HOT selected feed, normalized for the FT-Research frontend."""
+    try:
+        return aihot_client.items(mode=mode, window=window, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - translate upstream failure
+        raise HTTPException(502, f"AI HOT 暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/hot-topics")
+def ai_hot_topics():
+    try:
+        return aihot_client.hot_topics()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 热点榜暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/stories/{public_id}")
+def ai_story(public_id: str):
+    try:
+        return aihot_client.story(public_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 事件详情暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/snapshot")
+def ai_selected_snapshot():
+    try:
+        return aihot_client.selected_snapshot()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 快照暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/news/changes")
+def ai_selected_changes():
+    try:
+        return aihot_client.selected_changes()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 增量暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/dailies/latest")
+def ai_daily_latest():
+    try:
+        return aihot_client.daily()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 日报暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/dailies/{date}")
+def ai_daily(date: str):
+    try:
+        return aihot_client.daily(date)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT 日报暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/reports/index")
+def ai_reports_index(kind: str = Query("daily")):
+    if kind not in {"daily", "weekly", "monthly"}:
+        raise HTTPException(400, "kind 必须是 daily、weekly 或 monthly")
+    if kind == "daily":
+        items = report_archive.list_periods(kind)
+    else:
+        items = aihot_reports.list_periods(kind)
+    return {"kind": kind, "items": items}
+
+
+@app.get("/api/ai/reports/daily/latest")
+def ai_report_daily_latest():
+    periods = report_archive.list_periods("daily")
+    if not periods:
+        raise HTTPException(404, "暂无日报快照")
+    return {"kind": "daily", "period": periods[0]["period"], "report": report_archive.load_daily(periods[0]["period"]), "stale": False}
+
+
+@app.get("/api/ai/reports/daily/{date}")
+def ai_report_daily(date: str):
+    report = report_archive.load_daily(date)
+    if not report:
+        raise HTTPException(404, "该日期暂无日报快照")
+    return {"kind": "daily", "period": date, "report": report, "stale": False}
+
+
+@app.get("/api/ai/reports/{kind}/latest")
+def ai_report_period_latest(kind: str):
+    if kind not in {"weekly", "monthly"}:
+        raise HTTPException(400, "kind 必须是 weekly 或 monthly")
+    try:
+        return aihot_reports.fetch_period(kind)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT {kind} 暂时不可用：{exc}") from exc
+
+
+@app.get("/api/ai/reports/{kind}/{period}")
+def ai_report_period(kind: str, period: str):
+    if kind not in {"weekly", "monthly"}:
+        raise HTTPException(400, "kind 必须是 weekly 或 monthly")
+    try:
+        return aihot_reports.fetch_period(kind, period)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI HOT {kind} 暂时不可用：{exc}") from exc
 
 
 @app.post("/api/chat")
@@ -104,22 +229,17 @@ def chat(req: ChatReq):
     """
     if not req.messages:
         raise HTTPException(400, "messages 不能为空")
-    if not req.llm.model:
-        raise HTTPException(400, "缺少模型配置，请先在「接入 AI」里选择")
-
-    is_cli = req.llm.provider.startswith("cli-")
-    if is_cli:
-        kind = req.llm.provider[4:]
-        if not cli_runtime.detect_cli(kind):
-            raise HTTPException(400, f"未检测到「{kind}」对应的本机命令。请先安装并登录该 CLI，或改用「API 接入」。")
-    elif not req.llm.apiKey or not req.llm.baseURL:
-        raise HTTPException(400, "缺少 Base URL 或 API Key，请先在「接入 AI」里填写")
-
-    cfg = req.llm.model_dump()
+    cfg = glm_config.load_glm_config()
+    if not cfg["apiKey"]:
+        raise HTTPException(400, "GLM 尚未配置：请在 backend/.env 设置 GLM_API_KEY")
+    is_cli = False
 
     def gen():
         try:
-            events = (chat_layer.run_chat_cli_stream if is_cli else chat_layer.run_chat_stream)(cfg, req.messages, req.context)
+            if req.analysis_scope != "general":
+                events = chat_layer.run_chat_stream(cfg, req.messages, req.context, req.analysis_scope)
+            else:
+                events = chat_layer.run_chat_stream(cfg, req.messages, req.context)
             for ev in events:
                 yield json.dumps(ev, ensure_ascii=False) + "\n"
         except Exception as e:  # noqa: BLE001 — 运行时错误以流内事件上报，不中断连接
@@ -424,6 +544,23 @@ def quote(codes: str = Query(..., description="逗号分隔的 6 位代码")):
         raise HTTPException(502, f"行情源异常：{e}") from e
 
 
+@app.get("/api/stock/search")
+def stock_search(q: str = Query("", max_length=40), limit: int = Query(20, ge=1, le=50)):
+    """A 股代码/名称搜索，返回可进入详情页的候选标的。"""
+    query = q.strip()
+    if not query:
+        raise HTTPException(400, "搜索内容不能为空")
+    try:
+        rows = astock.search_a_stocks(query, limit=limit)
+        seen: set[str] = set()
+        unique = [row for row in rows if row.get("code") and not (row["code"] in seen or seen.add(row["code"]))]
+        return {"data": unique[:limit]}
+    except astock.DependencyMissing as e:
+        raise HTTPException(501, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"股票搜索暂时不可用：{e}") from e
+
+
 import time as _time
 _PCT_CACHE: dict = {}
 
@@ -522,10 +659,10 @@ def news(code: str = Query(...), limit: int = Query(20, ge=1, le=50)):
 
 @app.get("/api/info")
 def info(code: str = Query(...)):
-    """个股基本面：行业/股本/上市时间（需 akshare）。"""
+    """标准化公司资料：巨潮主源、东财备用、真实行情部分降级。"""
     code = _validate(code)
     try:
-        return {"data": astock.individual_info(code)}
+        return {"data": company_profile.get_company_profile(code)}
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -546,7 +683,7 @@ def disclosure(code: str = Query(...)):
 
 @app.get("/api/kline")
 def kline(code: str = Query(...), category: int = Query(4), offset: int = Query(60, ge=1, le=800)):
-    """K线（需 mootdx）。category 4=日 5=周 6=月 11=60分钟。"""
+    """旧 K 线契约（mootdx）：category 4=日 5=周 6=月 11=60分钟。"""
     code = _validate(code)
     try:
         return {"data": astock.kline(code, category=category, offset=offset)}
@@ -554,6 +691,24 @@ def kline(code: str = Query(...), category: int = Query(4), offset: int = Query(
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"K线源异常：{e}") from e
+
+
+@app.get("/api/market/chart")
+def market_chart_endpoint(
+    asset: str = Query(...),
+    code: str = Query(...),
+    period: str = Query(...),
+    adjust: str = Query("qfq"),
+):
+    """股票 / 指数详情页统一 OHLCV 图表接口。"""
+    try:
+        return market_chart.get_chart(asset, code, period, adjust)
+    except market_chart.ChartUnavailable as e:
+        raise HTTPException(503, f"行情暂不可用，请稍后重试：{e}") from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"行情源异常：{e}") from e
 
 
 @app.get("/api/finance")

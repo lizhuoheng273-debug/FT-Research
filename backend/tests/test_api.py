@@ -34,8 +34,10 @@ def test_chat_empty_messages_400():
     assert r.status_code == 400
 
 
-def test_chat_api_missing_key_400():
+def test_chat_api_missing_key_400(monkeypatch, tmp_path):
     # API 接入缺 baseURL/apiKey → 400（在开流前拦下）
+    monkeypatch.setattr(app_module.glm_config, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
     r = client.post("/api/chat", json={
         "messages": [{"role": "user", "content": "hi"}],
         "llm": {"provider": "deepseek", "model": "deepseek-chat", "baseURL": "", "apiKey": ""},
@@ -66,3 +68,17 @@ def test_gstock_quote_full_null_shape():
     q = gstock._quote_from({})
     assert set(q) == {"code", "name", "price", "open", "high", "low", "prev_close", "amount", "mcap", "change_pct"}
     assert all(v is None for v in q.values())
+
+
+def test_legacy_kline_preserves_mootdx_contract(monkeypatch):
+    seen = {}
+
+    def fake_kline(code, category, offset):
+        seen.update(code=code, category=category, offset=offset)
+        return [{"datetime": "2026-08-31 10:30", "open": 1, "close": 2}]
+
+    monkeypatch.setattr(app_module.astock, "kline", fake_kline)
+    response = client.get("/api/kline?code=600519&category=11&offset=20")
+    assert response.status_code == 200
+    assert seen == {"code": "600519", "category": 11, "offset": 20}
+    assert response.json()["data"][0]["datetime"] == "2026-08-31 10:30"

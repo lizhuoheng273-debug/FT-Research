@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Search, FileText, Newspaper, Loader2, AlertCircle, LineChart, BarChart3, Megaphone,
   Wallet, Trophy, CalendarClock, Boxes, MessageSquare,
@@ -15,6 +16,7 @@ import {
   type GlobalStock, type HkCashflow,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 
 // 金额格式化（后端资金单位：元 / 万元）
 const yi = (v: number) => `${(v / 1e8).toFixed(2)} 亿`;
@@ -77,8 +79,11 @@ function ValBand({ label, m }: { label: string; m: ValMetric }) {
   );
 }
 
-export function StockData() {
-  const [code, setCode] = useState("");
+export function StockData({ initialCode: providedInitialCode, embedded = false }: { initialCode?: string; embedded?: boolean } = {}) {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const initialCode = providedInitialCode || searchParams.get("code") || "";
+  const [code, setCode] = useState(initialCode);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [val, setVal] = useState<Valuation | null>(null);
@@ -103,8 +108,8 @@ export function StockData() {
   const [cashflow, setCashflow] = useState<HkCashflow | null>(null);  // 港股现金流量表（仅港股）
   const runIdRef = useRef(0);
 
-  const run = async () => {
-    const c = code.trim().toUpperCase();
+  const run = async (requestedCode?: string) => {
+    const c = (requestedCode ?? code).trim().toUpperCase();
     if (!c) { setErr("请输入代码"); return; }
     const rid = ++runIdRef.current;
     setLoading(true); setErr(null); setDepNote(null); setVal(null); setReports([]); setNews([]); setPctl(null); setFin(null); setAnns([]);
@@ -167,6 +172,13 @@ export function StockData() {
     }
   };
 
+  useEffect(() => {
+    if (!initialCode) return;
+    setCode(initialCode);
+    void run(initialCode);
+    return () => { runIdRef.current += 1; };
+  }, [initialCode]);
+
   const metrics = val ? [
     { k: "现价", v: fmt(val.price) },
     { k: "PE(TTM)", v: fmt(val.pe_ttm) },
@@ -198,11 +210,12 @@ export function StockData() {
   return (
     <div>
       <PageHeader
-        title="个股数据"
+        title={embedded ? "数据与分析" : "个股数据"}
         subtitle="行情 · 估值 · 研报 · 新闻 —— 客观数据配齐，判断交给你的 AI"
         actions={(val || gstock) && (
           <AskAiButton
             context={gstock ? gAiContext : aiContext}
+            analysisScope="stock"
             // 本页不换路由就能换标的，必须按代码分开存对话，否则会串台。
             // ⚠️ 用**已解析结果**的代码，不能用输入框的 code——后者一边打字一边变，
             // 而 val/gstock 和 AI 上下文仍描述上一只票，会把旧上下文存到新代码名下。
@@ -216,23 +229,25 @@ export function StockData() {
       />
 
       {/* 查询框 */}
-      <div className="mb-5 flex gap-2">
-        <input
+      {!embedded && <div className="relative mb-5 flex gap-2">
+        <StockSearchInput
           value={code}
-          onChange={(e) => setCode(e.target.value.replace(/[^a-zA-Z0-9.]/g, "").toUpperCase().slice(0, 12))}
-          onKeyDown={(e) => e.key === "Enter" && run()}
-          placeholder="A 股 6 位代码，或美股/港股/韩股（AAPL / 00700 / 005930.KS）"
-          className="w-80 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+          onChange={(value) => setCode(value.replace(/[^a-zA-Z0-9.\u3400-\u9fff]/g, "").toUpperCase().slice(0, 12))}
+          onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+          onSubmitCode={(value) => void run(value)}
+          allowExternalSymbols
+          placeholder="股票代码或名称（如 贵州茅台 / 600519；外围如 AAPL / 00700）"
+          className="w-80"
         />
         <button
-          onClick={run}
+          onClick={() => void run()}
           disabled={loading}
           className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
           查询
         </button>
-      </div>
+      </div>}
 
       {err && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
@@ -595,7 +610,7 @@ export function StockData() {
         <GlassCard>
           <div className="py-10 text-center text-sm text-muted-foreground">
             输入一个 6 位股票代码，拉取它的行情、估值、研报与新闻。<br />
-            <span className="text-xs text-muted-foreground/60">数据来自公开源（腾讯行情 / 东财研报 / akshare）；Vibe-Research 不预置任何标的、不做推荐。</span>
+            <span className="text-xs text-muted-foreground/60">数据来自公开源（腾讯行情 / 东财研报 / akshare）；FT-Research 不预置任何标的、不做推荐。</span>
           </div>
         </GlassCard>
       )}

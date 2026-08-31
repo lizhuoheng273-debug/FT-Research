@@ -1,14 +1,14 @@
-// 用户 LLM 配置（只存本地 localStorage，不上传、不进仓库）+ 系统 AI 对话调用。
+// FT-Research AI 对话调用。V1 的 GLM 密钥只在后端环境变量中管理。
 
 import { storageSet, storageRemove } from "@/lib/storage";
 
-import { ApiError, authHeaders } from "./api";
-import { isCliProvider, type ProviderId } from "./ai-models";
+import { ApiError, apiUrl, authHeaders } from "./api";
+import type { ProviderId } from "./ai-models";
 
 export interface LlmConfig {
   provider: ProviderId;
   baseURL: string; // CLI 订阅时留空
-  apiKey: string;  // CLI 订阅时留空
+  apiKey?: string;  // 兼容旧版本地配置；V1 不再读取或发送
   model: string;
 }
 
@@ -16,6 +16,8 @@ export interface ChatMsg {
   role: "user" | "assistant";
   content: string;
 }
+
+export type AnalysisScope = "general" | "market" | "index" | "sector" | "stock";
 
 export interface ChatResult {
   content: string;
@@ -30,9 +32,8 @@ export function loadLlm(): LlmConfig | null {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const c = JSON.parse(raw) as LlmConfig;
-    // 订阅(CLI)：有 model 即可，免 key；API：需 baseURL + key + model。
-    const ok = c.model && (isCliProvider(c.provider) || (c.baseURL && c.apiKey));
-    return ok ? c : null;
+    // 清理旧版本可能残留的浏览器密钥，避免误用或继续传播。
+    return c.model ? { ...c, apiKey: undefined } : null;
   } catch {
     return null;
   }
@@ -47,7 +48,8 @@ export function clearLlm() {
 }
 
 export function hasLlm(): boolean {
-  return loadLlm() !== null;
+  // GLM 配置在后端；前端不因浏览器 localStorage 为空而阻断提问。
+  return true;
 }
 
 export interface ChatHandlers {
@@ -58,16 +60,16 @@ export interface ChatHandlers {
 // 流式调后端 /api/chat（NDJSON：每行一个事件 {type: tool|delta|done|error}）。
 // 边流边回调 onDelta/onTool；返回累积的最终 {content, trace, rounds}。
 // signal：调用方可传 AbortController.signal，用户关面板/换问题时中止请求（省订阅/API 额度）。
-export async function chatStream(messages: ChatMsg[], context: string, handlers: ChatHandlers = {}, signal?: AbortSignal): Promise<ChatResult> {
-  const llm = loadLlm();
-  if (!llm) throw new ApiError("尚未接入 AI，请先在「接入 AI」里配置", 400);
-
+export async function chatStream(messages: ChatMsg[], context: string, handlers: ChatHandlers = {}, signal?: AbortSignal, analysisScope: AnalysisScope = "general"): Promise<ChatResult> {
   let resp: Response;
   try {
-    resp = await fetch("/api/chat", {
+    const body = analysisScope === "general"
+      ? JSON.stringify({ messages, context })
+      : JSON.stringify({ messages, context, analysis_scope: analysisScope });
+    resp = await fetch(apiUrl("/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ messages, context, llm }),
+      body,
       signal,
     });
   } catch (e) {

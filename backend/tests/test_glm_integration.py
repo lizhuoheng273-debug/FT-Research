@@ -1,0 +1,62 @@
+import os
+
+from fastapi.testclient import TestClient
+
+import app
+import glm_config
+
+
+def test_glm_status_never_returns_key(monkeypatch):
+    monkeypatch.setenv("GLM_API_KEY", "secret-value")
+    monkeypatch.setenv("GLM_MODEL", "glm-5.3-flash")
+    client = TestClient(app.app)
+    body = client.get("/api/ai/status").json()
+    assert body == {
+        "configured": True,
+        "model": "glm-5.3-flash",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "key_present": True,
+    }
+    assert "secret" not in str(body)
+
+
+def test_chat_uses_server_glm_config(monkeypatch):
+    monkeypatch.setenv("GLM_API_KEY", "server-key")
+    monkeypatch.setenv("GLM_MODEL", "glm-test")
+    seen = {}
+
+    def fake_stream(cfg, messages, context):
+        seen.update(cfg)
+        yield {"type": "delta", "text": "ok"}
+        yield {"type": "done", "trace": [], "rounds": 1}
+
+    monkeypatch.setattr(app.chat_layer, "run_chat_stream", fake_stream)
+    response = TestClient(app.app).post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}], "context": "ctx"})
+    assert response.status_code == 200
+    assert seen["apiKey"] == "server-key"
+    assert seen["model"] == "glm-test"
+
+
+def test_glm_config_defaults(monkeypatch, tmp_path):
+    monkeypatch.setattr(glm_config, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    cfg = glm_config.load_glm_config()
+    assert cfg["baseURL"] == "https://open.bigmodel.cn/api/paas/v4"
+    assert cfg["model"] == "glm-5.3-flash"
+    assert cfg["apiKey"] == ""
+
+
+def test_glm_config_reads_backend_env_file_without_overriding_process_env(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("GLM_API_KEY=file-key\nGLM_MODEL=glm-file\nGLM_BASE_URL=https://file.example/v4\n", encoding="utf-8")
+    monkeypatch.setattr(glm_config, "ENV_FILE", env_file)
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.delenv("GLM_MODEL", raising=False)
+    monkeypatch.delenv("GLM_BASE_URL", raising=False)
+    cfg = glm_config.load_glm_config()
+    assert cfg["apiKey"] == "file-key"
+    assert cfg["model"] == "glm-file"
+    assert cfg["baseURL"] == "https://file.example/v4"
+
+    monkeypatch.setenv("GLM_API_KEY", "process-key")
+    assert glm_config.load_glm_config()["apiKey"] == "process-key"

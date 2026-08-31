@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Swords, Play, Square, Save, CheckCircle2, Circle, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,6 +9,7 @@ import { Disclaimer } from "@/components/ui/Disclaimer";
 import { debateStream, type DebateStage } from "@/lib/agents";
 import { addNote } from "@/lib/notes";
 import { ApiError } from "@/lib/api";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 
 interface StageBox {
   stage: DebateStage;
@@ -29,6 +31,7 @@ const STAGE_TONE: Record<DebateStage, string> = {
 const DOSSIER_HINT = "多空双方拿到的是同一份接口实时拉取的数据，谁也不能靠编数字赢。";
 
 export function Debate() {
+  const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [rounds, setRounds] = useState(1);
   const [running, setRunning] = useState(false);
@@ -44,8 +47,9 @@ export function Debate() {
     setStatus(""); setProgress([]); setMissing([]); setStages([]); setError(""); setSaved(false);
   };
 
-  async function start() {
-    const c = code.trim();
+  async function start(requestedCode = code) {
+    const c = requestedCode.trim();
+    setCode(c);
     if (!/^\d{6}$/.test(c)) { setError("请输入 6 位 A 股代码"); return; }
     reset();
     setRunning(true);
@@ -101,13 +105,14 @@ export function Debate() {
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
-            <input
+            <StockSearchInput
               value={code}
-              onChange={(e) => setCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}
-              onKeyDown={(e) => { if (e.key === "Enter" && !running) start(); }}
+              onChange={setCode}
+              onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+              onSubmitCode={(value) => { if (!running) void start(value); }}
               placeholder="6 位代码，如 600519"
               disabled={running}
-              className="w-44 rounded-lg border border-border/60 bg-background/60 px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
+              className="w-44 font-mono focus:border-sky-500"
             />
           </div>
           <div>
@@ -128,7 +133,7 @@ export function Debate() {
               <Square className="h-4 w-4" /> 中止
             </button>
           ) : (
-            <button onClick={start}
+            <button onClick={() => void start()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary/90 px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary">
               <Play className="h-4 w-4" /> 开始辩论
             </button>

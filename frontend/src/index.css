@@ -107,6 +107,12 @@
 }
 
 @layer components {
+  /* AI HOT 风格的周期报告双栏布局：固定归档栏，内容栏自适应。 */
+  .report-layout { grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 768px) {
+    .report-layout { grid-template-columns: 250px minmax(0, 1fr); }
+  }
+
   /* 玻璃卡：半透明填充 + 发丝边框 + 柔投影 + 顶部内高光（EP26 高级感配方） */
   .glass {
     background-image: linear-gradient(162deg, var(--glass-fill-top), var(--glass-fill-bot));

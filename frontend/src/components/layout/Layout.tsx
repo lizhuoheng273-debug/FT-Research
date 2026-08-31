@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, Radar, LayoutGrid, Wallet, Settings, Search, NotebookPen,
-  Moon, Sun, ChevronsLeft, ChevronsRight, ChevronDown, LineChart, Github, UserRound,
-  Cog, Cpu, Database, Cable, Rocket, FlaskConical, Star, FileText, Swords, Thermometer, Gauge,
-  Rss, Newspaper, TrendingUp,
+  Activity, Radar, Search, Moon, Sun, ChevronsLeft, ChevronsRight, LineChart, Github, UserRound,
+  Star, FileText, Newspaper,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
@@ -15,71 +13,25 @@ import { version as PKG_VERSION } from "../../../package.json";
 
 // 版本号只从 package.json 读，不再各处写死（发 v0.3.0 时三处忘改停在 v0.2.2，#20）
 const APP_VERSION = `v${PKG_VERSION}`;
-const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
+const REPO_URL = "https://github.com/lizhuoheng273-debug/FT-Research";
 // 作者联系方式
 const X_URL = "https://x.com/linsizhen";
 const MAIL_URL = "mailto:simonlin0423@gmail.com";
 
 const NAV = [
-  { to: "/daily-review", icon: Activity, label: "每日复盘" },
-  { to: "/intel", icon: Radar, label: "资讯雷达" },
-  { to: "/signals", icon: Thermometer, label: "产业信号" },
-  { to: "/sectors", icon: LayoutGrid, label: "板块中心" },
-  { to: "/stock-data", icon: Search, label: "个股数据" },
-  { to: "/debate", icon: Swords, label: "多空辩论" },
-  { to: "/watchlist", icon: Star, label: "自选股" },
-  { to: "/portfolio", icon: Wallet, label: "我的持仓" },
-  { to: "/my-reports", icon: FileText, label: "我的研报" },
-  { to: "/notes", icon: NotebookPen, label: "研究记录" },
-  { to: "/settings", icon: Settings, label: "接入 AI" },
+  { to: "/ai/news", icon: Radar, label: "AI 热点资讯", section: "AI 板块" },
+  { to: "/ai/daily", icon: FileText, label: "AI 日报" },
+  { to: "/finance/news", icon: Newspaper, label: "金融市场资讯", section: "金融板块" },
+  { to: "/finance/review", icon: Activity, label: "每日复盘" },
+  { to: "/finance/watchlist", icon: Star, label: "自选股" },
+  { to: "/finance/research", icon: Search, label: "AI 投研" },
 ];
-
-// 资讯雷达的小栏目（缩进子项，顺序即页内 Tab 顺序）。
-const INTEL_LINKS = [
-  { to: "/intel/investment-news", icon: Rss, label: "Investment News" },
-  { to: "/intel/news", icon: Newspaper, label: "公开新闻" },
-  { to: "/intel/filings", icon: FileText, label: "A股公告" },
-  { to: "/intel/events", icon: TrendingUp, label: "事件概率" },
-];
-
-// 产业信号的小栏目（缩进子项，逐期在此添加；带小三角可展开收起）。
-const SIGNAL_LINKS = [
-  { to: "/signals/gpu-rent", icon: Gauge, label: "GPU租金" },
-];
-
-// 常看的板块，作为「板块中心」下的快捷入口（缩进显示）。
-const SECTOR_LINKS = [
-  { to: "/sectors/humanoid", icon: Cog, label: "人形机器人" },
-  { to: "/sectors/ai-computing", icon: Cpu, label: "AI 算力" },
-  { to: "/sectors/hbm", icon: Database, label: "HBM" },
-  { to: "/sectors/cpo", icon: Cable, label: "光互联" },
-  { to: "/sectors/business-space", icon: Rocket, label: "商业航天" },
-  { to: "/sectors/ai-pharma", icon: FlaskConical, label: "生物医药" },
-];
-
-// 带子栏目的导航组：父项右侧小三角展开/收起，展开状态按组记忆。
-const NAV_GROUPS: Record<string, { storageKey: string; links: typeof SIGNAL_LINKS }> = {
-  "/intel": { storageKey: "vr-intel-open", links: INTEL_LINKS },
-  "/signals": { storageKey: "vr-signals-open", links: SIGNAL_LINKS },
-  "/sectors": { storageKey: "vr-sectors-open", links: SECTOR_LINKS },
-};
 
 export function Layout() {
   const { pathname } = useLocation();
+  const stockAiWorkspace = /^\/finance\/stocks\/\d{6}\/ai$/.test(pathname);
   const { dark, toggle } = useDarkMode();
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
-  // 各导航组子栏目的展开状态（默认展开；按组记住用户的选择）
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(Object.entries(NAV_GROUPS).map(([path, g]) => [path, storageGet(g.storageKey) !== "closed"])));
-
-  const toggleGroup = (path: string) => {
-    setOpenGroups((prev) => {
-      const next = { ...prev, [path]: !prev[path] };
-      storageSet(NAV_GROUPS[path].storageKey, next[path] ? "open" : "closed");
-      return next;
-    });
-  };
-
   useEffect(() => {
     storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
@@ -93,11 +45,11 @@ export function Layout() {
       )}>
         {/* Brand */}
         <div className={cn("border-b border-border/50", collapsed ? "flex justify-center p-3" : "p-4")}>
-          <Link to="/daily-review" className={cn("flex items-center", collapsed ? "justify-center" : "gap-2")}>
+          <Link to="/ai/news" className={cn("flex items-center", collapsed ? "justify-center" : "gap-2")}>
             <LineChart className="h-6 w-6 shrink-0 text-primary text-glow" />
             {!collapsed && (
               <span className="text-lg font-extrabold tracking-tight">
-                Vibe-<span className="text-primary">Research</span>
+                FT-<span className="text-primary">Research</span>
               </span>
             )}
           </Link>
@@ -106,12 +58,11 @@ export function Layout() {
 
         {/* Nav */}
         <nav className={cn("flex-1 space-y-1 overflow-auto", collapsed ? "p-1.5" : "p-2.5")}>
-          {NAV.map(({ to, icon: Icon, label }) => {
-            const active = pathname === to;
-            const group = NAV_GROUPS[to];
-            const groupOpen = group ? openGroups[to] : false;
+          {NAV.map(({ to, icon: Icon, label, section }, index) => {
+            const active = pathname === to || pathname.startsWith(`${to}/`);
             return (
               <div key={to}>
+                {section && !collapsed && <p className={cn("px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/50", index > 0 && "mt-4")}>{section}</p>}
                 <Link
                   to={to}
                   title={collapsed ? label : undefined}
@@ -124,45 +75,8 @@ export function Layout() {
                   )}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  {!collapsed && (group ? <span className="flex-1">{label}</span> : label)}
-                  {/* 导航组：小三角展开/收起子栏目（点三角不跳转，点文字仍进总览页） */}
-                  {group && !collapsed && (
-                    <span
-                      role="button"
-                      aria-label={groupOpen ? "收起子栏目" : "展开子栏目"}
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleGroup(to); }}
-                      className="-mr-1 rounded p-0.5 hover:bg-muted/60"
-                    >
-                      <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", !groupOpen && "-rotate-90")} />
-                    </span>
-                  )}
+                  {!collapsed && label}
                 </Link>
-
-                {/* 子栏目（缩进）；收起侧栏时恒显示图标入口 */}
-                {group && (groupOpen || collapsed) && (
-                  <div className={cn("mt-1 space-y-0.5", !collapsed && "ml-4 border-l border-border/40 pl-1.5")}>
-                    {group.links.map(({ to: st, icon: SIcon, label: slabel }) => {
-                      const sactive = pathname === st;
-                      return (
-                        <Link
-                          key={st}
-                          to={st}
-                          title={collapsed ? slabel : undefined}
-                          className={cn(
-                            "flex items-center rounded-lg transition-colors",
-                            collapsed ? "justify-center p-2" : "gap-2 px-2.5 py-1.5 text-[13px]",
-                            sactive
-                              ? "bg-primary/10 font-medium text-primary"
-                              : "text-muted-foreground/80 hover:bg-muted/40 hover:text-foreground",
-                          )}
-                        >
-                          <SIcon className="h-3.5 w-3.5 shrink-0" />
-                          {!collapsed && slabel}
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
             );
           })}
@@ -217,7 +131,7 @@ export function Layout() {
 
       {/* Main */}
       <main className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6">
+        <div className={cn("mx-auto", stockAiWorkspace ? "max-w-none px-3 py-3" : "max-w-6xl px-6 py-6")}>
           <Outlet />
         </div>
       </main>

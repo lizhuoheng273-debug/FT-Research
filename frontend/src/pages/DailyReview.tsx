@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
-import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, Plus, X, Flame, BarChart3, Globe } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, X, Flame, BarChart3, Globe } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -10,7 +10,8 @@ import { Disclaimer } from "@/components/ui/Disclaimer";
 import { api, ApiError, type IndexQuote, type Quote, type MarketOverview, type ShortTermEmotion, type TurnoverTop, type GlobalIndex } from "@/lib/api";
 import { hasLlm, chatStream } from "@/lib/llm";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
-import { loadWatch, saveWatch, addCodes } from "@/lib/watchlist";
+import { loadWatch, saveWatch } from "@/lib/watchlist";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 import { cn } from "@/lib/utils";
 
 // A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
@@ -20,6 +21,7 @@ const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 
 const yi = (v: number | null) => (v == null ? "—" : `${fmt(v / 1e8)} 亿`); // 元 → 亿
 
 export function DailyReview() {
+  const navigate = useNavigate();
   const [indices, setIndices] = useState<IndexQuote[]>([]);
   const [idxErr, setIdxErr] = useState(false);
   const [review, setReview] = useState("");
@@ -33,7 +35,7 @@ export function DailyReview() {
   // 关注股票（自选，存本地）
   const [watchCodes, setWatchCodes] = useState<string[]>(loadWatch);
   const [watchQuotes, setWatchQuotes] = useState<Record<string, Quote>>({});
-  const [watchInput, setWatchInput] = useState("");
+  const [searchCode, setSearchCode] = useState("");
   const [watchLoading, setWatchLoading] = useState(false);
 
   // 各数据块请求是否已结束：区分「加载中」与「数据源暂不可用」（非交易时段/被限流时后端返回空）
@@ -67,14 +69,6 @@ export function DailyReview() {
     refreshWatch(loadWatch());
   }, []);
 
-  const addWatch = () => {
-    // 支持一次粘贴多只（逗号 / 空格分隔）；全部无效或重复则清空输入、无副作用。
-    const { next, added } = addCodes(watchCodes, watchInput);
-    setWatchInput("");
-    if (!added) return;
-    setWatchCodes(next); saveWatch(next); refreshWatch(next);
-  };
-
   const removeWatch = (c: string) => {
     const next = watchCodes.filter((x) => x !== c);
     setWatchCodes(next); saveWatch(next); refreshWatch(next);
@@ -85,6 +79,31 @@ export function DailyReview() {
   const dataSummary = indices.length
     ? indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；")
     : "（指数数据未取到）";
+  const sentiment = overview?.sentiment;
+  const sectors = overview?.sectors || [];
+  const globalSummary = globalIdx.length
+    ? globalIdx.map((item) => `${item.name} ${item.price ?? "—"}（${item.change_pct == null ? "涨跌缺失" : `${item.change_pct > 0 ? "+" : ""}${item.change_pct}%`}）`).join("；")
+    : "数据缺口：全球指数未取到";
+  const sentimentSummary = sentiment
+    ? `上涨 ${sentiment.up} 家、下跌 ${sentiment.down} 家、涨停 ${sentiment.zt} 家、跌停 ${sentiment.dt} 家；市场宽度 ${sentiment.breadth}；题材投机 ${sentiment.speculation}；活跃度 ${sentiment.active}`
+    : "数据缺口：市场宽度与情绪未取到";
+  const sectorSummary = sectors.length
+    ? sectors.slice(0, 10).map((item) => `${item.name} ${item.pct > 0 ? "+" : ""}${item.pct}%、净流入 ${item.net > 0 ? "+" : ""}${fmt(item.net)} 亿`).join("；")
+    : "数据缺口：板块涨跌与资金流未取到";
+  const emotionSummary = emotion
+    ? `涨停 ${emotion.zt_count} 家、跌停 ${emotion.dt_count} 家、最高 ${emotion.max_boards} 板、连板 ${emotion.lianban_count} 家、封板率 ${emotion.seal_rate ?? "缺失"}、炸板率 ${emotion.break_rate ?? "缺失"}`
+    : "数据缺口：短线情绪未取到";
+  const turnoverSummary = turnover?.stocks?.length
+    ? turnover.stocks.slice(0, 10).map((item) => `${item.name}（${item.code}）成交额 ${yi(item.amount)}、涨跌 ${item.pct == null ? "缺失" : `${item.pct > 0 ? "+" : ""}${item.pct}%`}`).join("；")
+    : "数据缺口：全市场成交额榜未取到";
+  const marketContext = [
+    `A股主要指数：${dataSummary}`,
+    `全球市场：${globalSummary}`,
+    `市场宽度：${sentimentSummary}`,
+    `板块资金：${sectorSummary}`,
+    `短线情绪：${emotionSummary}`,
+    `成交额榜：${turnoverSummary}`,
+  ].join("\n");
 
   const runReview = async () => {
     setReviewErr(null);
@@ -92,14 +111,11 @@ export function DailyReview() {
     if (!hasLlm()) { setNeedConfig(true); return; }
     setReviewLoading(true);
     setReview("");
-    const prompt =
-      `以下是今天 A 股大盘的客观数据：\n${dataSummary}\n\n` +
-      "请用中文做一段当天大盘复盘：整体涨跌、主要指数表现、盘面值得注意的点。" +
-      "只做客观陈述与多视角分析，不预测涨跌、不推荐任何标的、不构成投资建议。";
+    const prompt = "请基于已提供和可查询的客观数据，完整复盘今天的 A 股市场；明确事实、推断、待验证条件与数据缺口。";
     try {
-      await chatStream([{ role: "user", content: prompt }], `今日大盘数据：${dataSummary}`, {
+      await chatStream([{ role: "user", content: prompt }], marketContext, {
         onDelta: (t) => setReview((r) => r + t),
-      });
+      }, undefined, "market");
     } catch (e) {
       setReviewErr(e instanceof ApiError ? e.message : "复盘失败");
     } finally {
@@ -107,8 +123,6 @@ export function DailyReview() {
     }
   };
 
-  const sentiment = overview?.sentiment;
-  const sectors = overview?.sectors || [];
   const sentCells = sentiment ? [
     { k: "上涨家数", v: sentiment.up, up: true },
     { k: "下跌家数", v: sentiment.down, up: false },
@@ -127,7 +141,8 @@ export function DailyReview() {
         subtitle={`${today} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
         actions={
           <AskAiButton
-            context={`今日大盘数据：${dataSummary}`}
+            context={marketContext}
+            analysisScope="market"
             label="问 AI"
             suggestions={["今天大盘怎么走", "哪些指数领涨领跌", "盘面有什么值得注意"]}
           />
@@ -148,11 +163,13 @@ export function DailyReview() {
               </GlassCard>
             ))
           : indices.map((i) => (
-              <GlassCard key={i.name} className="p-3">
+              <Link key={i.code} to={`/finance/indices/${i.code}`} className="block min-w-0">
+              <GlassCard className="h-full p-3 transition-colors hover:border-primary/40">
                 <p className="truncate text-xs text-muted-foreground">{i.name}</p>
                 <p className={cn("mt-1 font-mono text-lg font-bold", pctColor(i.change_pct))}>{i.price}</p>
                 <p className={cn("text-xs", pctColor(i.change_pct))}>{i.change_pct > 0 ? "+" : ""}{i.change_pct}%</p>
               </GlassCard>
+              </Link>
             ))}
       </div>
 
@@ -187,19 +204,13 @@ export function DailyReview() {
         )}
       </div>
       <GlassCard className="mb-6">
-        <div className="mb-3 flex gap-2">
-          <input
-            value={watchInput}
-            onChange={(e) => setWatchInput(e.target.value.replace(/[^\d,\s]/g, "").slice(0, 80))}
-            onKeyDown={(e) => e.key === "Enter" && addWatch()}
-            placeholder="加自选：可批量，如 600519 000858"
-            className="w-60 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
-          />
-          <button onClick={addWatch}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25">
-            <Plus className="h-4 w-4" /> 增加
-          </button>
-        </div>
+        <StockSearchInput
+          value={searchCode}
+          onChange={setSearchCode}
+          onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+          onSubmitCode={(value) => navigate(`/finance/stocks/${value}`)}
+          placeholder="搜索股票名称或代码，点击进入详情"
+        />
         {watchCodes.length === 0 ? (
           <p className="text-sm text-muted-foreground/60">加上你关注的股票，随时看它们的实时价格与涨跌。数据存本地，不上传。</p>
         ) : (
@@ -207,9 +218,11 @@ export function DailyReview() {
             {watchCodes.map((c) => {
               const q = watchQuotes[c];
               return (
-                <div key={c} className="group relative rounded-lg bg-muted/25 p-3">
+                <div key={c} className="group relative rounded-lg bg-muted/25 p-3 transition-colors hover:bg-muted/40">
+                  <Link to={`/finance/stocks/${c}`} aria-label={`查看 ${q?.name || c} 详情`}
+                    className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50" />
                   <button onClick={() => removeWatch(c)} title="移除"
-                    className="absolute right-1.5 top-1.5 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">
+                    className="absolute right-1.5 top-1.5 z-10 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">
                     <X className="h-3.5 w-3.5" />
                   </button>
                   <p className="truncate text-xs text-muted-foreground">{q?.name || c}</p>
@@ -237,7 +250,7 @@ export function DailyReview() {
         {needConfig && (
           <div className="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-            还没接入 AI。<Link to="/settings" className="text-primary">先去接入你的 AI</Link>，之后一键出复盘。
+            还没配置 GLM。<Link to="/settings" className="text-primary">查看 AI 配置状态</Link>，之后一键出复盘。
           </div>
         )}
         {reviewErr && (
@@ -347,14 +360,14 @@ export function DailyReview() {
                     </thead>
                     <tbody>
                       {emotion.lianban_stocks.map((s) => (
-                        <tr key={s.code} className="border-b border-border/30">
-                          <td className="px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></td>
-                          <td className="whitespace-nowrap px-2 py-2 font-mono font-bold text-primary">{s.boards} 板</td>
-                          <td className="px-2 py-2 font-mono">{s.price}</td>
-                          <td className="px-2 py-2 font-mono text-danger">+{s.pct}%</td>
-                          <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.amount)}</td>
-                          <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.float_cap)}</td>
-                          <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>
+                        <tr key={s.code} className="border-b border-border/30 transition-colors hover:bg-muted/20">
+                          <td><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></Link></td>
+                          <td className="whitespace-nowrap font-mono font-bold text-primary"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.boards} 板</Link></td>
+                          <td className="font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.price}</Link></td>
+                          <td className="font-mono text-danger"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">+{s.pct}%</Link></td>
+                          <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.amount)}</Link></td>
+                          <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.float_cap)}</Link></td>
+                          <td className="whitespace-nowrap text-xs text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.industry}</Link></td>
                         </tr>
                       ))}
                     </tbody>
@@ -387,16 +400,16 @@ export function DailyReview() {
               </thead>
               <tbody>
                 {turnover.stocks.map((s, i) => (
-                  <tr key={s.code} className="border-b border-border/30">
-                    <td className="px-2 py-2 font-mono text-xs text-muted-foreground/50">{i + 1}</td>
-                    <td className="px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></td>
-                    <td className="px-2 py-2 font-mono">{s.price ?? "—"}</td>
-                    <td className={cn("px-2 py-2 font-mono", s.pct == null ? "text-muted-foreground" : pctColor(s.pct))}>
-                      {s.pct == null ? "—" : `${s.pct > 0 ? "+" : ""}${s.pct}%`}
+                  <tr key={s.code} className="border-b border-border/30 transition-colors hover:bg-muted/20">
+                    <td className="font-mono text-xs text-muted-foreground/50"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{i + 1}</Link></td>
+                    <td><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></Link></td>
+                    <td className="font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.price ?? "—"}</Link></td>
+                    <td className={cn("font-mono", s.pct == null ? "text-muted-foreground" : pctColor(s.pct))}>
+                      <Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.pct == null ? "—" : `${s.pct > 0 ? "+" : ""}${s.pct}%`}</Link>
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2 font-mono">{yi(s.amount)}</td>
-                    <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.mcap)}</td>
-                    <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>
+                    <td className="whitespace-nowrap font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.amount)}</Link></td>
+                    <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.mcap)}</Link></td>
+                    <td className="whitespace-nowrap text-xs text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.industry}</Link></td>
                   </tr>
                 ))}
               </tbody>

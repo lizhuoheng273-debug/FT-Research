@@ -1,0 +1,77 @@
+{
+  "internal_only": true,
+  "usage": "公开来源的方法依据与审计档案；不直接注入日常提示词，不作为用户可选方法。",
+  "methods": [
+    {
+      "id": "base",
+      "kind": "core",
+      "name": "原项目基础五维框架",
+      "description": "原有客观个股研究框架，现作为自动融合框架中 stock 范围的基本面证据层，覆盖估值、资金面、财报质量、行业景气和事件催化与风险。",
+      "evidence_status": "project_defined",
+      "applicable_scopes": ["stock"],
+      "coverage": ["估值", "资金面", "财报质量", "行业景气", "事件催化与风险"],
+      "source_refs": [
+        {"title": "FT-Research 投研分析框架", "date": "项目内置", "url": "README.md#投研分析框架", "status": "project_rule"}
+      ],
+      "principles": [],
+      "limitations": ["只组织和解释客观数据，不提供买卖建议、目标价、评级或收益承诺。"]
+    },
+    {
+      "id": "laohe_douyin",
+      "kind": "optional",
+      "name": "老何学院·复盘视角",
+      "description": "试验性补充视角：从公开复盘主题中关注指数、成交量、K线、板块轮动、龙头中军和波段条件。视频正文尚未全部取得转录，因此不推断具体点位或交易规则。",
+      "evidence_status": "title_indexed_pending_transcript",
+      "applicable_scopes": ["market", "index", "sector"],
+      "coverage": ["技术形态", "成交量", "板块轮动", "龙头/中军", "复盘与应对"],
+      "source_refs": [
+        {"title": "8月31日复盘", "date": "2026-08-31", "url": "https://www.douyin.com/root/search/%E8%80%81%E4%BD%95?aid=fa342452-d3fe-4944-a322-429f7f45efc9&modal_id=7680100579762375987&type=general", "status": "title_indexed_pending_transcript"},
+        {"title": "8月28日复盘", "date": "2026-08-28", "url": "https://www.douyin.com/root/search/%E8%80%81%E4%BD%95?aid=fa342452-d3fe-4944-a322-429f7f45efc9&modal_id=7680100579762375987&type=general", "status": "title_indexed_pending_transcript"},
+        {"title": "龙头中军补涨跟风", "date": "2026-08-22", "url": "https://www.douyin.com/root/search/%E8%80%81%E4%BD%95?aid=fa342452-d3fe-4944-a322-429f7f45efc9&modal_id=7680100579762375987&type=general", "status": "title_indexed_pending_transcript"},
+        {"title": "成交量毕业课", "date": "2026-01-18", "url": "https://www.douyin.com/root/search/%E8%80%81%E4%BD%95?aid=fa342452-d3fe-4944-a322-429f7f45efc9&modal_id=7680100579762375987&type=general", "status": "title_indexed_pending_transcript"},
+        {"title": "波段选股精华版", "date": "2025-06-09", "url": "https://www.douyin.com/root/search/%E8%80%81%E4%BD%95?aid=fa342452-d3fe-4944-a322-429f7f45efc9&modal_id=7680100579762375987&type=general", "status": "title_indexed_pending_transcript"},
+        {"title": "复盘历史抱团行情", "date": "2025-06-06", "url": "https://www.douyin.com/root/search/%E8%80%81%E4%BD%95?aid=fa342452-d3fe-4944-a322-429f7f45efc9&modal_id=7680100579762375987&type=general", "status": "title_indexed_pending_transcript"},
+        {"title": "去应对，别预测", "date": "2025-05-21", "url": "https://www.douyin.com/root/search/%E8%80%81%E4%BD%95?aid=fa342452-d3fe-4944-a322-429f7f45efc9&modal_id=7680100579762375987&type=general", "status": "title_indexed_pending_transcript"}
+      ],
+      "principles": [
+        {"name": "复盘优先", "instruction": "把盘前判断、盘中走势和收盘结果分开记录，先核对事实，再讨论判断是否成立。", "signals": ["指数收盘", "板块表现", "个股表现"], "mapped_dimensions": ["行业景气", "事件催化与风险"], "evidence_refs": ["8月31日复盘", "8月28日复盘"]},
+        {"name": "量价与技术形态作为补充观察", "instruction": "在数据可得时关注K线、成交量、均线和缺口等技术信号，但没有视频转录支持时不得推断该账号的具体阈值或必然含义。", "signals": ["K线", "成交量", "均线", "缺口"], "mapped_dimensions": ["资金面"], "evidence_refs": ["成交量毕业课", "缺口理论详解"]},
+        {"name": "板块结构观察", "instruction": "观察板块中龙头、中军和跟风标的的相对强弱，把板块轮动作为个股研究的背景，不把标签本身当作事实结论。", "signals": ["龙头/中军", "补涨/跟风", "板块轮动"], "mapped_dimensions": ["行业景气", "资金面"], "evidence_refs": ["龙头中军补涨跟风", "复盘历史抱团行情"]},
+        {"name": "条件式应对", "instruction": "把观点改写为可核查的条件和反例，分别记录可能的上行、下行和不确定情景；不输出具体买入、卖出或仓位建议。", "signals": ["支撑/压力", "量能确认", "破位条件"], "mapped_dimensions": ["事件催化与风险"], "evidence_refs": ["去应对，别预测"], "provisional": true}
+      ],
+      "limitations": ["目前只有公开搜索结果中的标题和主题索引，视频正文/字幕需补充后才能确认具体方法。", "涉及进仓、减仓、止损或点位的内容只保留为待验证条件，不转成系统建议。"]
+    },
+    {
+      "id": "xiyang305_x",
+      "kind": "optional",
+      "name": "X 博主实盘马前炮",
+      "description": "基于 @xiyang305 2026 年 8 月公开“实盘马前炮”及复盘帖提炼的补充视角，强调海外映射、技术结构、板块扩散和情景应对。",
+      "evidence_status": "public_posts_indexed",
+      "applicable_scopes": ["market", "index", "stock"],
+      "coverage": ["宏观/海外映射", "技术结构", "成交量", "板块扩散", "预测复盘"],
+      "source_refs": [
+        {"title": "8.31 实盘马前炮", "date": "2026-08-31", "url": "https://x.com/xiyang305/status/2094195042776908280", "status": "public_post"},
+        {"title": "8.31 实盘马前炮·接上文", "date": "2026-08-31", "url": "https://x.com/xiyang305/status/2094195179339337983", "status": "public_post"},
+        {"title": "8.31 实盘马前炮·复盘", "date": "2026-08-31", "url": "https://x.com/xiyang305/status/2094340244850274307", "status": "public_post"},
+        {"title": "8.28 实盘马前炮", "date": "2026-08-28", "url": "https://x.com/xiyang305/status/2093145043137941821", "status": "public_post"},
+        {"title": "8.28 实盘马前炮·接上文", "date": "2026-08-28", "url": "https://x.com/xiyang305/status/2093145219839733961", "status": "public_post"},
+        {"title": "8.27 实盘马前炮", "date": "2026-08-27", "url": "https://x.com/xiyang305/status/2092782596619125075", "status": "public_post"},
+        {"title": "8.26 实盘马前炮", "date": "2026-08-26", "url": "https://x.com/xiyang305/status/2092415623796252835", "status": "public_post"},
+        {"title": "8.24 实盘马前炮", "date": "2026-08-24", "url": "https://x.com/xiyang305/status/2091686257760018810", "status": "public_post"},
+        {"title": "8.20 实盘马前炮·复盘", "date": "2026-08-20", "url": "https://x.com/xiyang305/status/2090354543238566079", "status": "public_post"},
+        {"title": "8.19 实盘马前炮·复盘", "date": "2026-08-19", "url": "https://x.com/xiyang305/status/2090036088698241341", "status": "public_post"},
+        {"title": "8.18 实盘马前炮·复盘", "date": "2026-08-18", "url": "https://x.com/xiyang305/status/2089638733951992286", "status": "public_post"},
+        {"title": "8.17 实盘马前炮·复盘", "date": "2026-08-17", "url": "https://x.com/xiyang305/status/2089278683982987769", "status": "public_post"},
+        {"title": "8.17 实盘马前炮", "date": "2026-08-16", "url": "https://x.com/xiyang305/status/2089001948825669899", "status": "public_post"}
+      ],
+      "principles": [
+        {"name": "海外到A股的自上而下映射", "instruction": "先观察美股指数、费城半导体、黄金、BTC、利率和宏观事件，再说明可能影响A股哪些板块；区分事实、推断和不确定性。", "signals": ["海外指数", "利率/政策", "商品与加密资产", "A股板块"], "mapped_dimensions": ["行业景气", "事件催化与风险"], "evidence_refs": ["8.31 实盘马前炮", "8.24 实盘马前炮", "8.19 实盘马前炮·复盘"]},
+        {"name": "技术结构与量能确认", "instruction": "关注EMA/均线、支撑压力、K线形态和成交量，用于描述市场状态与待验证条件；不把技术位转换为确定性预测。", "signals": ["EMA", "均线", "支撑/压力", "成交量"], "mapped_dimensions": ["资金面", "事件催化与风险"], "evidence_refs": ["8.31 实盘马前炮·复盘", "8.17 实盘马前炮·复盘", "8.16 实盘马前炮"]},
+        {"name": "板块扩散与相对强弱", "instruction": "从主线、分支、龙头/中军和补涨方向观察资金是否扩散，个股判断必须同时核对业绩、技术形态和板块位置。", "signals": ["主线/分支", "龙头/中军", "相对强弱", "业绩预期"], "mapped_dimensions": ["行业景气", "财报质量", "资金面"], "evidence_refs": ["8.28 实盘马前炮·接上文", "8.27 实盘马前炮"]},
+        {"name": "多情景预案", "instruction": "将盘前观点写成上涨、下跌和震荡等条件分支，并说明触发条件与证伪条件；只输出研究观察和验证路径，不给用户具体操作指令。", "signals": ["高开/低开", "关键价位", "破位", "量能"], "mapped_dimensions": ["事件催化与风险"], "evidence_refs": ["8.31 实盘马前炮", "8.26 实盘马前炮"]},
+        {"name": "马前炮后的误差复盘", "instruction": "把前一篇预测与实际结果逐项对照，记录兑现、偏差和没有数据支撑的部分，避免只保留命中的案例。", "signals": ["预测结果", "实际走势", "偏差原因", "修正观点"], "mapped_dimensions": ["事件催化与风险"], "evidence_refs": ["8.31 实盘马前炮·复盘", "8.20 实盘马前炮·复盘", "8.19 实盘马前炮·复盘"]}
+      ],
+      "limitations": ["公开帖子不包含付费群内的实时操作内容，相关表述不纳入方法档案。", "原帖中的具体进仓、减仓、止损、目标位和预测只作为被审计对象，不转成系统投资建议。", "该方法是研究视角，不代表经过统计校准或回测验证的预测模型。"]
+    }
+  ]
+}
