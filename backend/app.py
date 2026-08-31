@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +32,7 @@ import myreports as mr
 import reflection as reflect_layer
 import signals
 import glm_config
+from financial_news import FinancialNewsScheduler, FinancialNewsService
 from aihot_api import AihotClient
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
@@ -45,10 +47,13 @@ app = FastAPI(title="FT-Research API", version=__version__)
 aihot_client = AihotClient()
 report_archive = ReportArchive()
 aihot_reports = AihotReportClient(report_archive)
+financial_news_service = FinancialNewsService()
 
 # 每半小时后台刷新持仓数据
 pf.start_scheduler(1800)
 DailyReportScheduler(report_archive, aihot_client).start()
+if "pytest" not in sys.modules:
+    FinancialNewsScheduler(financial_news_service).start()
 
 # CORS：默认放开（本地自托管友好）；公网部署时用 VR_ALLOW_ORIGINS 收紧成白名单。
 #   例：VR_ALLOW_ORIGINS="https://myhost"  （逗号分隔多个）
@@ -430,6 +435,30 @@ def radar_refresh():
         return {"data": newsradar.fetch_radar()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"资讯雷达刷新失败：{e}") from e
+
+
+@app.get("/api/finance/news/overview")
+def financial_news_overview():
+    """紧要快讯、热门事件与来源状态；只读取后台缓存。"""
+    return {"data": financial_news_service.overview()}
+
+
+@app.get("/api/finance/news/feed")
+def financial_news_feed(category: str = Query("all"), source: str = Query(""), limit: int = Query(60, ge=1, le=200)):
+    return {"data": financial_news_service.feed(category=category, source=source, limit=limit)}
+
+
+@app.get("/api/finance/news/events/{event_id}")
+def financial_news_event(event_id: str):
+    event = financial_news_service.event(event_id)
+    if not event:
+        raise HTTPException(404, "金融资讯事件不存在或缓存已更新")
+    return {"data": event}
+
+
+@app.get("/api/finance/news/status")
+def financial_news_status():
+    return {"data": financial_news_service.status()}
 
 
 @app.get("/api/signals/gpu-rent")

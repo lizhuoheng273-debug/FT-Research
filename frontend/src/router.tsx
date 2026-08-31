@@ -18,6 +18,8 @@ import { AINewsDetail } from "@/pages/AINewsDetail";
 import { StockDetail } from "@/pages/StockDetail";
 import { IndexDetail } from "@/pages/IndexDetail";
 import { StockAiWorkspace } from "@/pages/StockAiWorkspace";
+import { FinancialNews } from "@/pages/FinancialNews";
+import { FinancialNewsDetail } from "@/pages/FinancialNewsDetail";
 
 function LegacyResearch() {
   const [params] = useSearchParams();
@@ -35,8 +37,9 @@ export const router = createBrowserRouter([
       { path: "/ai/news/story/:storyId", element: <AINewsDetail /> },
       { path: "/ai/news/:tab", element: <AINews /> },
       { path: "/ai/daily", element: <AIDaily /> },
-      { path: "/finance/news", element: <Intel /> },
-      { path: "/finance/news/:tab", element: <Intel /> },
+      { path: "/finance/news", element: <FinancialNews /> },
+      { path: "/finance/news/story/:eventId", element: <FinancialNewsDetail /> },
+      { path: "/finance/news/:tab", element: <FinancialNews /> },
       { path: "/finance/review", element: <DailyReview /> },
       { path: "/finance/watchlist", element: <Watchlist /> },
       { path: "/finance/stocks/:code", element: <StockDetail /> },

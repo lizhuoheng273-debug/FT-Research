@@ -224,6 +224,28 @@ export interface RadarData {
   stats: { industries: number; total_sources: number; failed_sources?: number };
 }
 
+export interface FinancialNewsReport {
+  id: string; title: string; summary: string; publishedAt: string;
+  source: string; originalUrl: string; category: string;
+}
+export interface FinancialNewsItem extends FinancialNewsReport {
+  sourceTier: number; sourceLevel?: string; urgencyScore: number; hotScore: number;
+  scoreReasons: string[]; relatedSourceCount: number; relatedSources: string[];
+  relatedStocks: string[]; reports?: FinancialNewsReport[]; firstReportAt?: string;
+  latestAt?: string; status?: string; aiDigest?: string; impactTags?: string[]; stale: boolean;
+}
+export interface FinancialNewsSourceStatus {
+  source: string; ok: boolean; count?: number; fetchedAt?: string; error?: string;
+}
+export interface FinancialNewsOverview {
+  generatedAt: string | null; stale: boolean; urgent: FinancialNewsItem[];
+  hot: FinancialNewsItem[]; feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
+}
+export interface FinancialNewsStatus {
+  quickIntervalSeconds: number; rssIntervalSeconds: number; generatedAt: string | null;
+  stale: boolean; sources: FinancialNewsSourceStatus[];
+}
+
 // 产业信号 · GPU 租金
 export interface GpuSpot {
   gpu: string; median?: number; asof_ts?: number;
@@ -342,6 +364,10 @@ export const api = {
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
+  financialNewsOverview: () => get<FinancialNewsOverview>("/finance/news/overview"),
+  financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),
+  financialNewsEvent: (eventId: string) => get<FinancialNewsItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
+  financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),
   gpuRent: () => get<GpuRentData>("/signals/gpu-rent"),
   gpuRentRefresh: () => request<GpuRentData>("/signals/gpu-rent/refresh", "POST"),
   portfolio: () => get<PortfolioData>("/portfolio"),
