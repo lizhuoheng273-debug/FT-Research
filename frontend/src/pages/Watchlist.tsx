@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { X, RefreshCw, Star } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { AskAiButton } from "@/components/ui/AskAiButton";
-import { loadWatch, saveWatch, parseCodes, addCodes } from "@/lib/watchlist";
-import { StockBatchPicker, type StockBatchItem } from "@/components/stock/StockBatchPicker";
+import { loadWatch, saveWatch } from "@/lib/watchlist";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 import { useLiveQuotes, isTradingHours } from "@/hooks/useLiveQuotes";
 import { cn } from "@/lib/utils";
 
@@ -35,10 +35,9 @@ const saveLive = (on: boolean) => {
 };
 
 export function Watchlist() {
+  const navigate = useNavigate();
   const [codes, setCodes] = useState<string[]>(loadWatch);
-  const [input, setInput] = useState("");
-  const [pendingStocks, setPendingStocks] = useState<StockBatchItem[]>([]);
-  const [hint, setHint] = useState<string | null>(null);
+  const [searchCode, setSearchCode] = useState("");
   // 实时行情默认**关闭**——开着会持续请求，让用户自己决定要不要开。
   const [live, setLive] = useState(loadLive);
 
@@ -52,17 +51,6 @@ export function Watchlist() {
     });
   };
 
-  const add = (raw = input) => {
-    const rawCodes = [...pendingStocks.map((stock) => stock.code), ...parseCodes(raw)].join(" ");
-    const { next, added } = addCodes(codes, rawCodes);
-    setPendingStocks([]);
-    if (added === 0) {
-      setHint(raw.trim() || pendingStocks.length ? "没识别到新的 6 位代码（可能已在自选里）" : null);
-      setInput("");
-      return;
-    }
-    setCodes(next); saveWatch(next); setInput(""); setHint(`已添加 ${added} 只`);
-  };
   const remove = (c: string) => {
     const next = codes.filter((x) => x !== c);
     setCodes(next); saveWatch(next);
@@ -88,7 +76,7 @@ export function Watchlist() {
     <div>
       <PageHeader
         title="自选股"
-        subtitle="批量添加、一屏总览你关注的标的。数据只存本地、不上传。"
+        subtitle="搜索股票进入详情，在详情页加入自选股。数据只存本地、不上传。"
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -126,19 +114,13 @@ export function Watchlist() {
       />
 
       <GlassCard className="mb-4">
-        <label className="mb-1.5 block text-xs text-muted-foreground">
-          批量添加 —— 搜索名称形成待添加标签，也可粘贴一串代码（逗号 / 空格 / 换行都行）
-        </label>
-        <StockBatchPicker
-          items={pendingStocks}
-          onItemsChange={setPendingStocks}
-          existingCodes={codes}
-          rawValue={input}
-          onRawValueChange={setInput}
-          onPasteCodes={add}
-          placeholder="输入股票名称，选择后待添加；也可直接粘贴 6 位代码"
+        <StockSearchInput
+          value={searchCode}
+          onChange={setSearchCode}
+          onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+          onSubmitCode={(value) => navigate(`/finance/stocks/${value}`)}
+          placeholder="搜索股票名称或代码，点击进入详情"
         />
-        {hint && <p className="mt-2 text-xs text-muted-foreground/70">{hint}</p>}
       </GlassCard>
 
       <GlassCard glow>
@@ -176,7 +158,7 @@ export function Watchlist() {
         </div>
         {codes.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground/60">
-            还没有自选股，用上面的框粘贴一串代码批量添加。
+            还没有自选股，请搜索股票并在详情页加入。
           </p>
         ) : (
           <div className="overflow-x-auto">

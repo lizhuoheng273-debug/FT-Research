@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Swords, Play, Square, Save, CheckCircle2, Circle, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -30,6 +31,7 @@ const STAGE_TONE: Record<DebateStage, string> = {
 const DOSSIER_HINT = "多空双方拿到的是同一份接口实时拉取的数据，谁也不能靠编数字赢。";
 
 export function Debate() {
+  const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [rounds, setRounds] = useState(1);
   const [running, setRunning] = useState(false);
@@ -106,11 +108,11 @@ export function Debate() {
             <StockSearchInput
               value={code}
               onChange={setCode}
-              onSelect={(result) => setCode(result.code)}
+              onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
               onSubmitCode={(value) => { if (!running) void start(value); }}
               placeholder="6 位代码，如 600519"
               disabled={running}
-              className="w-44 border-border/60 bg-background/60 font-mono focus:border-primary/60"
+              className="w-44 font-mono focus:border-sky-500"
             />
           </div>
           <div>

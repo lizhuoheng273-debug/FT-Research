@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, X, Flame, BarChart3, Globe } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,8 +10,8 @@ import { Disclaimer } from "@/components/ui/Disclaimer";
 import { api, ApiError, type IndexQuote, type Quote, type MarketOverview, type ShortTermEmotion, type TurnoverTop, type GlobalIndex } from "@/lib/api";
 import { hasLlm, chatStream } from "@/lib/llm";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
-import { loadWatch, saveWatch, parseCodes, addCodes } from "@/lib/watchlist";
-import { StockBatchPicker, type StockBatchItem } from "@/components/stock/StockBatchPicker";
+import { loadWatch, saveWatch } from "@/lib/watchlist";
+import { StockSearchInput } from "@/components/stock/StockSearchInput";
 import { cn } from "@/lib/utils";
 
 // A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
@@ -21,6 +21,7 @@ const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 
 const yi = (v: number | null) => (v == null ? "—" : `${fmt(v / 1e8)} 亿`); // 元 → 亿
 
 export function DailyReview() {
+  const navigate = useNavigate();
   const [indices, setIndices] = useState<IndexQuote[]>([]);
   const [idxErr, setIdxErr] = useState(false);
   const [review, setReview] = useState("");
@@ -34,8 +35,7 @@ export function DailyReview() {
   // 关注股票（自选，存本地）
   const [watchCodes, setWatchCodes] = useState<string[]>(loadWatch);
   const [watchQuotes, setWatchQuotes] = useState<Record<string, Quote>>({});
-  const [watchInput, setWatchInput] = useState("");
-  const [pendingStocks, setPendingStocks] = useState<StockBatchItem[]>([]);
+  const [searchCode, setSearchCode] = useState("");
   const [watchLoading, setWatchLoading] = useState(false);
 
   // 各数据块请求是否已结束：区分「加载中」与「数据源暂不可用」（非交易时段/被限流时后端返回空）
@@ -68,16 +68,6 @@ export function DailyReview() {
     loadIndices();
     refreshWatch(loadWatch());
   }, []);
-
-  const addWatch = (raw = watchInput) => {
-    // 名称选择和代码粘贴都在原有「增加」动作中统一合并，存储边界仍由页面负责。
-    const rawCodes = [...pendingStocks.map((stock) => stock.code), ...parseCodes(raw)].join(" ");
-    const { next, added } = addCodes(watchCodes, rawCodes);
-    setWatchInput("");
-    setPendingStocks([]);
-    if (!added) return;
-    setWatchCodes(next); saveWatch(next); refreshWatch(next);
-  };
 
   const removeWatch = (c: string) => {
     const next = watchCodes.filter((x) => x !== c);
@@ -193,14 +183,12 @@ export function DailyReview() {
         )}
       </div>
       <GlassCard className="mb-6">
-        <StockBatchPicker
-          items={pendingStocks}
-          onItemsChange={setPendingStocks}
-          existingCodes={watchCodes}
-          rawValue={watchInput}
-          onRawValueChange={setWatchInput}
-          onPasteCodes={addWatch}
-          placeholder="输入股票名称，选择后待添加；也可直接粘贴 6 位代码"
+        <StockSearchInput
+          value={searchCode}
+          onChange={setSearchCode}
+          onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
+          onSubmitCode={(value) => navigate(`/finance/stocks/${value}`)}
+          placeholder="搜索股票名称或代码，点击进入详情"
         />
         {watchCodes.length === 0 ? (
           <p className="text-sm text-muted-foreground/60">加上你关注的股票，随时看它们的实时价格与涨跌。数据存本地，不上传。</p>

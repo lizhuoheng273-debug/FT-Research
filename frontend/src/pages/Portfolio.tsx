@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { Plus, ShieldCheck, RefreshCw, Loader2, Trash2, AlertCircle } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -15,6 +16,7 @@ const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 
 const fmtPx = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
 
 export function Portfolio() {
+  const navigate = useNavigate();
   const [data, setData] = useState<PortfolioData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -149,7 +151,7 @@ export function Portfolio() {
             <StockSearchInput
               value={code}
               onChange={setCode}
-              onSelect={(result) => setCode(result.code)}
+              onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
               onSubmitCode={(value) => void add(value)}
               placeholder="股票名称或 6 位代码"
               className="w-40"
@@ -232,7 +234,7 @@ export function Portfolio() {
             <StockSearchInput
               value={cCode}
               onChange={setCCode}
-              onSelect={(result) => setCCode(result.code)}
+              onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
               onSubmitCode={(value) => void addClose(value)}
               placeholder="股票名称或 6 位代码"
               className="w-36"

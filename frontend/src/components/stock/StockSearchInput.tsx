@@ -103,14 +103,14 @@ export function StockSearchInput({
           search.setQuery(next);
         }}
         onKeyDown={onKeyDown}
-        className={cn("rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50", className)}
+        className={cn("rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100", className)}
       />
 
       {search.open && (
-        <div id={listId} role="listbox" className="absolute left-0 top-full z-30 mt-1 w-full min-w-64 overflow-hidden rounded-lg border border-border bg-background shadow-lg">
-          {search.loading && <p className="px-3 py-2 text-xs text-muted-foreground">搜索中…</p>}
-          {!search.loading && search.error && <p className="px-3 py-2 text-xs text-destructive">{search.error}</p>}
-          {!search.loading && !search.error && search.results.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">暂无匹配股票</p>}
+        <div id={listId} role="listbox" className="absolute left-0 top-full z-30 mt-1 w-full min-w-64 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+          {search.loading && <p className="px-3 py-2 text-xs text-slate-500">搜索中…</p>}
+          {!search.loading && search.error && <p className="px-3 py-2 text-xs text-rose-600">{search.error}</p>}
+          {!search.loading && !search.error && search.results.length === 0 && <p className="px-3 py-2 text-xs text-slate-500">暂无匹配股票</p>}
           {!search.loading && !search.error && search.results.map((result, index) => (
             <button
               key={result.code}
@@ -120,10 +120,10 @@ export function StockSearchInput({
               aria-selected={index === search.highlightedIndex}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => selectResult(result)}
-              className={cn("flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted/40", index === search.highlightedIndex && "bg-muted/50")}
+              className={cn("flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm text-slate-900 hover:bg-slate-50", index === search.highlightedIndex && "bg-slate-100")}
             >
               <span className="min-w-0 truncate">{result.name}</span>
-              <span className="shrink-0 text-xs text-muted-foreground"><span className="font-mono">{result.code}</span><span className="ml-2">A股</span></span>
+              <span className="shrink-0 text-xs text-slate-500"><span className="font-mono">{result.code}</span><span className="ml-2">A股</span></span>
             </button>
           ))}
         </div>

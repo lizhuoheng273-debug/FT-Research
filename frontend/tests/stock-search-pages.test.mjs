@@ -18,6 +18,7 @@ test("AI research uses the shared input and preserves external market symbols", 
 test("debate uses shared selection and submits a normalized A-share code", () => {
   assert.match(debate, /StockSearchInput/);
   assert.match(debate, /onSelect/);
+  assert.ok(debate.includes("navigate(`/finance/stocks/${result.code}`)"));
   assert.match(debate, /onSubmitCode/);
   assert.match(debate, /debateStream\(c,/);
   assert.match(debate, /d\{6\}/);
@@ -29,6 +30,7 @@ test("portfolio holding and close forms use shared selection without changing AP
   assert.match(portfolio, /addHolding\(normalizedCode/);
   assert.match(portfolio, /closePosition\(normalizedCode/);
   assert.match(portfolio, /onSelect/);
+  assert.ok(portfolio.includes("navigate(`/finance/stocks/${result.code}`)"));
   assert.match(portfolio, /onSubmitCode/);
   assert.match(portfolio, /onChange=\{setCode\}/);
   assert.match(portfolio, /onChange=\{setCCode\}/);
