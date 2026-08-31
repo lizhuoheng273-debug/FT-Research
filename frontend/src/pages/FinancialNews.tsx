@@ -73,10 +73,12 @@ export function FinancialNews() {
     overview.staleComponents?.quick ? `快讯最后成功 ${formatTime(overview.freshness?.quick?.lastSuccessAt)}` : null,
     overview.staleComponents?.rss ? `RSS 最后成功 ${formatTime(overview.freshness?.rss?.lastSuccessAt)}` : null,
   ].filter(Boolean) as string[]) : [];
+  const unavailableSources = (overview?.sourceStatus || []).filter((source) => !source.ok).map((source) => source.source);
 
   return <div>
     <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button>} />
     {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示缓存内容{staleSources.length ? ` · ${staleSources.join(" · ")}` : ""}</p>}
+    {!overview?.stale && unavailableSources.length > 0 && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">部分来源暂不可用，榜单已由其他来源生成：{unavailableSources.join("、")}</p>}
     {error && <p className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
 
     <section className="market-pulse-grid grid gap-4 xl:grid-cols-2">
