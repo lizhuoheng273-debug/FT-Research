@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 import app
-from financial_news import FinancialNewsService, hot_score, urgency_score
+from financial_news import FinancialNewsScheduler, FinancialNewsService, hot_score, urgency_score
 
 
 NOW = datetime(2026, 8, 31, 8, 0, tzinfo=timezone.utc)
@@ -70,6 +70,30 @@ def test_future_dated_rss_items_are_excluded_from_news_feed(tmp_path):
     assert [item["title"] for item in items] == ["今日产业新闻"]
 
 
+def test_undated_items_keep_unknown_time_and_receive_no_recency_boost(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    item = service.normalize_quick_rows([{"标题": "没有发布时间的旧消息"}], source="新浪财经快讯")[0]
+    events = service.cluster_items([item])
+
+    assert item["publishedAt"] is None
+    assert events[0]["urgencyScore"] == 22
+    assert "发布时间未知" in events[0]["urgencyReasons"]
+    overview = service._compose([item], [], [])
+    assert overview["urgent"] == []
+    assert overview["hot"] == []
+
+
+def test_sina_content_only_schema_is_normalized(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    items = service.normalize_quick_rows(
+        [{"时间": "2026-08-31 15:59:00", "内容": "新浪快讯正文可作为标题"}],
+        source="新浪财经快讯",
+    )
+
+    assert len(items) == 1
+    assert items[0]["title"] == "新浪快讯正文可作为标题"
+
+
 def test_service_normalizes_ths_and_cls_and_clusters_same_event(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     ths = service.normalize_quick_rows(
@@ -93,6 +117,47 @@ def test_cached_overview_is_returned_stale_when_all_sources_fail(tmp_path):
     result = service.refresh_quick()
     assert result["stale"] is True
     assert result["urgent"][0]["title"] == _item()["title"]
+    persisted = service.overview()
+    assert persisted["stale"] is True
+    assert persisted["staleComponents"]["quick"] is True
+    assert persisted["sourceStatus"][0]["ok"] is False
+
+
+def test_rss_cycle_does_not_clear_quick_source_outage(tmp_path, monkeypatch):
+    import newsradar
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    monkeypatch.setattr(newsradar, "get_radar", lambda force=False: {"industries": []})
+    monkeypatch.setattr(newsradar, "fetch_radar", lambda: {"industries": []})
+    service.quick_fetchers = {"同花顺快讯": lambda: [{"标题": "已缓存快讯", "发布时间": "2026-08-31 15:58:00"}]}
+    service.refresh_quick()
+    service.quick_fetchers = {"同花顺快讯": lambda: (_ for _ in ()).throw(RuntimeError("offline"))}
+    service.refresh_quick()
+
+    result = service.refresh_rss()
+
+    assert result["stale"] is True
+    assert result["staleComponents"]["quick"] is True
+    assert any(row["source"] == "同花顺快讯" and row["ok"] is False for row in result["sourceStatus"])
+
+
+def test_event_recency_and_order_use_latest_report_not_authoritative_lead(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    authoritative = _item(
+        title="同一事件取得进展", source="财联社电报", sourceTier=35,
+        publishedAt="2026-08-31T06:00:00+00:00",
+    )
+    latest = _item(
+        title="同一事件取得进展！", source="东方财富快讯", sourceTier=24,
+        publishedAt="2026-08-31T07:58:00+00:00",
+    )
+
+    event = service.cluster_items([authoritative, latest])[0]
+
+    assert event["source"] == "财联社电报"
+    assert event["publishedAt"] == latest["publishedAt"]
+    assert "10 分钟内更新" in event["urgencyReasons"]
+    assert event["urgencyReasons"] != event["hotReasons"]
 
 
 def test_glm_refinement_is_batched_and_cached_by_event_content(tmp_path, monkeypatch):
@@ -119,6 +184,43 @@ def test_glm_refinement_is_batched_and_cached_by_event_content(tmp_path, monkeyp
     changed = {**event, "summary": "事件新增重要进展"}
     service._apply_ai_refinements([changed])
     assert len(calls) == 2
+
+
+def test_glm_refinement_rejects_ungrounded_numbers_and_prompt_instructions(tmp_path, monkeypatch):
+    import chat
+    import glm_config
+    import json
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test", "baseURL": "https://example.test/v4", "model": "glm"})
+    captured = []
+
+    def fake_call(_cfg, messages, use_tools):
+        captured.extend(messages)
+        return {"choices": [{"message": {"content": json.dumps([{
+            "id": "event-1", "digest": "公司确认盈利9999亿元", "impactTags": ["公司", {"bad": True}],
+        }], ensure_ascii=False)}}]}
+
+    monkeypatch.setattr(chat, "_call_llm", fake_call)
+    event = {**_item(id="event-1"), "relatedSourceCount": 2, "relatedSources": ["A", "B"], "hotScore": 80}
+    service._apply_ai_refinements([event])
+
+    assert captured[0]["role"] == "system"
+    assert "不可信" in captured[0]["content"]
+    assert "aiDigest" not in event
+
+
+def test_scheduler_uses_single_process_leader_and_contains_refresh_errors(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path / "cache", now_fn=lambda: NOW)
+    first = FinancialNewsScheduler(service, lock_file=tmp_path / "scheduler.lock")
+    second = FinancialNewsScheduler(service, lock_file=tmp_path / "scheduler.lock")
+
+    assert first._acquire_leader() is True
+    assert second._acquire_leader() is False
+    assert first._refresh_safely(lambda: (_ for _ in ()).throw(RuntimeError("offline"))) is False
+    first.stop()
+    assert second._acquire_leader() is True
+    second.stop()
 
 
 def test_financial_news_endpoints_expose_overview_feed_detail_and_status(monkeypatch):

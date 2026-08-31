@@ -225,12 +225,13 @@ export interface RadarData {
 }
 
 export interface FinancialNewsReport {
-  id: string; title: string; summary: string; publishedAt: string;
+  id: string; title: string; summary: string; publishedAt: string | null;
   source: string; originalUrl: string; category: string;
 }
 export interface FinancialNewsItem extends FinancialNewsReport {
   sourceTier: number; sourceLevel?: string; urgencyScore: number; hotScore: number;
-  scoreReasons: string[]; relatedSourceCount: number; relatedSources: string[];
+  scoreReasons: string[]; urgencyReasons?: string[]; hotReasons?: string[];
+  relatedSourceCount: number; relatedSources: string[];
   relatedStocks: string[]; reports?: FinancialNewsReport[]; firstReportAt?: string;
   latestAt?: string; status?: string; aiDigest?: string; impactTags?: string[]; stale: boolean;
 }
@@ -239,6 +240,7 @@ export interface FinancialNewsSourceStatus {
 }
 export interface FinancialNewsOverview {
   generatedAt: string | null; stale: boolean; urgent: FinancialNewsItem[];
+  staleComponents?: { quick: boolean; rss: boolean };
   hot: FinancialNewsItem[]; feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
 }
 export interface FinancialNewsStatus {

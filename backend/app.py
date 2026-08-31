@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,17 +44,28 @@ from version import read_version
 
 __version__ = read_version()
 
-app = FastAPI(title="FT-Research API", version=__version__)
+financial_news_service = FinancialNewsService()
+financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if "pytest" not in sys.modules:
+        financial_news_scheduler.start()
+    try:
+        yield
+    finally:
+        financial_news_scheduler.stop()
+
+
+app = FastAPI(title="FT-Research API", version=__version__, lifespan=lifespan)
 aihot_client = AihotClient()
 report_archive = ReportArchive()
 aihot_reports = AihotReportClient(report_archive)
-financial_news_service = FinancialNewsService()
 
 # 每半小时后台刷新持仓数据
 pf.start_scheduler(1800)
 DailyReportScheduler(report_archive, aihot_client).start()
-if "pytest" not in sys.modules:
-    FinancialNewsScheduler(financial_news_service).start()
 
 # CORS：默认放开（本地自托管友好）；公网部署时用 VR_ALLOW_ORIGINS 收紧成白名单。
 #   例：VR_ALLOW_ORIGINS="https://myhost"  （逗号分隔多个）

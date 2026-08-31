@@ -21,6 +21,8 @@ test("financial news shows urgent hot watchlist and a filterable feed", () => {
   assert.match(page, /api\.financialNewsOverview/);
   assert.match(page, /api\.announcements/);
   assert.match(page, /api\.news/);
+  assert.match(page, /reasonKey="urgencyReasons"/);
+  assert.match(page, /reasonKey="hotReasons"/);
 });
 
 test("financial event detail has scoring timeline sources and streaming AI entry", () => {

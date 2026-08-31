@@ -17,9 +17,9 @@ function formatTime(value?: string | null) {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
-function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.length, expanded, onToggle, scoreKey }: {
+function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.length, expanded, onToggle, scoreKey, reasonKey }: {
   title: string; eyebrow: string; icon: typeof Radio; items: FinancialNewsItem[]; expanded: boolean;
-  totalCount?: number; onToggle: () => void; scoreKey: "urgencyScore" | "hotScore";
+  totalCount?: number; onToggle: () => void; scoreKey: "urgencyScore" | "hotScore"; reasonKey: "urgencyReasons" | "hotReasons";
 }) {
   const visible = items;
   return <GlassCard className="overflow-hidden p-0">
@@ -30,7 +30,7 @@ function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.l
     <div className="divide-y divide-border/40 px-4">
       {visible.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">等待后台生成第一份资讯快照</p> : visible.map((item, index) => <Link key={item.id} to={`/finance/news/story/${item.id}`} state={{ fallback: item }} className="group flex w-full gap-3 py-3 text-left">
         <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold", index < 3 ? "bg-primary/15 text-primary" : "bg-muted/60 text-muted-foreground")}>{index + 1}</span>
-        <span className="min-w-0 flex-1"><span className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-primary">{item.title}</span><span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground"><span>{item.source}</span><span>{formatTime(item.publishedAt)}</span><span>{item.scoreReasons?.slice(0, 3).join(" · ")}</span></span></span>
+        <span className="min-w-0 flex-1"><span className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-primary">{item.title}</span><span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground"><span>{item.source}</span><span>{formatTime(item.publishedAt)}</span><span>{(item[reasonKey] || item.scoreReasons)?.slice(0, 3).join(" · ")}</span></span></span>
         <span className="shrink-0 font-mono text-sm font-semibold text-primary">{item[scoreKey]}</span>
       </Link>)}
     </div>
@@ -71,13 +71,13 @@ export function FinancialNews() {
   const openStory = (item: FinancialNewsItem) => navigate(`/finance/news/story/${item.id}`, { state: { fallback: item } });
 
   return <div>
-    <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}刷新缓存</button>} />
+    <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button>} />
     {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示最近一次成功缓存 · {formatTime(overview.generatedAt)}</p>}
     {error && <p className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
 
     <section className="market-pulse-grid grid gap-4 xl:grid-cols-2">
-      <PriorityBoard title="紧要快讯" eyebrow="Market Pulse / Urgent" icon={ShieldAlert} items={urgentItems} totalCount={overview?.urgent.length || 0} expanded={urgentExpanded} onToggle={() => setUrgentExpanded((value) => !value)} scoreKey="urgencyScore" />
-      <PriorityBoard title="热门事件榜" eyebrow="Market Pulse / Trending" icon={Flame} items={hotItems} totalCount={overview?.hot.length || 0} expanded={hotExpanded} onToggle={() => setHotExpanded((value) => !value)} scoreKey="hotScore" />
+      <PriorityBoard title="紧要快讯" eyebrow="Market Pulse / Urgent" icon={ShieldAlert} items={urgentItems} totalCount={overview?.urgent.length || 0} expanded={urgentExpanded} onToggle={() => setUrgentExpanded((value) => !value)} scoreKey="urgencyScore" reasonKey="urgencyReasons" />
+      <PriorityBoard title="热门事件榜" eyebrow="Market Pulse / Trending" icon={Flame} items={hotItems} totalCount={overview?.hot.length || 0} expanded={hotExpanded} onToggle={() => setHotExpanded((value) => !value)} scoreKey="hotScore" reasonKey="hotReasons" />
     </section>
 
     <section className="mt-5">
