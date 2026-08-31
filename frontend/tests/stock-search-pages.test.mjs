@@ -21,6 +21,7 @@ test("debate uses shared selection and submits a normalized A-share code", () =>
   assert.match(debate, /onSubmitCode/);
   assert.match(debate, /debateStream\(c,/);
   assert.match(debate, /d\{6\}/);
+  assert.match(debate, /onChange=\{setCode\}/);
 });
 
 test("portfolio holding and close forms use shared selection without changing API calls", () => {
@@ -29,4 +30,6 @@ test("portfolio holding and close forms use shared selection without changing AP
   assert.match(portfolio, /closePosition\(normalizedCode/);
   assert.match(portfolio, /onSelect/);
   assert.match(portfolio, /onSubmitCode/);
+  assert.match(portfolio, /onChange=\{setCode\}/);
+  assert.match(portfolio, /onChange=\{setCCode\}/);
 });

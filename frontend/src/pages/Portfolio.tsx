@@ -148,7 +148,7 @@ export function Portfolio() {
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
             <StockSearchInput
               value={code}
-              onChange={(value) => setCode(value.replace(/\D/g, "").slice(0, 6))}
+              onChange={setCode}
               onSelect={(result) => setCode(result.code)}
               onSubmitCode={(value) => void add(value)}
               placeholder="股票名称或 6 位代码"
@@ -231,7 +231,7 @@ export function Portfolio() {
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
             <StockSearchInput
               value={cCode}
-              onChange={(value) => setCCode(value.replace(/\D/g, "").slice(0, 6))}
+              onChange={setCCode}
               onSelect={(result) => setCCode(result.code)}
               onSubmitCode={(value) => void addClose(value)}
               placeholder="股票名称或 6 位代码"

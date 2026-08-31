@@ -105,7 +105,7 @@ export function Debate() {
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
             <StockSearchInput
               value={code}
-              onChange={(value) => setCode(value.replace(/\D/g, "").slice(0, 6))}
+              onChange={setCode}
               onSelect={(result) => setCode(result.code)}
               onSubmitCode={(value) => { if (!running) void start(value); }}
               placeholder="6 位代码，如 600519"
