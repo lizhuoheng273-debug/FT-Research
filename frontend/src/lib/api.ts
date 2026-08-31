@@ -64,10 +64,10 @@ export async function downloadReport(id: string, name: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET", body?: unknown): Promise<T> {
+async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   let resp: Response;
   const headers: Record<string, string> = { ...authHeaders() };
-  const opts: RequestInit = { method };
+  const opts: RequestInit = { method, signal };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -75,7 +75,8 @@ async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET
   if (Object.keys(headers).length > 0) opts.headers = headers;
   try {
     resp = await fetch(apiUrl(path), opts);
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
     throw new ApiError("连接不到后端，请先启动 backend（uvicorn app:app --port 8900）", 0);
   }
   let payload: any = null;
@@ -410,7 +411,8 @@ export const api = {
     request<PortfolioData>("/portfolio/close", "POST", { code, date, price, shares, cost }),
   removeClosed: (index: number) => request<PortfolioData>(`/portfolio/close?index=${index}`, "DELETE"),
   valuation: (code: string) => get<Valuation>(`/valuation?code=${code}`),
-  stockSearch: (query: string, limit = 10) => get<StockSearchResult[]>(`/stock/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+  stockSearch: (query: string, limit = 10, signal?: AbortSignal) =>
+    request<StockSearchResult[]>(`/stock/search?q=${encodeURIComponent(query)}&limit=${limit}`, "GET", undefined, signal),
   percentile: (code: string) => get<ValPercentile>(`/valuation/percentile?code=${code}`),
   financials: (code: string) => get<Financials>(`/financials?code=${code}`),
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),
