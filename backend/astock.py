@@ -27,7 +27,7 @@ def get_prefix(code: str) -> str:
     """6 位代码 → 交易所前缀。5 开头是沪市基金/ETF（51/56/58 等），深市基金 15/16 开头走默认 sz。"""
     if code.startswith(("6", "9", "5")):
         return "sh"
-    if code.startswith("8"):
+    if code.startswith(("4", "8")):
         return "bj"
     return "sz"
 
@@ -73,6 +73,7 @@ def _parse_gtimg(data: str) -> dict[str, dict]:
             "change_pct": num(32),
             "high": num(33),
             "low": num(34),
+            "volume": num(36),
             "amount_wan": num(37),
             "turnover_pct": num(38),
             "pe_ttm": num(39),

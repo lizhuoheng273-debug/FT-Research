@@ -97,8 +97,19 @@ const get = <T>(path: string) => request<T>(path, "GET");
 
 export interface Quote {
   name: string; price: number; last_close: number; change_pct: number;
+  open: number; high: number; low: number; change_amt: number; volume: number;
+  amount_wan: number; amplitude_pct: number; float_mcap_yi: number; vol_ratio: number;
   pe_ttm: number; pb: number; mcap_yi: number; turnover_pct: number;
   limit_up: number; limit_down: number;
+}
+
+export interface CompanyProfile {
+  code: string; shortName: string; fullName: string; englishName: string;
+  market: string; industry: string; legalRepresentative: string;
+  registeredCapitalWan: number | null; establishedDate: string; listedDate: string;
+  website: string; email: string; phone: string; registeredAddress: string;
+  officeAddress: string; mainBusiness: string; businessScope: string;
+  companyHistory: string; source: string; fetchedAt: string; stale: boolean; partial: boolean;
 }
 
 export interface StockSearchResult { code: string; name: string }
@@ -337,6 +348,7 @@ export const api = {
   percentile: (code: string) => get<ValPercentile>(`/valuation/percentile?code=${code}`),
   financials: (code: string) => get<Financials>(`/financials?code=${code}`),
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),
+  companyInfo: (code: string) => get<CompanyProfile>(`/info?code=${code}`),
   quote: (codes: string) => get<Record<string, Quote>>(`/quote?codes=${codes}`),
   marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq") =>
     get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}`),

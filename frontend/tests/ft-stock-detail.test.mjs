@@ -10,6 +10,7 @@ const chart = fs.readFileSync(new URL("lib/api.ts", root), "utf8");
 const watchlist = fs.readFileSync(new URL("pages/Watchlist.tsx", root), "utf8");
 const review = fs.readFileSync(new URL("pages/DailyReview.tsx", root), "utf8");
 const stockData = fs.readFileSync(new URL("pages/StockData.tsx", root), "utf8");
+const researchTabsUrl = new URL("components/stock/StockResearchTabs.tsx", root);
 
 test("router exposes stock and index detail routes while preserving research entry", () => {
   assert.match(router, /\/finance\/stocks\/:code/);
@@ -56,4 +57,38 @@ test("chart requests and embedded stock data guard route changes", () => {
 
 test("stock detail relies on the embedded analysis disclaimer only once", () => {
   assert.doesNotMatch(detail, /<Disclaimer\s*\/>/);
+});
+
+test("stock detail header only uses the independent live quote", () => {
+  assert.match(detail, /liveQuote\.change_pct/);
+  assert.match(detail, /实时行情暂不可用/);
+  assert.doesNotMatch(detail, /data\?\.quote/);
+  assert.doesNotMatch(detail, /\["涨跌"/);
+  assert.doesNotMatch(detail, /amplitude_pct/);
+  assert.match(detail, /document\.visibilityState/);
+  assert.match(detail, /15_000/);
+  assert.match(detail, /catch\(\(\) => \{[^}]*setLiveQuote\(null\)/s);
+});
+
+test("stock detail uses URL-backed lazy horizontal research panels", () => {
+  assert.ok(fs.existsSync(researchTabsUrl));
+  const tabs = fs.readFileSync(researchTabsUrl, "utf8");
+  for (const label of ["资讯", "资金筹码", "公司简况", "财务估值", "事件互动"]) {
+    assert.match(tabs, new RegExp(label));
+  }
+  assert.match(tabs, /searchParams\.get\(["']panel["']\)/);
+  assert.match(tabs, /role="tablist"/);
+  assert.match(tabs, /ArrowLeft|ArrowRight/);
+  assert.match(tabs, /loadedPanels/);
+  assert.match(detail, /<StockResearchTabs/);
+  assert.match(detail, /<StockResearchTabs key=\{code\}/);
+  assert.doesNotMatch(detail, /<StockData/);
+});
+
+test("company profile has a normalized client contract", () => {
+  assert.match(chart, /interface CompanyProfile/);
+  assert.match(chart, /registeredCapitalWan/);
+  assert.match(chart, /businessScope/);
+  assert.match(chart, /companyHistory/);
+  assert.match(chart, /companyInfo:/);
 });

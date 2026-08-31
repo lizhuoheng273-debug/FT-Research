@@ -26,6 +26,7 @@ import newsradar
 import portfolio as pf
 import market
 import market_chart
+import company_profile
 import myreports as mr
 import reflection as reflect_layer
 import signals
@@ -653,10 +654,10 @@ def news(code: str = Query(...), limit: int = Query(20, ge=1, le=50)):
 
 @app.get("/api/info")
 def info(code: str = Query(...)):
-    """个股基本面：行业/股本/上市时间（需 akshare）。"""
+    """标准化公司资料：巨潮主源、东财备用、真实行情部分降级。"""
     code = _validate(code)
     try:
-        return {"data": astock.individual_info(code)}
+        return {"data": company_profile.get_company_profile(code)}
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001

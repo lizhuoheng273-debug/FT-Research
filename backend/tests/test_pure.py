@@ -10,6 +10,7 @@ def test_get_prefix():
     assert astock.get_prefix("000001") == "sz"
     assert astock.get_prefix("300750") == "sz"
     assert astock.get_prefix("832000") == "bj"   # 8 开头北交所
+    assert astock.get_prefix("430047") == "bj"   # 4 开头也是北交所
     assert astock.get_prefix("510300") == "sh"   # 沪 ETF（issue #10：曾误判 sz → 行情为 0）
     assert astock.get_prefix("588000") == "sh"   # 科创 50 ETF
     assert astock.get_prefix("159915") == "sz"   # 深 ETF 15 开头走默认 sz
@@ -33,6 +34,7 @@ def _gtimg_line(**overrides) -> str:
     parts = ["0"] * 55
     parts[1] = overrides.get("name", "贵州茅台")
     parts[3] = overrides.get("price", "1194.45")
+    parts[36] = overrides.get("volume", "1038874")
     parts[39] = overrides.get("pe_ttm", "18.05")
     parts[44] = overrides.get("mcap", "15000")
     parts[46] = overrides.get("pb", "6.41")
@@ -45,6 +47,7 @@ def test_parse_gtimg():
     q = out["600519"]
     assert q["name"] == "贵州茅台"
     assert q["price"] == 1194.45
+    assert q["volume"] == 1038874
     assert q["pe_ttm"] == 18.05
     assert q["pb"] == 6.41
     assert q["mcap_yi"] == 15000
