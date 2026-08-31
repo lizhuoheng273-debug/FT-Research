@@ -21,6 +21,8 @@ test("submits only a complete six digit code in A-share mode", () => {
   assert.match(input, /normalizeAStockCode/);
   assert.match(input, /onSubmitCode/);
   assert.match(input, /allowExternalSymbols/);
+  assert.ok(input.indexOf("if (exactCode)") < input.indexOf("search.open"));
+  assert.match(input, /!search\.loading && search\.open/);
 });
 
 test("does not reopen search after a selected item updates the controlled value", () => {

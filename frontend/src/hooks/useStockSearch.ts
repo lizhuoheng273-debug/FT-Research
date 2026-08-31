@@ -39,6 +39,8 @@ export function useStockSearch(initialQuery = "", limit = 8): UseStockSearchResu
       return undefined;
     }
 
+    setResults([]);
+    setHighlightedIndex(-1);
     setOpen(true);
     setLoading(true);
     setError(null);

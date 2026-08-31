@@ -17,6 +17,10 @@ test("batch picker allows deleting tags and delegates raw paste to the page", ()
   assert.match(batch, /删除|移除/);
 });
 
+test("batch picker clears a duplicate selection query", () => {
+  assert.ok(batch.indexOf('setQuery("");') < batch.indexOf("return;"));
+});
+
 test("batch picker keeps storage outside the shared component", () => {
   assert.doesNotMatch(batch, /localStorage/);
   assert.doesNotMatch(batch, /saveWatch/);

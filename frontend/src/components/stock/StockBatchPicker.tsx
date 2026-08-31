@@ -30,7 +30,10 @@ export function StockBatchPicker({
   const [query, setQuery] = useState("");
 
   const addItem = (item: StockSearchItem) => {
-    if (existingCodes.includes(item.code) || items.some((current) => current.code === item.code)) return;
+    if (existingCodes.includes(item.code) || items.some((current) => current.code === item.code)) {
+      setQuery("");
+      return;
+    }
     onItemsChange([...items, { code: item.code, name: item.name }]);
     setQuery("");
   };

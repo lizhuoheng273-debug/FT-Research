@@ -54,13 +54,13 @@ export function StockSearchInput({
 
   const submit = () => {
     const exactCode = normalizeAStockCode(value);
-    if (search.open && search.highlightedIndex >= 0 && search.results[search.highlightedIndex]) {
-      selectResult(search.results[search.highlightedIndex]);
-      return;
-    }
     if (exactCode) {
       onSubmitCode(exactCode);
       search.close();
+      return;
+    }
+    if (!search.loading && search.open && search.highlightedIndex >= 0 && search.results[search.highlightedIndex]) {
+      selectResult(search.results[search.highlightedIndex]);
       return;
     }
     if (allowExternalSymbols && /^[A-Za-z0-9.]+$/.test(value.trim())) {
