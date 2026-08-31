@@ -25,10 +25,15 @@ export function StockSearchInput({
   className,
 }: StockSearchInputProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const skipSyncRef = useRef(false);
   const listId = useId();
   const search = useStockSearch(value);
 
   useEffect(() => {
+    if (skipSyncRef.current) {
+      skipSyncRef.current = false;
+      return;
+    }
     if (search.query !== value) search.setQuery(value);
   }, [search, value]);
 
@@ -42,6 +47,7 @@ export function StockSearchInput({
   }, [search]);
 
   const selectResult = (result: StockSearchItem) => {
+    skipSyncRef.current = true;
     onSelect(result);
     search.clear();
   };
@@ -92,6 +98,7 @@ export function StockSearchInput({
         aria-activedescendant={search.highlightedIndex >= 0 ? `${listId}-${search.highlightedIndex}` : undefined}
         onChange={(event) => {
           const next = event.target.value;
+          skipSyncRef.current = false;
           onChange(next);
           search.setQuery(next);
         }}

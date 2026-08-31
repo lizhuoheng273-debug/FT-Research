@@ -22,3 +22,8 @@ test("submits only a complete six digit code in A-share mode", () => {
   assert.match(input, /onSubmitCode/);
   assert.match(input, /allowExternalSymbols/);
 });
+
+test("does not reopen search after a selected item updates the controlled value", () => {
+  assert.match(input, /skipSyncRef/);
+  assert.match(input, /selectResult/);
+});
