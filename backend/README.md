@@ -30,7 +30,8 @@ python3 -m venv .venv
 | `GET /api/reports?code=600519` | 个股研报列表（含 PDF 链接） | requests |
 | `GET /api/announcements?code=600519` | 近期公告（东财） | requests |
 | `GET /api/news?code=600519` | 个股新闻 | akshare |
-| `GET /api/kline?code=600519` | K线 | mootdx |
+| `GET /api/kline?code=600519` | 兼容旧 K 线接口 | 统一图表服务 |
+| `GET /api/market/chart?asset=stock&code=600519&period=daily&adjust=qfq` | 股票 / 指数统一图表（分时、五日、日/周/月） | AKShare + 缓存降级；仅设置 `VR_ENABLE_MARKET_CHART_FIXTURE=1` 时允许开发 fixture |
 | — | *（AI 工具层走腾讯 K 线，mootdx 仅作备份：mootdx 是 TCP 7709，部分网络连不通要等十几秒超时）* | — |
 | `GET /api/finance?code=600519` | 季报财务快照（mootdx，前端未用 / 备用） | mootdx |
 | **资金面·筹码·信号（v3.3）** | `/api/margin` · `/block-trade` · `/holders` · `/dividend` · `/fund-flow` · `/dragon-tiger` · `/lockup` · `/blocks` · `/hot-concepts` · `/investor-qa` · `/industry` | requests |

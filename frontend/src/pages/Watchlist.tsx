@@ -199,14 +199,14 @@ export function Watchlist() {
                 {codes.map((c) => {
                   const q = quotes[c];
                   return (
-                    <tr key={c} className="border-b border-border/30">
-                      <td className="px-2 py-2.5 font-medium"><Link to={`/finance/research?code=${c}`} className="hover:text-primary">{q?.name || "—"}</Link></td>
-                      <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground"><Link to={`/finance/research?code=${c}`} className="hover:text-primary">{c}</Link></td>
-                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? q.price : "—"}</td>
-                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? pct(q.change_pct) : "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pe_ttm ?? "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pb ?? "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.turnover_pct ?? "—"}</td>
+                    <tr key={c} className="border-b border-border/30 transition-colors hover:bg-muted/20">
+                      <td className="font-medium"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50">{q?.name || "—"}</Link></td>
+                      <td className="font-mono text-xs text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{c}</Link></td>
+                      <td className={cn("font-mono", color(q?.change_pct))}><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q ? q.price : "—"}</Link></td>
+                      <td className={cn("font-mono", color(q?.change_pct))}><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q ? pct(q.change_pct) : "—"}</Link></td>
+                      <td className="font-mono text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q?.pe_ttm ?? "—"}</Link></td>
+                      <td className="font-mono text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q?.pb ?? "—"}</Link></td>
+                      <td className="font-mono text-muted-foreground"><Link to={`/finance/stocks/${c}`} className="block px-2 py-2.5">{q?.turnover_pct ?? "—"}</Link></td>
                       <td className="px-2 py-2.5">
                         <button
                           onClick={() => remove(c)}

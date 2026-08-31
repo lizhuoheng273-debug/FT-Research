@@ -148,11 +148,13 @@ export function DailyReview() {
               </GlassCard>
             ))
           : indices.map((i) => (
-              <GlassCard key={i.name} className="p-3">
+              <Link key={i.code} to={`/finance/indices/${i.code}`} className="block min-w-0">
+              <GlassCard className="h-full p-3 transition-colors hover:border-primary/40">
                 <p className="truncate text-xs text-muted-foreground">{i.name}</p>
                 <p className={cn("mt-1 font-mono text-lg font-bold", pctColor(i.change_pct))}>{i.price}</p>
                 <p className={cn("text-xs", pctColor(i.change_pct))}>{i.change_pct > 0 ? "+" : ""}{i.change_pct}%</p>
               </GlassCard>
+              </Link>
             ))}
       </div>
 
@@ -207,9 +209,11 @@ export function DailyReview() {
             {watchCodes.map((c) => {
               const q = watchQuotes[c];
               return (
-                <div key={c} className="group relative rounded-lg bg-muted/25 p-3">
+                <div key={c} className="group relative rounded-lg bg-muted/25 p-3 transition-colors hover:bg-muted/40">
+                  <Link to={`/finance/stocks/${c}`} aria-label={`查看 ${q?.name || c} 详情`}
+                    className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50" />
                   <button onClick={() => removeWatch(c)} title="移除"
-                    className="absolute right-1.5 top-1.5 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">
+                    className="absolute right-1.5 top-1.5 z-10 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">
                     <X className="h-3.5 w-3.5" />
                   </button>
                   <p className="truncate text-xs text-muted-foreground">{q?.name || c}</p>
@@ -347,14 +351,14 @@ export function DailyReview() {
                     </thead>
                     <tbody>
                       {emotion.lianban_stocks.map((s) => (
-                        <tr key={s.code} className="border-b border-border/30">
-                          <td className="px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></td>
-                          <td className="whitespace-nowrap px-2 py-2 font-mono font-bold text-primary">{s.boards} 板</td>
-                          <td className="px-2 py-2 font-mono">{s.price}</td>
-                          <td className="px-2 py-2 font-mono text-danger">+{s.pct}%</td>
-                          <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.amount)}</td>
-                          <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.float_cap)}</td>
-                          <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>
+                        <tr key={s.code} className="border-b border-border/30 transition-colors hover:bg-muted/20">
+                          <td><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></Link></td>
+                          <td className="whitespace-nowrap font-mono font-bold text-primary"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.boards} 板</Link></td>
+                          <td className="font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.price}</Link></td>
+                          <td className="font-mono text-danger"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">+{s.pct}%</Link></td>
+                          <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.amount)}</Link></td>
+                          <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.float_cap)}</Link></td>
+                          <td className="whitespace-nowrap text-xs text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.industry}</Link></td>
                         </tr>
                       ))}
                     </tbody>
@@ -387,16 +391,16 @@ export function DailyReview() {
               </thead>
               <tbody>
                 {turnover.stocks.map((s, i) => (
-                  <tr key={s.code} className="border-b border-border/30">
-                    <td className="px-2 py-2 font-mono text-xs text-muted-foreground/50">{i + 1}</td>
-                    <td className="px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></td>
-                    <td className="px-2 py-2 font-mono">{s.price ?? "—"}</td>
-                    <td className={cn("px-2 py-2 font-mono", s.pct == null ? "text-muted-foreground" : pctColor(s.pct))}>
-                      {s.pct == null ? "—" : `${s.pct > 0 ? "+" : ""}${s.pct}%`}
+                  <tr key={s.code} className="border-b border-border/30 transition-colors hover:bg-muted/20">
+                    <td className="font-mono text-xs text-muted-foreground/50"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{i + 1}</Link></td>
+                    <td><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></Link></td>
+                    <td className="font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.price ?? "—"}</Link></td>
+                    <td className={cn("font-mono", s.pct == null ? "text-muted-foreground" : pctColor(s.pct))}>
+                      <Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.pct == null ? "—" : `${s.pct > 0 ? "+" : ""}${s.pct}%`}</Link>
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2 font-mono">{yi(s.amount)}</td>
-                    <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yi(s.mcap)}</td>
-                    <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>
+                    <td className="whitespace-nowrap font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.amount)}</Link></td>
+                    <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.mcap)}</Link></td>
+                    <td className="whitespace-nowrap text-xs text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.industry}</Link></td>
                   </tr>
                 ))}
               </tbody>

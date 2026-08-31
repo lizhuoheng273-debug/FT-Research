@@ -25,6 +25,7 @@ import gstock
 import newsradar
 import portfolio as pf
 import market
+import market_chart
 import myreports as mr
 import reflection as reflect_layer
 import signals
@@ -676,7 +677,7 @@ def disclosure(code: str = Query(...)):
 
 @app.get("/api/kline")
 def kline(code: str = Query(...), category: int = Query(4), offset: int = Query(60, ge=1, le=800)):
-    """K线（需 mootdx）。category 4=日 5=周 6=月 11=60分钟。"""
+    """旧 K 线契约（mootdx）：category 4=日 5=周 6=月 11=60分钟。"""
     code = _validate(code)
     try:
         return {"data": astock.kline(code, category=category, offset=offset)}
@@ -684,6 +685,24 @@ def kline(code: str = Query(...), category: int = Query(4), offset: int = Query(
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"K线源异常：{e}") from e
+
+
+@app.get("/api/market/chart")
+def market_chart_endpoint(
+    asset: str = Query(...),
+    code: str = Query(...),
+    period: str = Query(...),
+    adjust: str = Query("qfq"),
+):
+    """股票 / 指数详情页统一 OHLCV 图表接口。"""
+    try:
+        return market_chart.get_chart(asset, code, period, adjust)
+    except market_chart.ChartUnavailable as e:
+        raise HTTPException(503, f"行情暂不可用，请稍后重试：{e}") from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"行情源异常：{e}") from e
 
 
 @app.get("/api/finance")

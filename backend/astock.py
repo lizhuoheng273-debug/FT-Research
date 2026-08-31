@@ -105,7 +105,7 @@ def index_quote() -> list[dict]:
     for full in A_INDICES:
         q = parsed.get(full[2:])
         if q:
-            out.append({"name": q["name"], "price": q["price"], "change_pct": q["change_pct"], "change_amt": q["change_amt"]})
+            out.append({"code": full[2:], "name": q["name"], "price": q["price"], "change_pct": q["change_pct"], "change_amt": q["change_amt"]})
     return out
 
 

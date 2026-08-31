@@ -141,7 +141,23 @@ export interface NewsItem {
 }
 
 export interface IndexQuote {
+  code: string;
   name: string; price: number; change_pct: number; change_amt: number;
+}
+
+export type ChartPeriod = "intraday" | "five_day" | "daily" | "weekly" | "monthly";
+export interface ChartPoint {
+  time: string; open: number; high: number; low: number; close: number;
+  average: number; volume: number; amount: number;
+}
+export interface MarketChart {
+  asset: "stock" | "index"; code: string; name: string; period: ChartPeriod;
+  adjust: "qfq" | "hfq" | ""; source: string; fetchedAt: string; stale: boolean;
+  quote: {
+    price: number; change: number; changePct: number; open: number; high: number;
+    low: number; prevClose: number; volume: number; amount: number;
+  };
+  points: ChartPoint[];
 }
 
 export interface MarketSentiment {
@@ -322,6 +338,8 @@ export const api = {
   financials: (code: string) => get<Financials>(`/financials?code=${code}`),
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),
   quote: (codes: string) => get<Record<string, Quote>>(`/quote?codes=${codes}`),
+  marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq") =>
+    get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}`),
   reports: (code: string) => get<Report[]>(`/reports?code=${code}`),
   news: (code: string) => get<NewsItem[]>(`/news?code=${code}`),
   margin: (code: string) => get<MarginRow[]>(`/margin?code=${code}`),

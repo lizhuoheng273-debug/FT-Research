@@ -37,7 +37,8 @@ def test_chat_uses_server_glm_config(monkeypatch):
     assert seen["model"] == "glm-test"
 
 
-def test_glm_config_defaults(monkeypatch):
+def test_glm_config_defaults(monkeypatch, tmp_path):
+    monkeypatch.setattr(glm_config, "ENV_FILE", tmp_path / "missing.env")
     monkeypatch.delenv("GLM_API_KEY", raising=False)
     cfg = glm_config.load_glm_config()
     assert cfg["baseURL"] == "https://open.bigmodel.cn/api/paas/v4"
