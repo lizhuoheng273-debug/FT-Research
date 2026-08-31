@@ -17,6 +17,8 @@ export interface ChatMsg {
   content: string;
 }
 
+export type AnalysisScope = "general" | "market" | "index" | "sector" | "stock";
+
 export interface ChatResult {
   content: string;
   trace: { tool: string; args: Record<string, unknown> }[];
@@ -58,13 +60,16 @@ export interface ChatHandlers {
 // 流式调后端 /api/chat（NDJSON：每行一个事件 {type: tool|delta|done|error}）。
 // 边流边回调 onDelta/onTool；返回累积的最终 {content, trace, rounds}。
 // signal：调用方可传 AbortController.signal，用户关面板/换问题时中止请求（省订阅/API 额度）。
-export async function chatStream(messages: ChatMsg[], context: string, handlers: ChatHandlers = {}, signal?: AbortSignal): Promise<ChatResult> {
+export async function chatStream(messages: ChatMsg[], context: string, handlers: ChatHandlers = {}, signal?: AbortSignal, analysisScope: AnalysisScope = "general"): Promise<ChatResult> {
   let resp: Response;
   try {
+    const body = analysisScope === "general"
+      ? JSON.stringify({ messages, context })
+      : JSON.stringify({ messages, context, analysis_scope: analysisScope });
     resp = await fetch(apiUrl("/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ messages, context }),
+      body,
       signal,
     });
   } catch (e) {

@@ -60,11 +60,11 @@ test("returning from a linked workspace does not add a browser-history loop", ()
   assert.match(workspace, /navigate\(fallback, \{ replace: true \}\)/);
 });
 
-test("stock conversations use a stable key and migrate the legacy drawer history", () => {
+test("stock conversations use a versioned key without migrating legacy framework history", () => {
   const workspace = fs.readFileSync(workspaceUrl, "utf8");
   const session = fs.readFileSync(sessionUrl, "utf8");
-  assert.match(workspace, /stock:\$\{code\}/);
-  assert.match(workspace, /\/finance\/stocks\/\$\{code\}#\$\{code\}/);
+  assert.match(workspace, /stock:\$\{code\}:framework:v2/);
+  assert.doesNotMatch(workspace, /legacyConversationKey:/);
   assert.match(session, /legacyConversationKey/);
   assert.match(session, /storageRemove\(legacyKey\)/);
 });

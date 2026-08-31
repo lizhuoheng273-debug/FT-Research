@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,6 +103,7 @@ class LLMConfig(BaseModel):
 class ChatReq(BaseModel):
     messages: list[dict]
     context: str = ""
+    analysis_scope: Literal["general", "market", "index", "sector", "stock"] = "general"
     # V1 uses the server-side GLM configuration.  The optional legacy field is
     # accepted so old clients fail gracefully, but is never used for API calls.
     llm: LLMConfig | None = None
@@ -234,7 +236,10 @@ def chat(req: ChatReq):
 
     def gen():
         try:
-            events = chat_layer.run_chat_stream(cfg, req.messages, req.context)
+            if req.analysis_scope != "general":
+                events = chat_layer.run_chat_stream(cfg, req.messages, req.context, req.analysis_scope)
+            else:
+                events = chat_layer.run_chat_stream(cfg, req.messages, req.context)
             for ev in events:
                 yield json.dumps(ev, ensure_ascii=False) + "\n"
         except Exception as e:  # noqa: BLE001 — 运行时错误以流内事件上报，不中断连接

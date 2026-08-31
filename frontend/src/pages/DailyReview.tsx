@@ -79,6 +79,31 @@ export function DailyReview() {
   const dataSummary = indices.length
     ? indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；")
     : "（指数数据未取到）";
+  const sentiment = overview?.sentiment;
+  const sectors = overview?.sectors || [];
+  const globalSummary = globalIdx.length
+    ? globalIdx.map((item) => `${item.name} ${item.price ?? "—"}（${item.change_pct == null ? "涨跌缺失" : `${item.change_pct > 0 ? "+" : ""}${item.change_pct}%`}）`).join("；")
+    : "数据缺口：全球指数未取到";
+  const sentimentSummary = sentiment
+    ? `上涨 ${sentiment.up} 家、下跌 ${sentiment.down} 家、涨停 ${sentiment.zt} 家、跌停 ${sentiment.dt} 家；市场宽度 ${sentiment.breadth}；题材投机 ${sentiment.speculation}；活跃度 ${sentiment.active}`
+    : "数据缺口：市场宽度与情绪未取到";
+  const sectorSummary = sectors.length
+    ? sectors.slice(0, 10).map((item) => `${item.name} ${item.pct > 0 ? "+" : ""}${item.pct}%、净流入 ${item.net > 0 ? "+" : ""}${fmt(item.net)} 亿`).join("；")
+    : "数据缺口：板块涨跌与资金流未取到";
+  const emotionSummary = emotion
+    ? `涨停 ${emotion.zt_count} 家、跌停 ${emotion.dt_count} 家、最高 ${emotion.max_boards} 板、连板 ${emotion.lianban_count} 家、封板率 ${emotion.seal_rate ?? "缺失"}、炸板率 ${emotion.break_rate ?? "缺失"}`
+    : "数据缺口：短线情绪未取到";
+  const turnoverSummary = turnover?.stocks?.length
+    ? turnover.stocks.slice(0, 10).map((item) => `${item.name}（${item.code}）成交额 ${yi(item.amount)}、涨跌 ${item.pct == null ? "缺失" : `${item.pct > 0 ? "+" : ""}${item.pct}%`}`).join("；")
+    : "数据缺口：全市场成交额榜未取到";
+  const marketContext = [
+    `A股主要指数：${dataSummary}`,
+    `全球市场：${globalSummary}`,
+    `市场宽度：${sentimentSummary}`,
+    `板块资金：${sectorSummary}`,
+    `短线情绪：${emotionSummary}`,
+    `成交额榜：${turnoverSummary}`,
+  ].join("\n");
 
   const runReview = async () => {
     setReviewErr(null);
@@ -86,14 +111,11 @@ export function DailyReview() {
     if (!hasLlm()) { setNeedConfig(true); return; }
     setReviewLoading(true);
     setReview("");
-    const prompt =
-      `以下是今天 A 股大盘的客观数据：\n${dataSummary}\n\n` +
-      "请用中文做一段当天大盘复盘：整体涨跌、主要指数表现、盘面值得注意的点。" +
-      "只做客观陈述与多视角分析，不预测涨跌、不推荐任何标的、不构成投资建议。";
+    const prompt = "请基于已提供和可查询的客观数据，完整复盘今天的 A 股市场；明确事实、推断、待验证条件与数据缺口。";
     try {
-      await chatStream([{ role: "user", content: prompt }], `今日大盘数据：${dataSummary}`, {
+      await chatStream([{ role: "user", content: prompt }], marketContext, {
         onDelta: (t) => setReview((r) => r + t),
-      });
+      }, undefined, "market");
     } catch (e) {
       setReviewErr(e instanceof ApiError ? e.message : "复盘失败");
     } finally {
@@ -101,8 +123,6 @@ export function DailyReview() {
     }
   };
 
-  const sentiment = overview?.sentiment;
-  const sectors = overview?.sectors || [];
   const sentCells = sentiment ? [
     { k: "上涨家数", v: sentiment.up, up: true },
     { k: "下跌家数", v: sentiment.down, up: false },
@@ -121,7 +141,8 @@ export function DailyReview() {
         subtitle={`${today} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
         actions={
           <AskAiButton
-            context={`今日大盘数据：${dataSummary}`}
+            context={marketContext}
+            analysisScope="market"
             label="问 AI"
             suggestions={["今天大盘怎么走", "哪些指数领涨领跌", "盘面有什么值得注意"]}
           />

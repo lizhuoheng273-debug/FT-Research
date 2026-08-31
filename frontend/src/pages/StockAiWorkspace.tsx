@@ -40,9 +40,9 @@ export function StockAiWorkspace() {
     : `股票代码：${code}\n市场：A股\n实时行情暂不可用\n交易状态：${marketState}\n如需行情、估值、财务、新闻或研报，请调用相应数据工具。`;
 
   const session = useAiChatSession({
-    conversationKey: `stock:${code}`,
-    legacyConversationKey: `/finance/stocks/${code}#${code}`,
+    conversationKey: `stock:${code}:framework:v2`,
     context,
+    analysisScope: "stock",
   });
 
   const tools = useMemo(() => {
@@ -72,6 +72,7 @@ export function StockAiWorkspace() {
         <p className="flex justify-between gap-3"><span>股票</span><b className="text-right text-foreground">{stockName} · {code}</b></p>
         <p className="flex justify-between gap-3"><span>实时行情</span><b className={cn("text-right", quote ? "text-foreground" : "text-warning")}>{quote ? `${quote.price.toFixed(2)} / ${pct(quote.change_pct)}` : "暂不可用"}</b></p>
         <p className="flex justify-between gap-3"><span>市场状态</span><b className="text-right text-foreground">{marketState}</b></p>
+        <p className="flex justify-between gap-3"><span>研究框架</span><b className="text-right text-foreground">自动融合·个股</b></p>
       </div>
       <p className="mt-3 border-t border-border/50 pt-3 text-[11px] leading-5 text-muted-foreground">财务、估值、新闻和研报不预加载，由 AI 根据问题按需调取，减少等待和 Token 消耗。</p>
     </GlassCard>

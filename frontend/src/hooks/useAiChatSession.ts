@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
-import { chatStream, type ChatMsg } from "@/lib/llm";
+import { chatStream, type AnalysisScope, type ChatMsg } from "@/lib/llm";
 import { storageGet, storageRemove, storageSet } from "@/lib/storage";
 
 const CHAT_KEY_PREFIX = "vr-askai-chat:";
@@ -91,10 +91,11 @@ export interface AiChatSession {
   clearChat: () => void;
 }
 
-export function useAiChatSession({ conversationKey, legacyConversationKey, context }: {
+export function useAiChatSession({ conversationKey, legacyConversationKey, context, analysisScope = "general" }: {
   conversationKey: string;
   legacyConversationKey?: string;
   context: string;
+  analysisScope?: AnalysisScope;
 }): AiChatSession {
   const chatKey = CHAT_KEY_PREFIX + conversationKey;
   const [chat, setChat] = useState<{ key: string; msgs: StoredMsg[] }>(
@@ -172,7 +173,7 @@ export function useAiChatSession({ conversationKey, legacyConversationKey, conte
         onDelta: (textChunk) => {
           if (alive()) patchLast((message) => ({ ...message, content: message.content + textChunk }));
         },
-      }, ac.signal);
+      }, ac.signal, analysisScope);
       if (alive()) patchLast((message) => {
         const { partial: _drop, ...rest } = message;
         return rest;
