@@ -19,7 +19,7 @@ function formatTime(value?: string | null) {
 
 function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.length, expanded, onToggle, scoreKey, reasonKey }: {
   title: string; eyebrow: string; icon: typeof Radio; items: FinancialNewsItem[]; expanded: boolean;
-  totalCount?: number; onToggle: () => void; scoreKey: "urgencyScore" | "hotScore"; reasonKey: "urgencyReasons" | "hotReasons";
+  totalCount?: number; onToggle: () => void; scoreKey: "urgencyScore" | "hotScore" | "aShareImpactScore"; reasonKey: "urgencyReasons" | "hotReasons" | "impactReasons";
 }) {
   const visible = items;
   return <GlassCard className="overflow-hidden p-0">
@@ -30,8 +30,8 @@ function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.l
     <div className="divide-y divide-border/40 px-4">
       {visible.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">等待后台生成第一份资讯快照</p> : visible.map((item, index) => <Link key={item.id} to={`/finance/news/story/${item.id}`} state={{ fallback: item }} className="group flex w-full gap-3 py-3 text-left">
         <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold", index < 3 ? "bg-primary/15 text-primary" : "bg-muted/60 text-muted-foreground")}>{index + 1}</span>
-        <span className="min-w-0 flex-1"><span className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-primary">{item.title}</span><span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground"><span>{item.source}</span><span>{formatTime(item.publishedAt)}</span><span>{(item[reasonKey] || item.scoreReasons)?.slice(0, 3).join(" · ")}</span></span></span>
-        <span className="shrink-0 font-mono text-sm font-semibold text-primary">{item[scoreKey]}</span>
+        <span className="min-w-0 flex-1"><span className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-primary">{item.title}</span><span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground"><span>{item.source}</span><span>{formatTime(item.latestAt || item.publishedAt)}</span><span>{item.confidence ? `置信度 ${item.confidence}` : ""}</span></span><span className="mt-1 block line-clamp-1 text-[11px] text-muted-foreground">{(item.impactReasons || item[reasonKey] || item.scoreReasons)?.slice(0, 2).join(" · ")}</span><span className="mt-1 block line-clamp-1 text-[11px] text-primary">{item.transmissionPath?.aShareSectors?.join("、")}{item.relatedStocks?.length ? ` · ${item.relatedStocks.join("、")}` : ""}</span><span className="sr-only">marketEvidence {item.transmissionPath?.marketEvidence?.filter(Boolean).join(" · ")}</span></span>
+        <span className="shrink-0 font-mono text-sm font-semibold text-primary">{item[scoreKey] ?? "—"}</span>
       </Link>)}
     </div>
     {totalCount > 5 && <button onClick={onToggle} className="w-full border-t border-border/50 py-2.5 text-xs text-muted-foreground hover:text-primary">{expanded ? "收起至 5 条" : "展开全部 10 条"}</button>}
@@ -67,7 +67,8 @@ export function FinancialNews() {
 
   const feed = useMemo(() => (overview?.feed || []).filter((item) => category === "全部" || item.category === category).slice(0, 60), [overview, category]);
   const urgentItems = (overview?.urgent || []).slice(0, urgentExpanded ? 10 : 5);
-  const hotItems = (overview?.hot || []).slice(0, hotExpanded ? 10 : 5);
+  const hotItems = (overview?.aShareHot || overview?.hot || []).slice(0, hotExpanded ? 10 : 5);
+  const globalItems = (overview?.globalObservation || []).slice(0, 5);
   const openStory = (item: FinancialNewsItem) => navigate(`/finance/news/story/${item.id}`, { state: { fallback: item } });
   const staleSources = overview?.stale ? ([
     overview.staleComponents?.quick ? `快讯最后成功 ${formatTime(overview.freshness?.quick?.lastSuccessAt)}` : null,
@@ -83,8 +84,10 @@ export function FinancialNews() {
 
     <section className="market-pulse-grid grid gap-4 xl:grid-cols-2">
       <PriorityBoard title="紧要快讯" eyebrow="Market Pulse / Urgent" icon={ShieldAlert} items={urgentItems} totalCount={overview?.urgent.length || 0} expanded={urgentExpanded} onToggle={() => setUrgentExpanded((value) => !value)} scoreKey="urgencyScore" reasonKey="urgencyReasons" />
-      <PriorityBoard title="热门事件榜" eyebrow="Market Pulse / Trending" icon={Flame} items={hotItems} totalCount={overview?.hot.length || 0} expanded={hotExpanded} onToggle={() => setHotExpanded((value) => !value)} scoreKey="hotScore" reasonKey="hotReasons" />
+      <PriorityBoard title="A股热门事件榜" eyebrow="A-Share Impact / Trending" icon={Flame} items={hotItems} totalCount={(overview?.aShareHot || overview?.hot || []).length} expanded={hotExpanded} onToggle={() => setHotExpanded((value) => !value)} scoreKey="aShareImpactScore" reasonKey="hotReasons" />
     </section>
+
+    {globalItems.length > 0 && <section className="mt-5"><div className="mb-2 flex items-center gap-2"><Radio className="h-4 w-4 text-primary" /><h2 className="font-semibold">全球观察</h2><span className="text-xs text-muted-foreground">重大海外事件；未满足 A 股主榜证据门槛</span></div><GlassCard><div className="divide-y divide-border/40">{globalItems.map((item) => <Link key={item.id} to={`/finance/news/story/${item.id}`} state={{ fallback: item }} className="flex gap-3 py-3"><span className="w-24 shrink-0 font-mono text-xs text-muted-foreground">{formatTime(item.publishedAt)}</span><span className="min-w-0 flex-1"><span className="block font-medium">{item.title}</span><span className="mt-1 block text-xs text-muted-foreground">影响分 {item.aShareImpactScore ?? 0}/100 · {item.confidence || "low"} 置信度 · {item.source}</span></span></Link>)}</div></GlassCard></section>}
 
     <section className="mt-5">
       <div className="mb-2 flex items-center gap-2"><Star className="h-4 w-4 text-primary" /><h2 className="font-semibold">我的关注</h2><span className="text-xs text-muted-foreground">自选股新闻与公告，不参与公共热点排名</span></div>

@@ -34,6 +34,7 @@ import reflection as reflect_layer
 import signals
 import glm_config
 from financial_news import FinancialNewsScheduler, FinancialNewsService
+from market_impact import build_default_provider
 from aihot_api import AihotClient
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
@@ -44,7 +45,7 @@ from version import read_version
 
 __version__ = read_version()
 
-financial_news_service = FinancialNewsService()
+financial_news_service = FinancialNewsService(market_provider=build_default_provider())
 financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
 
 

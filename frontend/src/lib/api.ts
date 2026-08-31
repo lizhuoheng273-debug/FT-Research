@@ -226,7 +226,22 @@ export interface RadarData {
 
 export interface FinancialNewsReport {
   id: string; title: string; summary: string; publishedAt: string | null;
-  source: string; originalUrl: string; category: string;
+  source: string; originalUrl: string; category: string; sourceTier?: number; sourceLevel?: string;
+}
+export interface FinancialNewsImpactBreakdown {
+  marketReaction: number; sectorSpread: number; causalRelation: number; authority: number; timeliness: number;
+}
+export interface FinancialNewsMarketEvidence {
+  status?: string; observedAt?: string; stocks?: Array<Record<string, unknown>>;
+  sectors?: Array<Record<string, unknown>>; reverseChecks?: Record<string, Record<string, unknown>>;
+  verifiedStocks?: string[]; verifiedSectors?: string[]; error?: string;
+}
+export interface FinancialNewsTransmissionPath {
+  catalyst: string; industry: string; aShareSectors: string[]; relatedStocks: string[];
+  marketEvidence: string[]; verified: boolean;
+}
+export interface FinancialNewsSourceTimeline {
+  source: string; publishedAt: string | null; originalUrl: string; independent: boolean;
 }
 export interface FinancialNewsItem extends FinancialNewsReport {
   sourceTier: number; sourceLevel?: string; urgencyScore: number; hotScore: number;
@@ -234,6 +249,11 @@ export interface FinancialNewsItem extends FinancialNewsReport {
   relatedSourceCount: number; relatedSources: string[];
   relatedStocks: string[]; reports?: FinancialNewsReport[]; firstReportAt?: string;
   latestAt?: string; status?: string; aiDigest?: string; impactTags?: string[]; stale: boolean;
+  independentSourceCount?: number; independentSources?: string[]; sourceTimeline?: FinancialNewsSourceTimeline[];
+  aShareImpactScore?: number; impactBreakdown?: FinancialNewsImpactBreakdown; impactReasons?: string[];
+  marketEvidence?: FinancialNewsMarketEvidence; transmissionPath?: FinancialNewsTransmissionPath;
+  confidence?: "high" | "medium" | "low"; mainBoardEligible?: boolean; candidate?: boolean;
+  globalObservation?: boolean; recheckDueAt?: Record<string, string>;
 }
 export interface FinancialNewsSourceStatus {
   source: string; ok: boolean; count?: number; fetchedAt?: string; error?: string;
@@ -245,12 +265,17 @@ export interface FinancialNewsOverview {
     quick?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
     rss?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
   };
-  hot: FinancialNewsItem[]; feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
+  hot: FinancialNewsItem[]; aShareHot?: FinancialNewsItem[]; candidates?: FinancialNewsItem[];
+  globalObservation?: FinancialNewsItem[]; feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
+  eventLibraryHours?: number;
 }
 export interface FinancialNewsStatus {
-  quickIntervalSeconds: number; rssIntervalSeconds: number; generatedAt: string | null;
+  quickIntervalSeconds: number; rssIntervalSeconds: number; officialIntervalSeconds?: number;
+  eventLibraryHours?: number; generatedAt: string | null;
   stale: boolean; staleComponents?: { quick: boolean; rss: boolean };
   freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[];
+  sourceRegistry?: { total: number; valid: number; invalid: number; tiers: Record<string, number> };
+  marketProbe?: { configured: boolean; recheckMinutes: number[] };
 }
 
 // 产业信号 · GPU 租金

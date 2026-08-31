@@ -288,3 +288,61 @@ def test_financial_news_endpoints_expose_overview_feed_detail_and_status(monkeyp
     assert client.get("/api/finance/news/feed?category=all&limit=20").status_code == 200
     assert client.get("/api/finance/news/events/event-1").json()["data"]["id"] == "event-1"
     assert client.get("/api/finance/news/status").json()["data"]["quickIntervalSeconds"] == 180
+
+
+def test_successive_quick_refreshes_accumulate_a_rolling_event_library(tmp_path, monkeypatch):
+    import newsradar
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    monkeypatch.setattr(newsradar, "get_radar", lambda force=False: {"industries": []})
+    batches = [[{"标题": "早间政策快讯", "发布时间": "2026-08-31 15:01:00"}], [{"标题": "午间政策快讯", "发布时间": "2026-08-31 15:55:00"}]]
+    service.quick_fetchers = {"同花顺快讯": lambda: batches.pop(0)}
+
+    service.refresh_quick()
+    result = service.refresh_quick()
+
+    assert {report["title"] for item in result["feed"] for report in item["reports"]} == {"早间政策快讯", "午间政策快讯"}
+    assert result["eventLibraryHours"] >= 24
+
+
+def test_reposts_are_visible_in_timeline_but_do_not_count_as_independent_sources(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    rows = [
+        service.normalize_quick_rows([{"标题": "同一市场传闻", "发布时间": "2026-08-31 15:55:00", "链接": "https://a.test/1"}], source="同花顺快讯")[0],
+        service.normalize_quick_rows([{"标题": "同一市场传闻！", "发布时间": "2026-08-31 15:56:00", "链接": "https://b.test/1"}], source="东方财富快讯")[0],
+    ]
+
+    event = service.cluster_items(rows)[0]
+
+    assert event["relatedSourceCount"] == 2
+    assert event["independentSourceCount"] == 1
+    assert len(event["reports"]) == 2
+
+
+def test_overseas_event_without_linkage_is_capped_in_global_observation(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    titles = ["美国央行发布海外事件", "欧洲能源供应发生海外事件", "日本市场出现海外事件", "港股市场出现海外事件", "美股公司发布海外事件", "纳斯达克出现海外事件"]
+    rows = [service.normalize_quick_rows([{
+        "标题": title, "发布时间": "2026-08-31 15:55:00"
+    }], source="Federal Reserve")[0] for title in titles]
+    result = service._compose(rows, [], [])
+
+    assert len(result["globalObservation"]) == 5
+    assert result["aShareHot"] == []
+
+
+def test_glm_failure_does_not_stop_objective_event_composition(tmp_path, monkeypatch):
+    import chat
+    import glm_config
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test"})
+    monkeypatch.setattr(chat, "_call_llm", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("glm offline")))
+    row = service.normalize_quick_rows([{
+        "标题": "监管部门发布资本市场政策", "发布时间": "2026-08-31 15:55:00"
+    }], source="财联社电报")[0]
+
+    result = service._compose([row], [], [])
+
+    assert result["feed"]
+    assert result["feed"][0]["aShareImpactScore"] >= 0

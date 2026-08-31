@@ -13,7 +13,7 @@ test("finance navigation puts daily review before financial news", () => {
 });
 
 test("financial news shows urgent hot watchlist and a filterable feed", () => {
-  for (const label of ["紧要快讯", "热门事件榜", "我的关注", "全部资讯流", "本站计算"]) {
+  for (const label of ["紧要快讯", "A股热门事件榜", "我的关注", "全球观察", "全部资讯流", "本站计算"]) {
     assert.match(page, new RegExp(label));
   }
   assert.match(page, /slice\(0,\s*urgentExpanded \? 10 : 5\)/);
@@ -23,6 +23,11 @@ test("financial news shows urgent hot watchlist and a filterable feed", () => {
   assert.match(page, /api\.news/);
   assert.match(page, /reasonKey="urgencyReasons"/);
   assert.match(page, /reasonKey="hotReasons"/);
+  assert.match(page, /globalObservation/);
+  assert.match(page, /aShareImpactScore/);
+  assert.match(page, /confidence/);
+  assert.match(page, /transmissionPath/);
+  assert.match(page, /marketEvidence/);
 });
 
 test("financial event detail has scoring timeline sources and streaming AI entry", () => {
@@ -35,6 +40,10 @@ test("financial event detail has scoring timeline sources and streaming AI entry
   assert.match(detail, /热度分依据/);
   assert.match(detail, /AI 导读（辅助信息，请核对原文）/);
   assert.match(detail, /AI 影响标签（辅助信息）/);
+  assert.match(detail, /impactBreakdown/);
+  assert.match(detail, /transmissionPath/);
+  assert.match(detail, /marketEvidence/);
+  assert.match(detail, /confidence/);
   assert.ok(detail.indexOf("event.summary") < detail.indexOf("event.aiDigest"));
 });
 
@@ -42,7 +51,7 @@ test("frontend exposes typed financial news endpoints", () => {
   for (const path of ["finance/news/overview", "finance/news/feed", "finance/news/events", "finance/news/status"]) {
     assert.match(api, new RegExp(path.replaceAll("/", "\\/")));
   }
-  for (const field of ["urgencyScore", "hotScore", "scoreReasons", "relatedSourceCount", "relatedStocks"]) {
+  for (const field of ["urgencyScore", "hotScore", "scoreReasons", "relatedSourceCount", "relatedStocks", "aShareImpactScore", "impactBreakdown", "marketEvidence", "transmissionPath", "mainBoardEligible", "globalObservation"]) {
     assert.match(api, new RegExp(field));
   }
 });

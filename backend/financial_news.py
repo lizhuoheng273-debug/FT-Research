@@ -20,12 +20,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 import newsradar
+from financial_news_store import FinancialNewsStore
+from market_impact import MarketImpactEnricher, MarketEvidenceProvider
+from source_registry import load_registry, registry_status, source_grade, source_tier
 
 logger = logging.getLogger(__name__)
 
 BEIJING = timezone(timedelta(hours=8))
 QUICK_INTERVAL_SECONDS = 180
 RSS_INTERVAL_SECONDS = 1800
+EVENT_LIBRARY_HOURS = 72
+GLOBAL_OBSERVATION_LIMIT = 5
 URGENT_SCORE_THRESHOLD = 60
 _POLICY_WORDS = ("国务院", "央行", "证监会", "交易所", "监管", "政策", "新规", "财政部", "商务部", "发改委", "公告", "停牌", "复牌", "退市")
 _OVERSEAS_WORDS = ("美联储", "美国", "欧洲", "日本", "港股", "美股", "纳斯达克", "全球")
@@ -175,8 +180,30 @@ def _pick(row: dict[str, Any], *keys: str) -> Any:
     return ""
 
 
+def _report_story_key(report: dict[str, Any]) -> str:
+    return _normalized_title(f"{report.get('title', '')} {report.get('summary', '')[:120]}")
+
+
+def _independent_source_names(reports: list[dict[str, Any]]) -> list[str]:
+    """Collapse same-story reposts while retaining every report in the timeline."""
+    seen_story_keys: set[str] = set()
+    names: list[str] = []
+    for report in reports:
+        story_key = _report_story_key(report)
+        source = str(report.get("source") or "公开来源")
+        if story_key and story_key in seen_story_keys:
+            continue
+        if story_key:
+            seen_story_keys.add(story_key)
+        names.append(source)
+    return names
+
+
 class FinancialNewsService:
-    def __init__(self, cache_dir: str | Path | None = None, now_fn: Callable[[], datetime] = _now):
+    def __init__(
+        self, cache_dir: str | Path | None = None, now_fn: Callable[[], datetime] = _now,
+        market_provider: MarketEvidenceProvider | None = None,
+    ):
         self.cache_dir = Path(cache_dir or os.environ.get("FINANCIAL_NEWS_CACHE_DIR", Path(__file__).parent / ".cache" / "financial-news"))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_file = self.cache_dir / "snapshot.json"
@@ -184,6 +211,9 @@ class FinancialNewsService:
         self.ai_file = self.cache_dir / "ai-refinements.json"
         self.now_fn = now_fn
         self._lock = threading.Lock()
+        self.registry = load_registry()
+        self.store = FinancialNewsStore(self.cache_dir / "events.db", retention_hours=EVENT_LIBRARY_HOURS, now_fn=now_fn)
+        self.market_enricher = MarketImpactEnricher(market_provider, now_fn=now_fn)
         self.quick_fetchers: dict[str, Callable[[], Any]] = self._default_fetchers()
 
     @staticmethod
@@ -211,12 +241,12 @@ class FinancialNewsService:
             summary = str(_pick(row, "内容", "摘要", "digest", "content", "summary")).strip()
             date_value = _pick(row, "发布日期", "date")
             published = _parse_datetime(_pick(row, "发布时间", "时间", "rtime", "ctime"), date_value=date_value)
-            level = str(_pick(row, "等级", "level") or ("A" if source == "财联社电报" else ""))
+            level = str(_pick(row, "等级", "level") or source_grade(source, self.registry))
             url = str(_pick(row, "链接", "url", "新闻链接")).strip()
             output.append({
                 "id": _stable_id(f"{source}:{title}"), "title": title, "summary": summary,
                 "publishedAt": published.isoformat() if published else None, "category": self.classify(title, summary),
-                "source": source, "sourceTier": _SOURCE_TIERS.get(source, 18), "sourceLevel": level,
+                "source": source, "sourceTier": source_tier(source, self.registry), "sourceLevel": level,
                 "originalUrl": url, "relatedStocks": self.related_stocks(title, summary), "stale": False,
             })
         return output
@@ -224,12 +254,12 @@ class FinancialNewsService:
     @staticmethod
     def classify(title: str, summary: str = "", track: str = "") -> str:
         blob = f"{title} {summary} {track}"
+        if any(word in blob for word in _OVERSEAS_WORDS):
+            return "海外"
         if any(word in blob for word in ("公司", "股份", "业绩", "股东", "董事会", "中标", "减持", "增持")):
             return "公司"
         if any(word in blob for word in _POLICY_WORDS):
             return "宏观政策"
-        if any(word in blob for word in _OVERSEAS_WORDS):
-            return "海外"
         return "产业"
 
     @staticmethod
@@ -251,12 +281,12 @@ class FinancialNewsService:
                 if published and published > self.now_fn() + timedelta(minutes=5):
                     continue
                 source = str(raw.get("source") or "公开来源")
-                tier = next((value for name, value in _SOURCE_TIERS.items() if name in source), 18)
+                tier = source_tier(source, self.registry)
                 output.append({
                     "id": _stable_id(f"{source}:{title}"), "title": title,
                     "summary": str(raw.get("summary") or ""), "publishedAt": published.isoformat() if published else None,
                     "category": self.classify(title, str(raw.get("summary") or ""), track), "track": track,
-                    "source": source, "sourceTier": tier, "sourceLevel": "", "originalUrl": str(raw.get("url") or ""),
+                    "source": source, "sourceTier": tier, "sourceLevel": source_grade(source, self.registry), "originalUrl": str(raw.get("url") or ""),
                     "relatedStocks": self.related_stocks(title, str(raw.get("summary") or "")), "stale": False,
                 })
         return output
@@ -283,6 +313,7 @@ class FinancialNewsService:
             reports = sorted(group, key=lambda item: item.get("publishedAt") or "", reverse=True)
             lead = max(reports, key=lambda item: (int(item.get("sourceTier") or 0), item.get("publishedAt") or ""))
             sources = sorted({str(item.get("source") or "公开来源") for item in reports})
+            independent_sources = _independent_source_names(reports)
             categories = {str(item.get("category") or "产业") for item in reports}
             latest_published = reports[0].get("publishedAt")
             scoring_item = {**lead, "publishedAt": latest_published}
@@ -294,9 +325,15 @@ class FinancialNewsService:
                 **lead, "publishedAt": latest_published, "id": _stable_id(lead["title"]), "urgencyScore": urgency, "hotScore": heat,
                 "urgencyReasons": urgency_reasons, "hotReasons": heat_reasons, "scoreReasons": urgency_reasons,
                 "relatedSourceCount": len(sources), "relatedSources": sources,
+                "independentSourceCount": len(independent_sources), "independentSources": independent_sources,
                 "relatedStocks": sorted({code for report in reports for code in report.get("relatedStocks", [])}),
                 "reports": reports, "firstReportAt": reports[-1].get("publishedAt"),
                 "latestAt": reports[0].get("publishedAt"), "status": "持续更新" if len(reports) > 1 else "最新",
+                "sourceTimeline": [{
+                    "source": report.get("source"), "publishedAt": report.get("publishedAt"),
+                    "originalUrl": report.get("originalUrl"), "independent": report.get("source") in independent_sources,
+                } for report in reports],
+                "reportIds": [report.get("_storeReportId") for report in reports if report.get("_storeReportId")],
             }
             events.append(event)
         return events
@@ -325,12 +362,26 @@ class FinancialNewsService:
 
     def _apply_ai_refinements(self, events: list[dict[str, Any]]) -> None:
         cache = self._read(self.ai_file) or {}
+        metadata = cache.get("_meta") if isinstance(cache.get("_meta"), dict) else {}
+        today = self.now_fn().astimezone(BEIJING).date().isoformat()
+        used_today = int(metadata.get("candidateCount") or 0) if metadata.get("date") == today else 0
         changed = False
         candidates = [event for event in sorted(events, key=lambda row: row["hotScore"], reverse=True)[:10] if event["relatedSourceCount"] > 1]
         def fingerprint(event: dict[str, Any]) -> str:
             material = json.dumps({"title": event.get("title"), "summary": event.get("summary"), "sources": event.get("relatedSources")}, ensure_ascii=False, sort_keys=True)
             return hashlib.sha1(material.encode("utf-8")).hexdigest()
-        missing = [event for event in candidates if cache.get(event["id"], {}).get("_fingerprint") != fingerprint(event)]
+        missing = []
+        for event in candidates:
+            key = fingerprint(event)
+            stored = self.store.get_ai_cache(f"financial-news:{key}")
+            if stored:
+                event.update({name: value for name, value in stored.items() if not name.startswith("_")})
+                continue
+            if cache.get(event["id"], {}).get("_fingerprint") == key:
+                event.update({key: value for key, value in cache[event["id"]].items() if not key.startswith("_")})
+                continue
+            missing.append(event)
+        missing = missing[:max(0, 30 - used_today)]
         if missing:
             try:
                 import chat
@@ -364,35 +415,75 @@ class FinancialNewsService:
                             novel_numbers = set(re.findall(r"\d+(?:\.\d+)?%?", digest)) - set(re.findall(r"\d+(?:\.\d+)?%?", source_text))
                             tags = [tag[:20] for tag in row.get("impactTags", []) if isinstance(tag, str) and tag.strip()][:3] if isinstance(row.get("impactTags"), list) else []
                             accepted = bool(digest.strip()) and len(digest) <= 60 and not novel_numbers
-                            cache[row["id"]] = {"_fingerprint": fingerprint(matching), "_rejected": not accepted}
+                            key = fingerprint(matching)
+                            cache[row["id"]] = {"_fingerprint": key, "_rejected": not accepted}
+                            ai_payload: dict[str, Any] = {"_rejected": not accepted}
                             if accepted:
+                                ai_payload.update({"aiDigest": digest.strip(), "impactTags": tags})
                                 cache[row["id"]].update({"aiDigest": digest.strip(), "impactTags": tags})
+                            self.store.put_ai_cache(f"financial-news:{key}", ai_payload)
                             changed = True
             except Exception:
-                pass
+                for event in missing:
+                    self.store.put_ai_cache(f"financial-news:{fingerprint(event)}", {"_rejected": True, "_error": "glm unavailable"})
+            used_today += len(missing)
+            cache["_meta"] = {"date": today, "candidateCount": used_today}
+            changed = True
         if changed:
             self._write(self.ai_file, cache)
         for event in events:
-            refinement = {key: value for key, value in cache.get(event["id"], {}).items() if not key.startswith("_")}
+            key = fingerprint(event)
+            stored = self.store.get_ai_cache(f"financial-news:{key}")
+            refinement = ({name: value for name, value in stored.items() if not name.startswith("_")} if stored else {
+                key: value for key, value in cache.get(event["id"], {}).items() if not key.startswith("_")
+            })
             event.update(refinement)
 
     def _compose(
         self, quick: list[dict[str, Any]], radar: list[dict[str, Any]], source_status: list[dict[str, Any]],
         *, stale_components: dict[str, bool] | None = None, freshness: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        events = self.cluster_items(quick + radar)
+        incoming = quick + radar
+        try:
+            if incoming:
+                self.store.upsert_reports(incoming)
+            rolling = [{**row, "_storeReportId": row.get("id")} for row in self.store.load_reports(hours=EVENT_LIBRARY_HOURS)]
+        except Exception:
+            logger.exception("financial news sqlite store unavailable; using current batch")
+            rolling = incoming
+        events = self.cluster_items(rolling)
+        enriched: list[dict[str, Any]] = []
+        for event in events:
+            try:
+                enriched.append(self.market_enricher.enrich_event(event))
+            except Exception:
+                logger.exception("financial news market enrichment failed")
+                enriched.append(event)
+        events = enriched
         self._apply_ai_refinements(events)
         urgent = sorted([
             event for event in events
-            if event["urgencyScore"] >= URGENT_SCORE_THRESHOLD
+            if (event["urgencyScore"] >= URGENT_SCORE_THRESHOLD or event.get("sourceLevel") == "S")
             and _parse_datetime(event.get("publishedAt")) is not None
             and _age_minutes(event, self.now_fn()) <= 1440
         ], key=lambda row: (row["urgencyScore"], row.get("publishedAt") or ""), reverse=True)[:10]
         hot = sorted(
-            [event for event in events if event["relatedSourceCount"] >= 2],
-            key=lambda row: (row["hotScore"], row["relatedSourceCount"], row.get("publishedAt") or ""), reverse=True,
+            [event for event in events if event.get("mainBoardEligible")],
+            key=lambda row: (row.get("aShareImpactScore", 0), row["hotScore"], row.get("publishedAt") or ""), reverse=True,
         )[:10]
+        candidates = sorted(
+            [event for event in events if event.get("candidate")],
+            key=lambda row: (row.get("aShareImpactScore", 0), row.get("publishedAt") or ""), reverse=True,
+        )[:10]
+        global_observation = sorted(
+            [event for event in events if event.get("globalObservation")],
+            key=lambda row: (row.get("aShareImpactScore", 0), row.get("publishedAt") or ""), reverse=True,
+        )[:GLOBAL_OBSERVATION_LIMIT]
         feed = sorted(events, key=lambda row: row.get("publishedAt") or "", reverse=True)
+        try:
+            self.store.save_events(events)
+        except Exception:
+            logger.exception("could not persist financial news events; JSON compatibility snapshot remains available")
         component_state = {"quick": False, "rss": False, **(stale_components or {})}
         attempted_at = self.now_fn().isoformat()
         component_freshness = freshness or {
@@ -400,7 +491,9 @@ class FinancialNewsService:
             for name, stale in component_state.items()
         }
         return self.save_payload({
-            "generatedAt": attempted_at, "urgent": urgent, "hot": hot, "feed": feed,
+            "generatedAt": attempted_at, "eventLibraryHours": EVENT_LIBRARY_HOURS,
+            "urgent": urgent, "hot": hot, "aShareHot": hot, "candidates": candidates,
+            "globalObservation": global_observation, "feed": feed,
             "sourceStatus": source_status, "staleComponents": component_state,
             "freshness": component_freshness, "stale": any(component_state.values()),
         })
@@ -511,10 +604,16 @@ class FinancialNewsService:
                 "rss": {"lastSuccessAt": None, "attemptedAt": None},
             },
             "urgent": [], "hot": [], "feed": [], "sourceStatus": source_status or [],
+            "aShareHot": [], "candidates": [], "globalObservation": [], "eventLibraryHours": EVENT_LIBRARY_HOURS,
         }
 
     def overview(self) -> dict[str, Any]:
-        return self._read(self.snapshot_file) or self.empty()
+        payload = self._read(self.snapshot_file) or self.empty()
+        payload.setdefault("eventLibraryHours", EVENT_LIBRARY_HOURS)
+        payload.setdefault("aShareHot", payload.get("hot") or [])
+        payload.setdefault("candidates", [])
+        payload.setdefault("globalObservation", [])
+        return payload
 
     def feed(self, *, category: str = "all", source: str = "", limit: int = 60) -> list[dict[str, Any]]:
         rows = list(self.overview().get("feed") or [])
@@ -531,9 +630,11 @@ class FinancialNewsService:
         payload = self.overview()
         return {
             "quickIntervalSeconds": QUICK_INTERVAL_SECONDS, "rssIntervalSeconds": RSS_INTERVAL_SECONDS,
+            "officialIntervalSeconds": 600, "eventLibraryHours": EVENT_LIBRARY_HOURS,
             "generatedAt": payload.get("generatedAt"), "stale": payload.get("stale", False),
             "staleComponents": payload.get("staleComponents") or {}, "freshness": payload.get("freshness") or {},
-            "sources": payload.get("sourceStatus") or [],
+            "sources": payload.get("sourceStatus") or [], "sourceRegistry": registry_status(self.registry),
+            "marketProbe": {"configured": self.market_enricher.provider.__class__.__name__ != "_UnavailableProvider", "recheckMinutes": [15, 45, 90]},
         }
 
 
