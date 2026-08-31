@@ -69,10 +69,14 @@ export function FinancialNews() {
   const urgentItems = (overview?.urgent || []).slice(0, urgentExpanded ? 10 : 5);
   const hotItems = (overview?.hot || []).slice(0, hotExpanded ? 10 : 5);
   const openStory = (item: FinancialNewsItem) => navigate(`/finance/news/story/${item.id}`, { state: { fallback: item } });
+  const staleSources = overview?.stale ? ([
+    overview.staleComponents?.quick ? `快讯最后成功 ${formatTime(overview.freshness?.quick?.lastSuccessAt)}` : null,
+    overview.staleComponents?.rss ? `RSS 最后成功 ${formatTime(overview.freshness?.rss?.lastSuccessAt)}` : null,
+  ].filter(Boolean) as string[]) : [];
 
   return <div>
     <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button>} />
-    {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示最近一次成功缓存 · {formatTime(overview.generatedAt)}</p>}
+    {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示缓存内容{staleSources.length ? ` · ${staleSources.join(" · ")}` : ""}</p>}
     {error && <p className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
 
     <section className="market-pulse-grid grid gap-4 xl:grid-cols-2">
@@ -89,7 +93,7 @@ export function FinancialNews() {
 
     <section className="mt-5">
       <div className="mb-3 flex flex-wrap items-center gap-2"><Radio className="h-4 w-4 text-primary" /><h2 className="mr-2 font-semibold">全部资讯流</h2>{CATEGORIES.map((item) => <button key={item} onClick={() => setCategory(item)} className={cn("rounded-full border px-3 py-1 text-xs", category === item ? "border-primary bg-primary/15 text-primary" : "border-border text-muted-foreground hover:border-primary/50")}>{item}</button>)}</div>
-      <GlassCard>{loading && !overview ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取资讯快照…</p> : feed.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">当前筛选下暂无资讯</p> : <div className="divide-y divide-border/40">{feed.map((item) => <div key={item.id} role="link" tabIndex={0} onClick={() => openStory(item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") openStory(item); }} className="group flex cursor-pointer gap-4 py-3 text-left"><span className="w-24 shrink-0 font-mono text-xs text-muted-foreground">{formatTime(item.publishedAt)}</span><span className="min-w-0 flex-1"><span className="font-medium group-hover:text-primary">{item.title}</span><span className="mt-1 block line-clamp-1 text-xs text-muted-foreground">{item.aiDigest || item.summary || item.scoreReasons?.join(" · ")}</span></span><span className="hidden shrink-0 text-xs text-muted-foreground sm:block">{item.category} · {item.relatedSourceCount} 源</span>{item.originalUrl && <a href={item.originalUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="shrink-0 text-muted-foreground hover:text-primary" title="打开原文"><ExternalLink className="h-4 w-4" /></a>}</div>)}</div>}</GlassCard>
+      <GlassCard>{loading && !overview ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取资讯快照…</p> : feed.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">当前筛选下暂无资讯</p> : <div className="divide-y divide-border/40">{feed.map((item) => <div key={item.id} role="link" tabIndex={0} onClick={() => openStory(item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") openStory(item); }} className="group flex cursor-pointer gap-4 py-3 text-left"><span className="w-24 shrink-0 font-mono text-xs text-muted-foreground">{formatTime(item.publishedAt)}</span><span className="min-w-0 flex-1"><span className="font-medium group-hover:text-primary">{item.title}</span><span className="mt-1 block line-clamp-1 text-xs text-muted-foreground">{item.summary || item.scoreReasons?.join(" · ")}</span></span><span className="hidden shrink-0 text-xs text-muted-foreground sm:block">{item.category} · {item.relatedSourceCount} 源</span>{item.originalUrl && <a href={item.originalUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="shrink-0 text-muted-foreground hover:text-primary" title="打开原文"><ExternalLink className="h-4 w-4" /></a>}</div>)}</div>}</GlassCard>
     </section>
     <p className="mt-3 text-[11px] text-muted-foreground">“紧要分”和“事件热度”为 FT-Research 基于来源、时效与独立报道数计算，不代表阅读量、评论量或投资建议。</p>
     <Disclaimer />

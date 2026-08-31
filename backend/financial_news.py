@@ -378,25 +378,36 @@ class FinancialNewsService:
 
     def _compose(
         self, quick: list[dict[str, Any]], radar: list[dict[str, Any]], source_status: list[dict[str, Any]],
-        *, stale_components: dict[str, bool] | None = None,
+        *, stale_components: dict[str, bool] | None = None, freshness: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         events = self.cluster_items(quick + radar)
         self._apply_ai_refinements(events)
-        urgent = sorted([event for event in events if event["urgencyScore"] >= URGENT_SCORE_THRESHOLD], key=lambda row: (row["urgencyScore"], row.get("publishedAt") or ""), reverse=True)[:10]
+        urgent = sorted([
+            event for event in events
+            if event["urgencyScore"] >= URGENT_SCORE_THRESHOLD
+            and _parse_datetime(event.get("publishedAt")) is not None
+            and _age_minutes(event, self.now_fn()) <= 1440
+        ], key=lambda row: (row["urgencyScore"], row.get("publishedAt") or ""), reverse=True)[:10]
         hot = sorted(
             [event for event in events if event["relatedSourceCount"] >= 2],
             key=lambda row: (row["hotScore"], row["relatedSourceCount"], row.get("publishedAt") or ""), reverse=True,
         )[:10]
         feed = sorted(events, key=lambda row: row.get("publishedAt") or "", reverse=True)
         component_state = {"quick": False, "rss": False, **(stale_components or {})}
+        attempted_at = self.now_fn().isoformat()
+        component_freshness = freshness or {
+            name: {"lastSuccessAt": None if stale else attempted_at, "attemptedAt": attempted_at}
+            for name, stale in component_state.items()
+        }
         return self.save_payload({
-            "generatedAt": self.now_fn().isoformat(), "urgent": urgent, "hot": hot, "feed": feed,
+            "generatedAt": attempted_at, "urgent": urgent, "hot": hot, "feed": feed,
             "sourceStatus": source_status, "staleComponents": component_state,
-            "stale": any(component_state.values()),
+            "freshness": component_freshness, "stale": any(component_state.values()),
         })
 
     def refresh_quick(self) -> dict[str, Any]:
         with self._lock:
+            attempted_at = self.now_fn().isoformat()
             quick: list[dict[str, Any]] = []
             status: list[dict[str, Any]] = []
             for source, fetcher in self.quick_fetchers.items():
@@ -408,12 +419,18 @@ class FinancialNewsService:
                     status.append({"source": source, "ok": False, "error": str(exc)[:160], "fetchedAt": self.now_fn().isoformat()})
             previous_quick = self._read(self.quick_file) or {}
             previous_snapshot = self._read(self.snapshot_file) or {}
-            if not quick:
+            had_success = any(row.get("ok") for row in status)
+            if not quick and not had_success:
                 quick = list(previous_quick.get("items") or [])
                 if not quick and previous_snapshot:
+                    previous_freshness = previous_snapshot.get("freshness") or {}
                     degraded = {
                         **previous_snapshot, "stale": True,
                         "staleComponents": {**(previous_snapshot.get("staleComponents") or {}), "quick": True},
+                        "freshness": {
+                            **previous_freshness,
+                            "quick": {**(previous_freshness.get("quick") or {}), "attemptedAt": attempted_at},
+                        },
                         "sourceStatus": status + [row for row in previous_snapshot.get("sourceStatus") or [] if row.get("source") == "RSS 资讯雷达"],
                     }
                     return self.save_payload(degraded)
@@ -421,19 +438,28 @@ class FinancialNewsService:
                     empty = self.empty(stale=True, source_status=status)
                     empty["staleComponents"] = {"quick": True, "rss": True}
                     return self.save_payload(empty)
-            quick_stale = not any(row.get("ok") for row in status)
+            quick_stale = not had_success
+            previous_freshness = previous_snapshot.get("freshness") or {}
+            quick_last_success = attempted_at if had_success else previous_quick.get("lastSuccessAt") or (previous_freshness.get("quick") or {}).get("lastSuccessAt")
             self._write(self.quick_file, {
-                "items": quick, "sourceStatus": status, "generatedAt": self.now_fn().isoformat(), "stale": quick_stale,
+                "items": quick, "sourceStatus": status, "generatedAt": attempted_at, "stale": quick_stale,
+                "lastSuccessAt": quick_last_success, "attemptedAt": attempted_at,
             })
             radar = self.normalize_radar(newsradar.get_radar(force=False))
             rss_status = [row for row in previous_snapshot.get("sourceStatus") or [] if row.get("source") == "RSS 资讯雷达"]
+            rss_freshness = previous_freshness.get("rss") or {"lastSuccessAt": None, "attemptedAt": None}
             return self._compose(
                 quick, radar, status + rss_status,
                 stale_components={"quick": quick_stale, "rss": bool((previous_snapshot.get("staleComponents") or {}).get("rss"))},
+                freshness={
+                    "quick": {"lastSuccessAt": quick_last_success, "attemptedAt": attempted_at},
+                    "rss": rss_freshness,
+                },
             )
 
     def refresh_rss(self) -> dict[str, Any]:
         with self._lock:
+            attempted_at = self.now_fn().isoformat()
             rss_stale = False
             try:
                 radar_payload = newsradar.fetch_radar()
@@ -445,17 +471,47 @@ class FinancialNewsService:
             quick_cache = self._read(self.quick_file) or {}
             quick = list(quick_cache.get("items") or [])
             status = list(quick_cache.get("sourceStatus") or []) + radar_status
-            if not quick and not any(ind.get("items") for ind in radar_payload.get("industries") or []):
+            previous_snapshot = self._read(self.snapshot_file) or {}
+            previous_freshness = previous_snapshot.get("freshness") or {}
+            rss_last_success = (previous_freshness.get("rss") or {}).get("lastSuccessAt") if rss_stale else attempted_at
+            no_data = not quick and not any(ind.get("items") for ind in radar_payload.get("industries") or [])
+            if no_data and (rss_stale or bool(quick_cache.get("stale"))):
                 cached = self._read(self.snapshot_file)
                 if cached:
-                    return {**cached, "stale": True, "sourceStatus": status}
+                    degraded = {
+                        **cached, "stale": True,
+                        "staleComponents": {"quick": bool(quick_cache.get("stale")), "rss": rss_stale},
+                        "freshness": {
+                            "quick": {
+                                "lastSuccessAt": quick_cache.get("lastSuccessAt") or (previous_freshness.get("quick") or {}).get("lastSuccessAt"),
+                                "attemptedAt": quick_cache.get("attemptedAt") or attempted_at,
+                            },
+                            "rss": {"lastSuccessAt": rss_last_success, "attemptedAt": attempted_at},
+                        },
+                        "sourceStatus": status,
+                    }
+                    return self.save_payload(degraded)
             return self._compose(
                 quick, self.normalize_radar(radar_payload), status,
                 stale_components={"quick": bool(quick_cache.get("stale")), "rss": rss_stale},
+                freshness={
+                    "quick": {
+                        "lastSuccessAt": quick_cache.get("lastSuccessAt") or (previous_freshness.get("quick") or {}).get("lastSuccessAt"),
+                        "attemptedAt": quick_cache.get("attemptedAt"),
+                    },
+                    "rss": {"lastSuccessAt": rss_last_success, "attemptedAt": attempted_at},
+                },
             )
 
     def empty(self, *, stale: bool = False, source_status: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        return {"generatedAt": None, "stale": stale, "staleComponents": {"quick": stale, "rss": stale}, "urgent": [], "hot": [], "feed": [], "sourceStatus": source_status or []}
+        return {
+            "generatedAt": None, "stale": stale, "staleComponents": {"quick": stale, "rss": stale},
+            "freshness": {
+                "quick": {"lastSuccessAt": None, "attemptedAt": None},
+                "rss": {"lastSuccessAt": None, "attemptedAt": None},
+            },
+            "urgent": [], "hot": [], "feed": [], "sourceStatus": source_status or [],
+        }
 
     def overview(self) -> dict[str, Any]:
         return self._read(self.snapshot_file) or self.empty()
@@ -476,6 +532,7 @@ class FinancialNewsService:
         return {
             "quickIntervalSeconds": QUICK_INTERVAL_SECONDS, "rssIntervalSeconds": RSS_INTERVAL_SECONDS,
             "generatedAt": payload.get("generatedAt"), "stale": payload.get("stale", False),
+            "staleComponents": payload.get("staleComponents") or {}, "freshness": payload.get("freshness") or {},
             "sources": payload.get("sourceStatus") or [],
         }
 

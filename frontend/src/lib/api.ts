@@ -241,11 +241,16 @@ export interface FinancialNewsSourceStatus {
 export interface FinancialNewsOverview {
   generatedAt: string | null; stale: boolean; urgent: FinancialNewsItem[];
   staleComponents?: { quick: boolean; rss: boolean };
+  freshness?: {
+    quick?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
+    rss?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
+  };
   hot: FinancialNewsItem[]; feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
 }
 export interface FinancialNewsStatus {
   quickIntervalSeconds: number; rssIntervalSeconds: number; generatedAt: string | null;
-  stale: boolean; sources: FinancialNewsSourceStatus[];
+  stale: boolean; staleComponents?: { quick: boolean; rss: boolean };
+  freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[];
 }
 
 // 产业信号 · GPU 租金

@@ -31,6 +31,10 @@ test("financial event detail has scoring timeline sources and streaming AI entry
     assert.match(detail, new RegExp(label));
   }
   assert.match(detail, /AskAiButton/);
+  assert.match(detail, /紧要分依据/);
+  assert.match(detail, /热度分依据/);
+  assert.match(detail, /AI 导读（辅助信息，请核对原文）/);
+  assert.ok(detail.indexOf("event.summary") < detail.indexOf("event.aiDigest"));
 });
 
 test("frontend exposes typed financial news endpoints", () => {

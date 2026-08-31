@@ -82,6 +82,11 @@ def test_undated_items_keep_unknown_time_and_receive_no_recency_boost(tmp_path):
     assert overview["urgent"] == []
     assert overview["hot"] == []
 
+    corroborated = {**item, "title": "监管部门发布资本市场新规", "summary": "政策正式发布", "sourceTier": 35}
+    corroborated_event = service.cluster_items([corroborated, {**corroborated, "source": "另一权威来源"}])[0]
+    assert corroborated_event["urgencyScore"] >= 60
+    assert service._compose([corroborated, {**corroborated, "source": "另一权威来源"}], [], [])["urgent"] == []
+
 
 def test_sina_content_only_schema_is_normalized(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
@@ -139,6 +144,48 @@ def test_rss_cycle_does_not_clear_quick_source_outage(tmp_path, monkeypatch):
     assert result["stale"] is True
     assert result["staleComponents"]["quick"] is True
     assert any(row["source"] == "同花顺快讯" and row["ok"] is False for row in result["sourceStatus"])
+
+
+def test_successful_empty_quick_cycle_does_not_relabel_old_items_as_fresh(tmp_path, monkeypatch):
+    import newsradar
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    monkeypatch.setattr(newsradar, "get_radar", lambda force=False: {"industries": []})
+    service._write(service.quick_file, {
+        "items": [_item(title="旧快讯")], "sourceStatus": [], "stale": False,
+        "lastSuccessAt": "2026-08-30T08:00:00+00:00",
+    })
+    service.quick_fetchers = {"同花顺快讯": lambda: []}
+
+    result = service.refresh_quick()
+
+    assert result["stale"] is False
+    assert result["feed"] == []
+    assert result["freshness"]["quick"]["lastSuccessAt"] == NOW.isoformat()
+
+
+def test_empty_rss_failure_persists_degraded_snapshot_and_last_success(tmp_path, monkeypatch):
+    import newsradar
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    service.save_payload({
+        "generatedAt": "2026-08-30T08:00:00+00:00", "stale": False,
+        "staleComponents": {"quick": False, "rss": False},
+        "freshness": {
+            "quick": {"lastSuccessAt": "2026-08-30T08:00:00+00:00", "attemptedAt": "2026-08-30T08:00:00+00:00"},
+            "rss": {"lastSuccessAt": "2026-08-30T08:00:00+00:00", "attemptedAt": "2026-08-30T08:00:00+00:00"},
+        },
+        "urgent": [_item()], "hot": [], "feed": [_item()], "sourceStatus": [],
+    })
+    monkeypatch.setattr(newsradar, "fetch_radar", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(newsradar, "get_radar", lambda force=False: {"industries": []})
+
+    result = service.refresh_rss()
+
+    assert result["stale"] is True
+    assert service.overview()["stale"] is True
+    assert result["freshness"]["rss"]["lastSuccessAt"] == "2026-08-30T08:00:00+00:00"
+    assert result["freshness"]["rss"]["attemptedAt"] == NOW.isoformat()
 
 
 def test_event_recency_and_order_use_latest_report_not_authoritative_lead(tmp_path):
