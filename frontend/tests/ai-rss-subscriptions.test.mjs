@@ -30,3 +30,8 @@ test("subscription feed has search targeting and accessible pointer/keyboard reo
   for (const token of ["scrollIntoView", "highlightedId", "onPointerDown", "onPointerUp", "draggable", "onKeyDown", "上移", "下移", "置顶", "隐藏", "恢复默认"]) assert.match(feed, new RegExp(token));
   assert.match(feed, /POST|\/ai\/rss\/resolve/);
 });
+
+test("adding a source uses a centered accessible modal with test then save steps", () => {
+  for (const token of ["role=\"dialog\"", "aria-modal=\"true\"", "fixed", "测试连接", "保存并刷新", "名称", "RSS（完整订阅地址）", "previewSource", "Escape"]) assert.match(feed, new RegExp(token));
+  assert.doesNotMatch(feed, /Not Found/);
+});
