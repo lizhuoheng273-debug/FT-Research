@@ -7,13 +7,8 @@ const [review, watchlist] = await Promise.all([
   readFile(new URL("../src/pages/Watchlist.tsx", import.meta.url), "utf8"),
 ]);
 
-test("daily review uses one search entry and keeps page-owned watch persistence", () => {
-  assert.match(review, /StockSearchInput/);
-  assert.doesNotMatch(review, /StockBatchPicker/);
-  assert.doesNotMatch(review, /<textarea/);
-  assert.match(review, /saveWatch/);
-  assert.match(review, /refreshWatch/);
-  assert.ok(review.includes("navigate(`/finance/stocks/${result.code}`)"));
+test("daily review has no deleted watch controls", () => {
+  assert.doesNotMatch(review, /StockSearchInput|saveWatch|refreshWatch|关注股票/);
 });
 
 test("watchlist uses one search entry and keeps page-owned watch persistence", () => {
@@ -25,7 +20,5 @@ test("watchlist uses one search entry and keeps page-owned watch persistence", (
 });
 
 test("watchlist page no longer writes new codes outside stock detail", () => {
-  for (const page of [review, watchlist]) {
-    assert.doesNotMatch(page, /parseCodes|addCodes/);
-  }
+  assert.doesNotMatch(watchlist, /parseCodes|addCodes/);
 });

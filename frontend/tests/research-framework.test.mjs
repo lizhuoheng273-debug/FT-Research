@@ -36,10 +36,10 @@ test("the four research page types provide their explicit default scope", () => 
 });
 
 test("daily review sends the full objective market context", () => {
-  for (const marker of ["globalIdx", "sentiment", "sectors", "emotion", "turnover", "数据缺口"]) {
+  for (const marker of ["marketReview", "breadth", "liquidity", "shortTermEmotion", "turnoverTop", "sectors", "数据缺口"]) {
     assert.match(daily, new RegExp(marker));
   }
-  assert.match(daily, /chatStream\([\s\S]*"market"/);
+  assert.doesNotMatch(daily, /globalIndices|globalIdx/);
 });
 
 test("new framework conversations use a versioned key", () => {

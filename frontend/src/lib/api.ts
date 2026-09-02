@@ -214,6 +214,31 @@ export interface TurnoverStock {
 }
 export interface TurnoverTop { stocks: TurnoverStock[]; updated: string }
 
+export interface MarketReviewIndex {
+  code: string; name: string; price: number; change: number | null; changePct: number | null;
+  source: string; updatedAt: string; stale: boolean;
+}
+export interface MarketReviewBreadth {
+  up: number | null; down: number | null; upRatio: number | null; downRatio: number | null;
+  limitUp: number | null; limitDown: number | null;
+}
+export interface MarketReviewLiquidity {
+  todayAmountYuan: number | null; previousAmountYuan: number | null;
+  changeAmountYuan: number | null; changePct: number | null;
+  direction: "expanded" | "contracted" | "unchanged" | null;
+}
+export interface MarketReviewBrief {
+  text: string; status: "pending" | "generated" | "unavailable" | "missing";
+  generatedAt: string | null; promptVersion: string;
+}
+export interface MarketReview {
+  tradingDate: string; generatedAt: string; final: boolean; stale: boolean; partial: boolean;
+  sources: Array<{ name: string; status: "fresh" | "stale" | "missing" | "error"; fetchedAt: string | null; detail: string }>;
+  indices: MarketReviewIndex[]; breadth: MarketReviewBreadth; liquidity: MarketReviewLiquidity;
+  shortTermEmotion: ShortTermEmotion; turnoverTop: TurnoverStock[]; sectors: SectorFlow[];
+  brief: MarketReviewBrief;
+}
+
 export interface RadarItem {
   title: string; url: string; time: string; source: string; summary?: string; zh?: string;
 }
@@ -358,6 +383,7 @@ export interface IndustryData { top: IndustryRow[]; bottom: IndustryRow[]; total
 export interface GlobalIndex {
   key: string; name: string; region: string;
   price: number | null; change_pct: number | null;
+  updatedAt?: string; stale?: boolean; source?: string;
 }
 export interface GlobalQuote {
   code: string; name: string;
@@ -392,6 +418,7 @@ export const api = {
   marketOverview: () => get<MarketOverview>("/market/overview"),
   emotion: () => get<ShortTermEmotion>("/market/emotion"),
   turnoverTop: () => get<TurnoverTop>("/market/turnover-top"),
+  marketReview: () => get<MarketReview>("/market/review"),
   globalIndices: () => get<GlobalIndex[]>("/global/indices"),
   globalStock: (symbol: string) => get<GlobalStock>(`/global/stock?symbol=${encodeURIComponent(symbol)}`),
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
