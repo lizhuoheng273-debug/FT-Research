@@ -5,8 +5,8 @@ import test from "node:test";
 const daily = await readFile(new URL("../src/pages/DailyReview.tsx", import.meta.url), "utf8");
 const modal = await readFile(new URL("../src/components/market/MarketReviewModal.tsx", import.meta.url), "utf8");
 
-test("daily review stretches both desktop cards while preserving natural mobile heights", () => {
-  const pair = /<div className="mb-6 grid items-stretch gap-4 lg:grid-cols-\[minmax\(0,2fr\)_minmax\(0,3fr\)\]">\s*<button[\s\S]*?className="glass flex h-full w-full flex-col p-4 text-left[^"]*"[\s\S]*?<GlassCard className="h-full p-4">/;
+test("daily review constrains the mobile card track so long turnover rows scroll locally", () => {
+  const pair = /<div className="mb-6 grid grid-cols-1 items-stretch gap-4 lg:grid-cols-\[minmax\(0,2fr\)_minmax\(0,3fr\)\]">\s*<button[\s\S]*?className="glass flex h-full w-full flex-col p-4 text-left[^"]*"[\s\S]*?<GlassCard className="h-full min-w-0 p-4">/;
   assert.match(daily, pair);
   assert.doesNotMatch(daily, /mb-6 grid items-start gap-4 lg:grid-cols-\[minmax\(0,2fr\)_minmax\(0,3fr\)\]/);
 });
