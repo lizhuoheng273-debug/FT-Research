@@ -37,6 +37,7 @@ READ_TIMEOUT = 12
 MAX_ITEMS = 50
 CACHE_TTL_SECONDS = 1800
 MAX_CONCURRENT_REFRESHES = 4
+TOTAL_FETCH_TIMEOUT = CONNECT_TIMEOUT + READ_TIMEOUT
 logger = logging.getLogger(__name__)
 
 
@@ -249,19 +250,73 @@ def parse_feed(raw: bytes, *, source_url: str) -> ParsedFeed:
     return ParsedFeed(feed_name, tuple(items))
 
 
+def _set_response_read_timeout(response: object, timeout: float) -> bool:
+    """Set urllib's underlying socket timeout without assuming one wrapper shape."""
+    candidates = [response]
+    for attrs in (("fp",), ("fp", "raw"), ("fp", "raw", "_sock"), ("raw",), ("raw", "_sock"), ("_sock",)):
+        current = response
+        for attr in attrs:
+            current = getattr(current, attr, None)
+            if current is None:
+                break
+        if current is not None:
+            candidates.append(current)
+    for candidate in candidates:
+        settimeout = getattr(candidate, "settimeout", None)
+        if callable(settimeout):
+            try:
+                settimeout(timeout)
+                return True
+            except OSError:
+                continue
+    return False
+
+
+def _bounded_response_read(response: object, reader: Callable[[int], bytes], size: int, timeout: float) -> bytes:
+    """Read one bounded chunk; closing a fallback response interrupts its reader."""
+    if _set_response_read_timeout(response, timeout):
+        return reader(size)
+    completed = threading.Event()
+    result: list[bytes] = []
+    errors: list[BaseException] = []
+
+    def read_once() -> None:
+        try:
+            result.append(reader(size))
+        except BaseException as exc:  # the caller normalizes the network boundary
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    threading.Thread(target=read_once, name="rss-bounded-read", daemon=True).start()
+    if not completed.wait(timeout):
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+        raise RssFetchError("RSS 响应读取超时")
+    if errors:
+        raise errors[0]
+    return result[0]
+
+
 def fetch_url(url: str) -> bytes:
     normalized = validate_public_url(url)
     request = urllib.request.Request(normalized, headers={"User-Agent": "FT-Research RSS Reader/1.0", "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1"})
     opener = urllib.request.build_opener(SafeRedirectHandler())
+    deadline = time.monotonic() + TOTAL_FETCH_TIMEOUT
     try:
-        with opener.open(request, timeout=CONNECT_TIMEOUT) as response:
+        with opener.open(request, timeout=min(CONNECT_TIMEOUT, max(0.01, deadline - time.monotonic()))) as response:
             content_length = int(response.headers.get("Content-Length", "0") or 0)
             if content_length > MAX_BYTES:
                 raise RssFetchError("RSS 响应超过 4 MB 限制")
             chunks: list[bytes] = []
             size = 0
             while size <= MAX_BYTES:
-                chunk = response.read(min(64 * 1024, MAX_BYTES + 1 - size))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RssFetchError("RSS 下载总时限已到")
+                reader = getattr(response, "read1", response.read)
+                chunk = _bounded_response_read(response, reader, min(64 * 1024, MAX_BYTES + 1 - size), min(READ_TIMEOUT, remaining))
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -381,15 +436,33 @@ class RssCatalog:
                 snapshot["errorCode"] = error_code
                 return snapshot
 
-    def source_for_refresh(self, source_id: str, custom_url: str | None = None) -> dict[str, object]:
-        """Resolve a caller's id without ever accepting an alternate built-in URL."""
+    def refresh_identity(self, source_id: str, custom_url: str | None = None) -> str:
+        """Validate identity before the HTTP route applies its cooldown.
+
+        Custom domains get syntax/IP checks here but DNS stays in the admitted
+        refresh path, so rejected repeat clicks do not perform DNS work.
+        """
         builtin = next((source for source in self.source_defs if source["id"] == source_id), None)
         if builtin:
             if custom_url is not None:
                 raise ValueError("内置信源不能指定 URL")
-            return dict(builtin)
+            return source_id
         if not custom_url:
             raise KeyError(source_id)
+        normalized = validate_public_url(custom_url, resolve_dns=False)
+        expected_id = f"custom-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
+        if source_id != expected_id:
+            raise KeyError(source_id)
+        return expected_id
+
+    def source_for_refresh(self, source_id: str, custom_url: str | None = None) -> dict[str, object]:
+        """Resolve a caller's id without ever accepting an alternate built-in URL."""
+        builtin = next((source for source in self.source_defs if source["id"] == source_id), None)
+        if builtin:
+            self.refresh_identity(source_id, custom_url)
+            return dict(builtin)
+        self.refresh_identity(source_id, custom_url)
+        assert custom_url is not None
         normalized = validate_public_url(custom_url, resolve_dns=self.validate_dns)
         expected_id = f"custom-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
         if source_id != expected_id:

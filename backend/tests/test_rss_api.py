@@ -75,6 +75,39 @@ def test_rss_refresh_rejects_custom_private_url(monkeypatch):
     assert response.status_code == 400
 
 
+def test_rss_refresh_reports_private_redirect_as_security_failure(monkeypatch, tmp_path):
+    import rss
+
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: (_ for _ in ()).throw(rss.RssSecurityError("redirected to private host")), validate_dns=False)
+    monkeypatch.setattr(app, "rss_catalog", catalog)
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    response = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})
+    assert response.status_code == 200
+    assert response.json()["source"]["errorCode"] == "security"
+
+
+def test_concurrent_same_source_refresh_is_cooled_before_a_second_fetch(monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(app.rss_catalog, "refresh_identity", lambda source_id, custom_url=None: source_id)
+    def refresh(source_id, custom_url=None):
+        calls.append(source_id); started.set(); assert release.wait(1)
+        return {"source": {"id": source_id, "items": []}, "outcome": "updated"}
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", refresh)
+    results = []
+    first = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"}).status_code))
+    first.start(); assert started.wait(1)
+    second = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})
+    release.set(); first.join(1)
+    assert sorted(results + [second.status_code]) == [200, 429]
+    assert calls == ["solidot"]
+
+
 def test_radar_keeps_legacy_industries_and_media_snapshots(monkeypatch):
     payload = {"generated_at": "now", "industries": [], "stats": {}, "sources": [], "sourceHealth": []}
     monkeypatch.setattr(app.newsradar, "get_radar", lambda force=False: payload)

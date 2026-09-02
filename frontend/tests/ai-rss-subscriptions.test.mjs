@@ -31,6 +31,12 @@ test("subscription feed has search targeting and accessible pointer/keyboard reo
   assert.match(feed, /POST|\/ai\/rss\/resolve/);
 });
 
+test("subscription cards keep actions below content on narrow screens", () => {
+  assert.match(feed, /grid-cols-\[auto_minmax\(0,1fr\)\]/);
+  assert.match(feed, /col-span-2[^\"]*flex-wrap/);
+  assert.match(feed, /sm:flex/);
+});
+
 test("adding a source uses a centered accessible modal with test then save steps", () => {
   for (const token of ["role=\"dialog\"", "aria-modal=\"true\"", "fixed", "测试连接", "保存并刷新", "名称", "RSS（完整订阅地址）", "previewSource", "Escape"]) assert.match(feed, new RegExp(token));
   assert.doesNotMatch(feed, /Not Found/);

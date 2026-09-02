@@ -209,13 +209,12 @@ def ai_rss_refresh(request: RssRefreshReq):
     subsystem must restrict this active network write to owners.
     """
     try:
-        source = rss_catalog.source_for_refresh(request.sourceId, request.url)
+        source_id = rss_catalog.refresh_identity(request.sourceId, request.url)
     except KeyError as exc:
         raise HTTPException(404, "RSS 信源不存在") from exc
     except (RssSecurityError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    source_id = str(source["id"])
     now = _rss_refresh_clock()
     with _rss_refresh_attempts_lock:
         last_attempt = _rss_refresh_attempts.get(source_id)
