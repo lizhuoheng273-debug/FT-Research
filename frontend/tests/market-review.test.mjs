@@ -5,6 +5,7 @@ import test from "node:test";
 const chart = await readFile(new URL("../src/components/market/MarketChart.tsx", import.meta.url), "utf8");
 const api = await readFile(new URL("../src/lib/api.ts", import.meta.url), "utf8");
 const daily = await readFile(new URL("../src/pages/DailyReview.tsx", import.meta.url), "utf8");
+const financial = await readFile(new URL("../src/pages/FinancialNews.tsx", import.meta.url), "utf8");
 const modalUrl = new URL("../src/components/market/MarketReviewModal.tsx", import.meta.url);
 
 test("index intraday chart uses nullable average and never draws an unconditional average line", () => {
@@ -41,4 +42,14 @@ test("market review modal is keyboard reachable and responsive", async () => {
 test("daily review modal launchers are keyboard-focusable buttons", () => {
   assert.match(daily, /<button\s+type=["']button["'][\s\S]*setModal\("emotion"\)[\s\S]*完整短线情绪/);
   assert.match(daily, /<button\s+type=["']button["'][\s\S]*setModal\("turnover"\)[\s\S]*完整榜单/);
+});
+
+test("financial news places an independently failed global market strip before urgent feeds", () => {
+  assert.match(financial, /api\.globalIndices\(\)/);
+  assert.match(financial, /region/);
+  assert.match(financial, /updatedAt/);
+  assert.match(financial, /stale/);
+  assert.match(financial, /数据不可用|行情缺失/);
+  assert.ok(financial.indexOf("全球市场") < financial.indexOf("紧要快讯"));
+  assert.match(financial, /Promise\.allSettled|globalError|globalLoading/);
 });

@@ -383,7 +383,7 @@ export interface IndustryData { top: IndustryRow[]; bottom: IndustryRow[]; total
 export interface GlobalIndex {
   key: string; name: string; region: string;
   price: number | null; change_pct: number | null;
-  updatedAt?: string; stale?: boolean; source?: string;
+  updatedAt?: string | null; stale?: boolean; source?: string; status?: "fresh" | "stale" | "unavailable";
 }
 export interface GlobalQuote {
   code: string; name: string;

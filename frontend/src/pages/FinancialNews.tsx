@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
-import { api, type FinancialNewsItem, type FinancialNewsOverview } from "@/lib/api";
+import { api, type FinancialNewsItem, type FinancialNewsOverview, type GlobalIndex } from "@/lib/api";
 import { loadWatch } from "@/lib/watchlist";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +19,19 @@ function formatTime(value?: string | null) {
 
 function safeHref(value?: string | null) {
   return value && /^https?:\/\//i.test(value) ? value : undefined;
+}
+
+function GlobalMarketStrip({ rows, loading, error }: { rows: GlobalIndex[]; loading: boolean; error: string | null }) {
+  const regions = ["美股", "港股"];
+  return <section aria-label="全球市场" className="mb-5">
+    <div className="mb-2 flex items-center gap-2"><Radio className="h-4 w-4 text-primary" /><h2 className="font-semibold">全球市场</h2><span className="text-xs text-muted-foreground">美股 / 港股指数</span>{error && <span className="text-xs text-warning">{error}</span>}</div>
+    <div className="grid gap-3 lg:grid-cols-2">
+      {regions.map((region) => {
+        const regionRows = rows.filter((row) => row.region === region);
+        return <GlassCard key={region} className="p-4"><div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-semibold">{region}</h3><span className="text-xs text-muted-foreground">{loading ? "读取中…" : regionRows.some((row) => row.status === "stale") ? "缓存" : regionRows.some((row) => row.status === "fresh") ? "实时" : "数据不可用"}</span></div><div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{regionRows.map((row) => <div key={row.key} className="min-w-0 rounded-lg bg-muted/25 p-2.5"><p className="truncate text-xs text-muted-foreground">{row.name}</p>{row.price == null ? <p className="mt-1 text-sm text-warning">数据不可用</p> : <><p className={cn("mt-1 font-mono text-sm font-semibold", row.change_pct == null ? "text-muted-foreground" : row.change_pct > 0 ? "text-danger" : row.change_pct < 0 ? "text-success" : "text-muted-foreground")}>{row.price.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}</p><p className={cn("text-xs", row.change_pct == null ? "text-muted-foreground" : row.change_pct > 0 ? "text-danger" : row.change_pct < 0 ? "text-success" : "text-muted-foreground")}>{row.change_pct == null ? "涨跌缺失" : `${row.change_pct > 0 ? "+" : ""}${row.change_pct}%`}</p></>}<p className="mt-2 truncate text-[10px] text-muted-foreground/60">{row.stale ? "缓存" : row.updatedAt || "更新时间缺失"}</p></div>)}</div></GlassCard>;
+      })}
+    </div>
+  </section>;
 }
 
 function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.length, expanded, onToggle, scoreKey, reasonKey }: {
@@ -52,9 +65,14 @@ export function FinancialNews() {
   const [category, setCategory] = useState<(typeof CATEGORIES)[number]>("全部");
   const [watchRows, setWatchRows] = useState<WatchRow[]>([]);
   const [watchLoading, setWatchLoading] = useState(true);
+  const [globalRows, setGlobalRows] = useState<GlobalIndex[]>([]);
+  const [globalLoading, setGlobalLoading] = useState(true);
+  const [globalError, setGlobalError] = useState<string | null>(null);
 
   const load = () => { setLoading(true); setError(null); api.financialNewsOverview().then(setOverview).catch((e) => setError(e instanceof Error ? e.message : "加载失败")).finally(() => setLoading(false)); };
+  const loadGlobal = () => { setGlobalLoading(true); setGlobalError(null); api.globalIndices().then(setGlobalRows).catch((e) => setGlobalError(e instanceof Error ? e.message : "全球市场暂不可用")).finally(() => setGlobalLoading(false)); };
   useEffect(load, []);
+  useEffect(loadGlobal, []);
   useEffect(() => {
     const codes = loadWatch();
     if (!codes.length) { setWatchRows([]); setWatchLoading(false); return; }
@@ -81,7 +99,8 @@ export function FinancialNews() {
   const unavailableSources = (overview?.sourceStatus || []).filter((source) => !source.ok).map((source) => source.source);
 
   return <div>
-    <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button>} />
+    <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<button onClick={() => { load(); loadGlobal(); }} disabled={loading || globalLoading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading || globalLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button>} />
+    <GlobalMarketStrip rows={globalRows} loading={globalLoading} error={globalError} />
     {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示缓存内容{staleSources.length ? ` · ${staleSources.join(" · ")}` : ""}</p>}
     {!overview?.stale && unavailableSources.length > 0 && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">部分来源暂不可用，榜单已由其他来源生成：{unavailableSources.join("、")}</p>}
     {error && <p className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
