@@ -372,7 +372,7 @@ def fetch_url(url: str) -> bytes:
                 # read1 consumes a known Content-Length body. Do not begin an
                 # extra EOF read that would misclassify that valid state as an
                 # unknown, unbounded response wrapper.
-                if content_length and size >= content_length:
+                if content_length > 0 and size >= content_length:
                     return b"".join(chunks)
             return b"".join(chunks)
     except (RssFetchError, RssSecurityError):

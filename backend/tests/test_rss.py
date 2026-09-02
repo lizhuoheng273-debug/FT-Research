@@ -150,6 +150,26 @@ def test_fetch_url_accepts_real_urllib_eof_after_complete_body(monkeypatch, wire
     assert rss.fetch_url(f"http://127.0.0.1:{port}/") == b"data"
 
 
+def test_fetch_url_treats_negative_content_length_as_unknown_length(monkeypatch):
+    import socket
+    import threading
+
+    body = b"x" * (64 * 1024 + 16)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    def serve():
+        connection, _address = listener.accept()
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\nConnection: close\r\n\r\n" + body)
+        connection.close()
+        listener.close()
+    threading.Thread(target=serve, daemon=True).start()
+    monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
+    assert rss.fetch_url(f"http://127.0.0.1:{port}/") == body
+
+
 def test_redirect_uses_remaining_deadline_timeout(monkeypatch):
     handler = rss.SafeRedirectHandler(deadline=10.0)
     monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
