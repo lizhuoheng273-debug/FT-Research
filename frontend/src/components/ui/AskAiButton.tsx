@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Settings, Sparkles, Trash2, X } from "lucide-react";
 import { AiConversation } from "@/components/ai/AiConversation";
 import { useAiChatSession } from "@/hooks/useAiChatSession";
 import { hasLlm, type AnalysisScope } from "@/lib/llm";
+import { buildFinanceAiPath, type FinanceAiSource } from "@/lib/financeAi";
 
 interface Props {
   context: string;
@@ -11,12 +12,18 @@ interface Props {
   label?: string;
   scopeKey?: string;
   analysisScope?: AnalysisScope;
+  workspaceSource?: FinanceAiSource;
+  workspaceCode?: string;
+  workspacePanel?: string;
+  workspaceEventId?: string;
+  workspaceDate?: string;
 }
 
 // 紧凑入口继续服务日报、资讯与个股分类；会话与流式逻辑由共享 hook 管理，
 // 个股顶部的大工作台使用同一套底层，不复制请求和持久化状态机。
-export function AskAiButton({ context, suggestions = [], label = "问 AI", scopeKey, analysisScope = "general" }: Props) {
+export function AskAiButton({ context, suggestions = [], label = "问 AI", scopeKey, analysisScope = "general", workspaceSource, workspaceCode, workspacePanel, workspaceEventId, workspaceDate }: Props) {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [configured, setConfigured] = useState(false);
   const session = useAiChatSession({
@@ -45,6 +52,12 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
     session.stop();
     setOpen(false);
   };
+
+  const openWorkspace = () => navigate(buildFinanceAiPath({ source: workspaceSource!, code: workspaceCode, panel: workspacePanel, eventId: workspaceEventId, date: workspaceDate }), { state: { from: pathname + window.location.search } });
+
+  if (workspaceSource) {
+    return <button type="button" onClick={openWorkspace} className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-3 py-1.5 text-sm font-medium text-primary shadow-glow transition-colors hover:bg-primary/25"><Sparkles className="h-4 w-4" />{label}</button>;
+  }
 
   return <>
     <button onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-3 py-1.5 text-sm font-medium text-primary shadow-glow transition-colors hover:bg-primary/25">

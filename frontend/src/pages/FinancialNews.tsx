@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
+import { AskAiButton } from "@/components/ui/AskAiButton";
 import { api, type FinancialNewsItem, type FinancialNewsOverview, type GlobalIndex } from "@/lib/api";
 import { loadWatch } from "@/lib/watchlist";
 import { cn } from "@/lib/utils";
@@ -99,7 +100,7 @@ export function FinancialNews() {
   const unavailableSources = (overview?.sourceStatus || []).filter((source) => !source.ok).map((source) => source.source);
 
   return <div>
-    <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<button onClick={() => { load(); loadGlobal(); }} disabled={loading || globalLoading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading || globalLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button>} />
+    <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<div className="flex items-center gap-2"><AskAiButton context="金融资讯首页上下文由工作台按需重新读取。" workspaceSource="news" label="问 AI" suggestions={["今天最重要的三条资讯是什么", "这些资讯如何影响 A 股", "哪些结论还需要核实"]} /><button onClick={() => { load(); loadGlobal(); }} disabled={loading || globalLoading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading || globalLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button></div>} />
     <GlobalMarketStrip rows={globalRows} loading={globalLoading} error={globalError} />
     {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示缓存内容{staleSources.length ? ` · ${staleSources.join(" · ")}` : ""}</p>}
     {!overview?.stale && unavailableSources.length > 0 && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">部分来源暂不可用，榜单已由其他来源生成：{unavailableSources.join("、")}</p>}

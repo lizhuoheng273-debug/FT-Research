@@ -17,7 +17,7 @@ import { AIDaily } from "@/pages/AIDaily";
 import { AINewsDetail } from "@/pages/AINewsDetail";
 import { StockDetail } from "@/pages/StockDetail";
 import { IndexDetail } from "@/pages/IndexDetail";
-import { StockAiWorkspace } from "@/pages/StockAiWorkspace";
+import { FinanceAiWorkspace } from "@/pages/FinanceAiWorkspace";
 import { FinancialNews } from "@/pages/FinancialNews";
 import { FinancialNewsDetail } from "@/pages/FinancialNewsDetail";
 
@@ -41,9 +41,10 @@ export const router = createBrowserRouter([
       { path: "/finance/news/story/:eventId", element: <FinancialNewsDetail /> },
       { path: "/finance/news/:tab", element: <FinancialNews /> },
       { path: "/finance/review", element: <DailyReview /> },
+      { path: "/finance/ai", element: <FinanceAiWorkspace /> },
       { path: "/finance/watchlist", element: <Watchlist /> },
       { path: "/finance/stocks/:code", element: <StockDetail /> },
-      { path: "/finance/stocks/:code/ai", element: <StockAiWorkspace /> },
+      { path: "/finance/stocks/:code/ai", element: <FinanceAiWorkspace /> },
       { path: "/finance/indices/:code", element: <IndexDetail /> },
       { path: "/finance/research", element: <LegacyResearch /> },
       // Legacy deep links remain available for existing bookmarks.

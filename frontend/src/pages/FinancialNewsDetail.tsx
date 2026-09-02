@@ -97,7 +97,7 @@ export function FinancialNewsDetail() {
             <h2 className="mb-2 font-semibold">来源摘要</h2>
             <p className="text-sm leading-7 text-muted-foreground">{event.summary || "暂无来源摘要，可打开原始来源查看完整内容。"}</p>
             {event.aiDigest && <div className="mt-4 rounded-xl border border-primary/20 bg-primary/5 p-3"><h3 className="text-xs font-semibold text-primary">AI 导读（辅助信息，请核对原文）</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">{event.aiDigest}</p></div>}
-            <div className="mt-5 border-t border-border/50 pt-4"><AskAiButton context={context} label="AI 摘要与追问" suggestions={["这件事为什么重要？", "按时间梳理相关报道", "涉及哪些行业和公司？"]} /></div>
+            <div className="mt-5 border-t border-border/50 pt-4"><AskAiButton context={context} workspaceSource="news-story" workspaceEventId={eventId} label="AI 摘要与追问" suggestions={["这件事为什么重要？", "按时间梳理相关报道", "涉及哪些行业和公司？"]} /></div>
           </GlassCard>
 
           <GlassCard>
