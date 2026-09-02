@@ -65,6 +65,10 @@ class RssFetchError(RuntimeError):
     """The URL passed validation but could not be fetched or parsed."""
 
 
+class RssTimeoutError(RssFetchError):
+    """A bounded connection, redirect, or body-read deadline expired."""
+
+
 @dataclass(frozen=True)
 class RssItem:
     id: str
@@ -126,9 +130,23 @@ def validate_public_url(value: str, *, resolve_dns: bool = True) -> str:
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     max_redirections = MAX_REDIRECTS
 
+    def __init__(self, deadline: float | None = None) -> None:
+        super().__init__()
+        self.deadline = deadline
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        remaining = None if self.deadline is None else self.deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise RssTimeoutError("RSS 重定向总时限已到")
         validate_public_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        if remaining is not None:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise RssTimeoutError("RSS 重定向总时限已到")
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and remaining is not None:
+            redirected.timeout = min(CONNECT_TIMEOUT, remaining)
+        return redirected
 
 
 class _TextExtractor(HTMLParser):
@@ -273,37 +291,22 @@ def _set_response_read_timeout(response: object, timeout: float) -> bool:
 
 
 def _bounded_response_read(response: object, reader: Callable[[int], bytes], size: int, timeout: float) -> bytes:
-    """Read one bounded chunk; closing a fallback response interrupts its reader."""
-    if _set_response_read_timeout(response, timeout):
+    """Read one chunk only when urllib exposes a settable socket timeout."""
+    if not _set_response_read_timeout(response, timeout):
+        raise RssFetchError("RSS 响应无法安全设置读取超时")
+    try:
         return reader(size)
-    completed = threading.Event()
-    result: list[bytes] = []
-    errors: list[BaseException] = []
-
-    def read_once() -> None:
-        try:
-            result.append(reader(size))
-        except BaseException as exc:  # the caller normalizes the network boundary
-            errors.append(exc)
-        finally:
-            completed.set()
-
-    threading.Thread(target=read_once, name="rss-bounded-read", daemon=True).start()
-    if not completed.wait(timeout):
-        close = getattr(response, "close", None)
-        if callable(close):
-            close()
-        raise RssFetchError("RSS 响应读取超时")
-    if errors:
-        raise errors[0]
-    return result[0]
+    except TimeoutError as exc:
+        raise RssTimeoutError("RSS 响应读取超时") from exc
 
 
 def fetch_url(url: str) -> bytes:
-    normalized = validate_public_url(url)
-    request = urllib.request.Request(normalized, headers={"User-Agent": "FT-Research RSS Reader/1.0", "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1"})
-    opener = urllib.request.build_opener(SafeRedirectHandler())
     deadline = time.monotonic() + TOTAL_FETCH_TIMEOUT
+    normalized = validate_public_url(url)
+    if deadline - time.monotonic() <= 0:
+        raise RssTimeoutError("RSS DNS 校验总时限已到")
+    request = urllib.request.Request(normalized, headers={"User-Agent": "FT-Research RSS Reader/1.0", "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1"})
+    opener = urllib.request.build_opener(SafeRedirectHandler(deadline))
     try:
         with opener.open(request, timeout=min(CONNECT_TIMEOUT, max(0.01, deadline - time.monotonic()))) as response:
             content_length = int(response.headers.get("Content-Length", "0") or 0)
@@ -314,7 +317,7 @@ def fetch_url(url: str) -> bytes:
             while size <= MAX_BYTES:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RssFetchError("RSS 下载总时限已到")
+                    raise RssTimeoutError("RSS 下载总时限已到")
                 reader = getattr(response, "read1", response.read)
                 chunk = _bounded_response_read(response, reader, min(64 * 1024, MAX_BYTES + 1 - size), min(READ_TIMEOUT, remaining))
                 if not chunk:
@@ -377,6 +380,8 @@ class RssCatalog:
     def _error_code(error: Exception) -> str:
         if isinstance(error, RssSecurityError):
             return "security"
+        if isinstance(error, RssTimeoutError):
+            return "timeout"
         if isinstance(error, TimeoutError) or "timeout" in str(error).lower() or "timed out" in str(error).lower():
             return "timeout"
         if isinstance(error, urllib.error.HTTPError):
@@ -463,7 +468,9 @@ class RssCatalog:
             return dict(builtin)
         self.refresh_identity(source_id, custom_url)
         assert custom_url is not None
-        normalized = validate_public_url(custom_url, resolve_dns=self.validate_dns)
+        # DNS is intentionally deferred to refresh(), where URL admission has
+        # already acquired both the per-URL lock and a bounded refresh slot.
+        normalized = validate_public_url(custom_url, resolve_dns=False)
         expected_id = f"custom-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
         if source_id != expected_id:
             raise KeyError(source_id)

@@ -57,8 +57,11 @@ def test_full_text_feed_over_two_mb_is_downloaded_and_parsed(monkeypatch):
     import io
     # Full-text RSS can exceed 2 MB even when only three headlines are shown.
     raw = RSS.replace(b"</channel>", b"<!--" + b"x" * 2_300_000 + b"--></channel>")
+    class FakeSocket:
+        def settimeout(self, _timeout): pass
     class Response(io.BytesIO):
         headers = {"Content-Length": str(len(raw))}
+        fp = type("Fp", (), {"raw": type("Raw", (), {"_sock": FakeSocket()})()})()
     class Opener:
         def open(self, request, timeout):
             return Response(raw)
@@ -78,14 +81,19 @@ def test_fetch_url_stops_a_slow_read_at_the_total_deadline(monkeypatch):
     """A blocking body read cannot consume a refresh slot beyond its deadline."""
     import time
 
+    class FakeSocket:
+        timeout = None
+        def settimeout(self, value): self.timeout = value
+
     class Response:
         headers = {"Content-Length": "4"}
+        fp = type("Fp", (), {"raw": type("Raw", (), {"_sock": FakeSocket()})()})()
         def __enter__(self): return self
         def __exit__(self, *_args): return False
         def close(self): pass
         def read(self, _size):
-            time.sleep(0.2)
-            return b"data"
+            time.sleep(self.fp.raw._sock.timeout)
+            raise TimeoutError("read timed out")
 
     class Opener:
         def open(self, _request, timeout): return Response()
@@ -95,9 +103,38 @@ def test_fetch_url_stops_a_slow_read_at_the_total_deadline(monkeypatch):
     monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
     monkeypatch.setattr(rss.urllib.request, "build_opener", lambda *_handlers: Opener())
     started = time.monotonic()
-    with pytest.raises(rss.RssFetchError, match="超时"):
+    with pytest.raises(rss.RssTimeoutError, match="超时"):
         rss.fetch_url("https://example.com/feed")
     assert time.monotonic() - started < 0.1
+
+
+def test_fetch_url_fails_closed_when_response_socket_cannot_be_bounded(monkeypatch):
+    class Response:
+        headers = {"Content-Length": "4"}
+        read_calls = 0
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _size):
+            self.read_calls += 1
+            return b"data"
+
+    response = Response()
+    monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
+    monkeypatch.setattr(rss.urllib.request, "build_opener", lambda *_handlers: type("Opener", (), {"open": lambda *_args, **_kwargs: response})())
+    with pytest.raises(rss.RssFetchError, match="无法安全设置读取超时"):
+        rss.fetch_url("https://example.com/feed")
+    assert response.read_calls == 0
+
+
+def test_redirect_uses_remaining_deadline_timeout(monkeypatch):
+    handler = rss.SafeRedirectHandler(deadline=10.0)
+    monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
+    moments = iter([7.5, 9.5])
+    monkeypatch.setattr(rss.time, "monotonic", lambda: next(moments))
+    request = rss.urllib.request.Request("https://example.com/original")
+    request.timeout = 8
+    redirected = handler.redirect_request(request, None, 302, "Found", {}, "https://example.com/next")
+    assert redirected.timeout == 0.5
 
 
 def test_parse_rss_cleans_summary_and_sorts_items():
@@ -259,6 +296,35 @@ def test_refresh_identity_checks_custom_id_without_dns(tmp_path, monkeypatch):
     source_id = f"custom-{rss.hashlib.sha256(rss.normalize_url(url).encode()).hexdigest()[:16]}"
     monkeypatch.setattr(rss, "socket", None)
     assert catalog.refresh_identity(source_id, url) == source_id
+
+
+def test_custom_dns_validation_happens_only_inside_refresh_admission(tmp_path, monkeypatch):
+    class ProbeSlots:
+        active = False
+        def __enter__(self): self.active = True
+        def __exit__(self, *_args): self.active = False
+
+    slots = ProbeSlots()
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: RSS, validate_dns=True)
+    catalog._refresh_slots = slots
+    url = "https://public.example/feed"
+    source_id = f"custom-{rss.hashlib.sha256(rss.normalize_url(url).encode()).hexdigest()[:16]}"
+    original_validate = rss.validate_public_url
+    calls = []
+    def validate(value, *, resolve_dns=True):
+        calls.append(resolve_dns)
+        if resolve_dns:
+            assert slots.active is True
+        return original_validate(value, resolve_dns=False)
+    monkeypatch.setattr(rss, "validate_public_url", validate)
+    catalog.refresh_source(source_id, url)
+    assert calls == [False, False, True]
+
+
+def test_catalog_exposes_timeout_code_for_bounded_fetch_timeout(tmp_path):
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: (_ for _ in ()).throw(rss.RssTimeoutError("RSS 下载总时限已到")), validate_dns=False)
+    result = catalog.refresh_source("solidot")
+    assert result["source"]["errorCode"] == "timeout"
 
 
 def test_same_url_refresh_serializes_failure_before_later_success(tmp_path):
