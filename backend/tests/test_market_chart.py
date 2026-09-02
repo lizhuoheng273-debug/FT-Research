@@ -176,6 +176,20 @@ def test_intraday_average_is_cumulative_vwap_and_resets_each_trading_day():
     assert [point["average"] for point in result] == [10.0, 11.5, 20.0, 21.0]
 
 
+@pytest.mark.parametrize("period", ["intraday", "five_day"])
+def test_index_chart_points_do_not_have_an_average_line(period):
+    points = [{
+        "time": "2026-09-01T09:31", "open": 4000.0, "high": 4010.0,
+        "low": 3990.0, "close": 4005.0, "average": 4002.5,
+        "volume": 100.0, "amount": 400500.0,
+    }]
+
+    result = market_chart.prepare_points("index", period, points)
+
+    assert result[0]["close"] == 4005.0
+    assert result[0]["average"] is None
+
+
 def test_intraday_vwap_keeps_last_value_for_zero_volume_bar():
     points = [
         {"time": "2026-08-31T09:31", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "average": 10.0, "volume": 100.0, "amount": 1_000.0},

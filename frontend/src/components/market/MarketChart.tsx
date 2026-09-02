@@ -30,16 +30,21 @@ function chartOption(data: MarketChartData) {
   const points = data.points;
   const labels = points.map((point) => point.time.length > 10 ? point.time.slice(5, 16) : point.time.slice(5));
   if (data.period === "intraday" || data.period === "five_day") {
+    const averages = points.map((point) => point.average);
+    const validAverages = averages.filter((value) => Number.isFinite(value));
+    const series: Array<Record<string, unknown>> = [
+      { name: "现价", type: "line", data: points.map((point) => point.close), smooth: true, showSymbol: false, lineStyle: { color: red, width: 2 }, itemStyle: { color: red } },
+    ];
+    if (data.asset === "stock" && validAverages.length > 0) {
+      series.push({ name: "均价", type: "line", data: averages, smooth: true, showSymbol: false, lineStyle: { color: "#f59e0b", type: "dashed" } });
+    }
     return {
       animation: false,
       grid: { left: 48, right: 18, top: 24, bottom: 30 },
       tooltip: { trigger: "axis", axisPointer: { type: "cross" }, valueFormatter: (value: number) => value?.toFixed?.(2) ?? "—" },
       xAxis: { type: "category", data: labels, boundaryGap: false, axisLabel: { color: "#94a3b8", hideOverlap: true } },
       yAxis: [{ type: "value", scale: true, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#33415555" } } }],
-      series: [
-        { name: "现价", type: "line", data: points.map((point) => point.close), smooth: true, showSymbol: false, lineStyle: { color: red, width: 2 }, itemStyle: { color: red } },
-        { name: "均价", type: "line", data: points.map((point) => point.average), smooth: true, showSymbol: false, lineStyle: { color: "#f59e0b", type: "dashed" } },
-      ],
+      series,
     };
   }
   const candles = points.map((point) => [point.open, point.close, point.low, point.high]);

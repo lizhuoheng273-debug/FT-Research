@@ -167,7 +167,7 @@ export interface IndexQuote {
 export type ChartPeriod = "intraday" | "five_day" | "daily" | "weekly" | "monthly";
 export interface ChartPoint {
   time: string; open: number; high: number; low: number; close: number;
-  average: number; volume: number; amount: number;
+  average: number | null; volume: number; amount: number;
 }
 export interface MarketChart {
   asset: "stock" | "index"; code: string; name: string; period: ChartPeriod;

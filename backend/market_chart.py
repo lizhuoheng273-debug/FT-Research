@@ -146,6 +146,16 @@ def _apply_intraday_vwap(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def prepare_points(asset: str, period: str, points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply the average-line contract without changing the real price series."""
+    prepared = [dict(point) for point in points]
+    if asset == "stock" and period in {"intraday", "five_day"}:
+        return _apply_intraday_vwap(prepared)
+    if asset == "index" and period in {"intraday", "five_day"}:
+        return [{**point, "average": None} for point in prepared]
+    return prepared
+
+
 def _aggregate(points: list[dict[str, Any]], granularity: str) -> list[dict[str, Any]]:
     if granularity == "daily":
         return points
@@ -299,8 +309,7 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
 
 def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     points = _rows_to_points(_akshare_rows(asset, code, period, adjust))
-    if period in {"intraday", "five_day"}:
-        points = _apply_intraday_vwap(points)
+    points = prepare_points(asset, period, points)
     quote_points = list(points)
     if period == "five_day":
         dates = {point["time"][:10] for point in points}
