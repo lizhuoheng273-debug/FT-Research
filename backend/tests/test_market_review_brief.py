@@ -1,7 +1,7 @@
 from datetime import datetime
 
 import market_review
-from market_review_brief import PROMPT_VERSION, MarketReviewBriefService, brief_ready, build_brief_prompt
+from market_review_brief import PROMPT_VERSION, MarketReviewBriefService, brief_ready, build_brief_prompt, build_brief_context
 from market_review_scheduler import PostCloseReviewScheduler
 
 
@@ -28,7 +28,7 @@ def test_brief_ready_requires_three_indices_breadth_and_liquidity():
 
 
 def test_prompt_separates_objective_interpretation_and_verification_topics():
-    prompt = build_brief_prompt(complete_snapshot())
+    prompt = build_brief_context(complete_snapshot())
     for marker in ["客观数据", "指数表现", "市场宽度", "成交额", "板块资金", "数据缺口", "验证条件", "不构成投资建议"]:
         assert marker in prompt
 
@@ -41,10 +41,41 @@ def test_generated_brief_is_hard_limited_and_idempotent(tmp_path):
     second = service.generate(complete_snapshot())
 
     assert first["status"] == "generated"
-    assert len(first["text"]) <= 200
+    assert len(first["text"]) <= 400
     assert second == first
     assert len(calls) == 1
     assert first["promptVersion"] == PROMPT_VERSION
+
+
+def test_brief_preserves_under_400_characters_and_removes_word_count(tmp_path):
+    text = "今天市场缩量回落，资金向防御方向集中。" * 15
+    result = MarketReviewBriefService(tmp_path, llm_call=lambda prompt: text + "（约300字）").generate(complete_snapshot())
+    assert result["text"] == text
+
+
+def test_long_brief_ends_at_complete_sentence(tmp_path):
+    text = "市场整体回落。" * 49 + "这一句没有写完而且非常长" * 20
+    result = MarketReviewBriefService(tmp_path, llm_call=lambda prompt: text).generate(complete_snapshot())
+    assert len(result["text"]) <= 400
+    assert result["text"].endswith("。")
+
+
+def test_brief_routes_same_market_framework_as_ask_ai(tmp_path, monkeypatch):
+    import chat
+    import research_framework
+    calls = []
+    def run(cfg, messages, context="", analysis_scope="general"):
+        calls.append((messages, context, analysis_scope))
+        return {"content": "今天缩量回落。"}
+    monkeypatch.setattr(chat, "run_chat", run)
+    service = MarketReviewBriefService(tmp_path, config_loader=lambda: {"apiKey": "test"})
+    service.generate(complete_snapshot())
+    messages, context, scope = calls[0]
+    guidance = research_framework.build_guidance(scope, messages)
+    assert "实际范围：market" in guidance
+    assert research_framework.SCOPE_FRAMEWORKS["market"] in guidance
+    assert "3900" in context
+    assert "400" in messages[0]["content"]
 
 
 def test_missing_data_skips_llm(tmp_path):

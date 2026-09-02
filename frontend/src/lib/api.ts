@@ -232,6 +232,7 @@ export interface MarketReviewBrief {
   generatedAt: string | null; promptVersion: string;
 }
 export interface MarketReview {
+  refreshing?: boolean;
   tradingDate: string; generatedAt: string; final: boolean; stale: boolean; partial: boolean;
   sources: Array<{ name: string; status: "fresh" | "stale" | "missing" | "error"; fetchedAt: string | null; detail: string }>;
   indices: MarketReviewIndex[]; breadth: MarketReviewBreadth; liquidity: MarketReviewLiquidity;
@@ -270,6 +271,7 @@ export interface FinancialNewsSourceTimeline {
   title?: string; source: string; publishedAt: string | null; originalUrl: string; independent: boolean;
 }
 export interface FinancialNewsItem extends FinancialNewsReport {
+  displayTitle?: string;
   sourceTier: number; sourceLevel?: string; urgencyScore: number; hotScore: number;
   scoreReasons: string[]; urgencyReasons?: string[]; hotReasons?: string[];
   relatedSourceCount: number; relatedSources: string[];
@@ -306,6 +308,16 @@ export interface FinancialNewsStatus {
   freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[]; sourceAttempts?: FinancialNewsSourceStatus[];
   sourceRegistry?: { total: number; valid: number; invalid: number; tiers: Record<string, number> };
   marketProbe?: { configured: boolean; recheckMinutes: number[] };
+}
+export interface FinancialCalendarEvent {
+  id: string; title: string; category: string; date: string; startsAt: string | null;
+  precision: "date" | "time"; sourceTimezone: string; originalUrl: string;
+  source: string; status: string; stale: boolean; fetchedAt?: string;
+}
+export interface FinancialCalendarResponse {
+  items: FinancialCalendarEvent[]; generatedAt: string | null; windowStart: string; windowEnd: string;
+  timezone: string; stale: boolean; partial: boolean; refreshIntervalSeconds: number;
+  sources: {id:string;name:string;url:string;ok:boolean;lastSuccessAt:string|null;error:string|null;count:number}[];
 }
 
 export interface FinancialNewsFollowingItem {
@@ -439,7 +451,8 @@ export const api = {
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
-  financialNewsOverview: () => get<FinancialNewsOverview>("/finance/news/overview"),
+  financialNewsOverview: (signal?: AbortSignal) => request<FinancialNewsOverview>("/finance/news/overview", "GET", undefined, signal),
+  financialNewsCalendar: (signal?: AbortSignal) => request<FinancialCalendarResponse>("/finance/news/calendar", "GET", undefined, signal),
   financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),
   financialNewsEvent: (eventId: string) => get<FinancialNewsItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
   financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),

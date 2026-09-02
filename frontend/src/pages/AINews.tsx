@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -23,33 +23,58 @@ export function AINews() {
   const [rssSources, setRssSources] = useState<RssSource[]>([]);
   const [rssLoading, setRssLoading] = useState(true);
   const [rssError, setRssError] = useState<string | null>(null);
+  const activeLoad = useRef<AbortController | null>(null);
 
   const load = async () => {
+    activeLoad.current?.abort();
+    const controller = new AbortController();
+    activeLoad.current = controller;
+    const isCurrent = () => activeLoad.current === controller;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    controller.signal.addEventListener("abort", () => clearTimeout(timeout), { once: true });
+    const headers = authHeaders();
+    const read = async (path: string) => {
+      const response = await fetch(apiUrl(path), { headers, signal: controller.signal });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+      return body;
+    };
+    const message = (error: unknown, fallback: string) => controller.signal.aborted
+      ? "请求超时，请刷新重试。" : error instanceof Error ? error.message : fallback;
     setLoading(true); setError(null);
-    try {
-      const headers = authHeaders();
-      const [hotResponse, itemResponse] = await Promise.all([
-        fetch(apiUrl("/ai/news/hot-topics"), { headers }),
-        fetch(apiUrl("/ai/news?mode=selected&window=24h&limit=50"), { headers }),
-      ]);
-      const read = async (response: Response) => { const body = await response.json(); if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`); return body; };
-      const [hot, feed] = await Promise.all([read(hotResponse), read(itemResponse)]);
-      setTopics((hot.items || []).sort((a: HotFeedTopic, b: HotFeedTopic) => a.rank - b.rank).slice(0, 10));
-      setItems(feed.items || []);
-      setStale(Boolean(hot.stale || feed.stale));
-      setRssLoading(true); setRssError(null);
+    setRssLoading(true); setRssError(null);
+    const loadHot = async () => {
+      try {
+        const [hot, feed] = await Promise.all([
+          read("/ai/news/hot-topics"),
+          read("/ai/news?mode=selected&window=24h&limit=50"),
+        ]);
+        if (!isCurrent()) return;
+        setTopics((hot.items || []).sort((a: HotFeedTopic, b: HotFeedTopic) => a.rank - b.rank).slice(0, 10));
+        setItems(feed.items || []);
+        setStale(Boolean(hot.stale || feed.stale));
+      } catch (e) { if (isCurrent()) setError(message(e, "AI 热点资讯加载失败")); }
+      finally { if (isCurrent()) setLoading(false); }
+    };
+    const loadRss = async () => {
       try {
         const customUrls = readRssSubscriptionState().custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
-        const rssResponse = await fetch(apiUrl(`/ai/rss/sources${customUrls ? `?${customUrls}` : ""}`), { headers });
-        const rssBody = await rssResponse.json();
-        if (!rssResponse.ok) throw new Error(rssBody.detail || "媒体订阅暂不可用");
-        setRssSources((rssBody.sources || []) as RssSource[]);
-      } catch (rssException) { setRssError(rssException instanceof Error ? rssException.message : "媒体订阅暂不可用"); }
-      finally { setRssLoading(false); }
-    } catch (e) { setError(e instanceof Error ? e.message : "AI 热点资讯加载失败"); }
-    finally { setLoading(false); }
+        const rssBody = await read(`/ai/rss/sources${customUrls ? `?${customUrls}` : ""}`);
+        if (isCurrent()) setRssSources((rssBody.sources || []) as RssSource[]);
+      } catch (e) { if (isCurrent()) setRssError(message(e, "媒体订阅暂不可用")); }
+      finally { if (isCurrent()) setRssLoading(false); }
+    };
+    try { await Promise.allSettled([loadHot(), loadRss()]); }
+    finally { clearTimeout(timeout); }
   };
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    return () => {
+      const controller = activeLoad.current;
+      activeLoad.current = null;
+      controller?.abort();
+    };
+  }, []);
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const context = topics.map((topic) => `${topic.rank}. ${topic.title}（${topic.source || "未知来源"}）`).join("\n");

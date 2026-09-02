@@ -22,9 +22,9 @@ test("daily review consumes one snapshot and renders the required section order"
   for (const deleted of ["关注股票", "AI 当日复盘", "平盘", "globalIndices", "globalIdx", "api.marketOverview", "api.emotion", "api.turnoverTop"]) {
     assert.doesNotMatch(daily, new RegExp(deleted));
   }
-  const order = ["AI 收盘简述", "大盘指数", "市场宽度", "涨停/跌停", "成交额 Top20", "板块资金趋势", "资金轮动"];
+  const order = ["AI 收盘简述", "大盘指数", "市场宽度", "涨停/跌停", "成交额 Top5", "板块资金趋势", "资金轮动"];
   assert.ok(order.every((item, index) => index === 0 || daily.indexOf(item) > daily.indexOf(order[index - 1])));
-  assert.match(daily, /slice\(0,\s*10\)/);
+  assert.match(daily, /slice\(0,\s*5\)/);
   assert.match(daily, /slice\(0,\s*20\)/);
 });
 
@@ -47,6 +47,7 @@ test("daily review modal launchers are keyboard-focusable buttons", () => {
 test("financial news keeps market quote cards out of the two-section page", () => {
   assert.doesNotMatch(financial, /api\.globalIndices\(\)/);
   assert.doesNotMatch(financial, /全球市场/);
-  assert.match(financial, /全球要闻速览/);
-  assert.match(financial, /我的关注/);
+  assert.match(financial, /<GlobalHotList/);
+  assert.match(financial, /<UpcomingEvents/);
+  assert.doesNotMatch(financial, /我的关注/);
 });

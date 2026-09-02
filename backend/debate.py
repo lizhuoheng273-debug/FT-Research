@@ -17,11 +17,78 @@ portfolio_manager 角色，输出「买/卖/持仓多少」。**本模块刻意�
 from __future__ import annotations
 
 import json
+from threading import Event, Lock, Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import chat
 import cli_runtime
 import tools
+
+
+class DebateControl:
+    """Disconnect-aware stop token; close the active upstream stream on cancellation."""
+    def __init__(self):
+        self.stopped = Event()
+        self._lock = Lock()
+        self._response = None
+
+    @staticmethod
+    def _close(response):
+        close = getattr(response, "close", None)
+        if close:
+            try:
+                close()
+            except Exception:
+                pass  # Cleanup must not mask the original stream error.
+
+    def bind(self, response):
+        with self._lock:
+            stopped = self.stopped.is_set()
+            if not stopped:
+                self._response = response
+        if stopped:
+            self._close(response)
+
+    def release(self):
+        with self._lock:
+            response, self._response = self._response, None
+        self._close(response)
+
+    def cancel(self, background=False):
+        self.stopped.set()
+        if background:
+            # requests.close may wait for a socket reader; never block the ASGI loop.
+            Thread(target=self.release, daemon=True, name="debate-stream-close").start()
+        else:
+            self.release()
+
+
+def _iter_debate_deltas(response):
+    """Strict completion checks for reports saved as complete; other chat flows unchanged."""
+    finished = False
+    for raw in response.iter_lines():
+        line = raw.decode("utf-8").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            if not finished:
+                raise RuntimeError("模型未确认完整结束")
+            return
+        event = json.loads(data)
+        if event.get("error"):
+            raise RuntimeError("模型流返回错误")
+        choices = event.get("choices") or []
+        if not choices:
+            continue  # Usage-only frame.
+        choice = choices[0]
+        reason = choice.get("finish_reason")
+        if reason:
+            if reason != "stop":
+                raise RuntimeError("模型回答被截断或未正常完成")
+            finished = True
+        yield choice.get("delta") or {}
+    raise RuntimeError("模型连接未完整结束")
 
 # 底稿抓取清单：覆盖「估值 / 财报 / 资金 / 事件 / 行业」五个面，与 chat.ANALYSIS_FRAMEWORK 对齐。
 # 每项 (工具名, 额外参数, 小标题, 可并行)。任何一项挂了都不阻断，缺项会如实标注。
@@ -109,7 +176,7 @@ def _fetch_section(spec: tuple[str, dict, str, bool, bool], code: str) -> dict:
     return {"title": title, "tool": name, "data": result, "ok": True}
 
 
-def collect_dossier(code: str):
+def collect_dossier(code: str, control: DebateControl | None = None):
     """生成器：逐项 yield 进度事件，跑完 return 完整底稿。
 
     调用方用 `dossier = yield from collect_dossier(code)` 即可边推进度边拿结果——
@@ -123,6 +190,10 @@ def collect_dossier(code: str):
     with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as ex:
         futures = {ex.submit(_fetch_section, s, code): s for s in par}
         for fut in as_completed(futures):
+            if control and control.stopped.is_set():
+                for pending in futures:
+                    pending.cancel()
+                return None
             spec = futures[fut]
             try:
                 sec = fut.result()
@@ -133,6 +204,8 @@ def collect_dossier(code: str):
                    "loaded": len(done), "total": total}
 
     for spec in seq:  # 走 em_get 的，保持串行以尊重节流
+        if control and control.stopped.is_set():
+            return None
         try:
             sec = _fetch_section(spec, code)
         except Exception as e:  # noqa: BLE001
@@ -250,7 +323,7 @@ def _build_messages(stage: str, facts: str, transcript: list[dict]) -> list[dict
             {"role": "user", "content": "\n\n".join(user_parts) + "\n\n请按你的角色要求输出。"}]
 
 
-def run_debate_stream(cfg: dict, code: str, rounds: int = 1):
+def run_debate_stream(cfg: dict, code: str, rounds: int = 1, control: DebateControl | None = None):
     """跑一场辩论，yield NDJSON 事件。
 
     事件类型：dossier（底稿就绪）/ stage（角色开始）/ delta（增量文本）/
@@ -258,9 +331,14 @@ def run_debate_stream(cfg: dict, code: str, rounds: int = 1):
     """
     provider = str(cfg.get("provider", ""))
     is_cli = provider.startswith("cli-")
+    control = control or DebateControl()
 
     yield {"type": "status", "message": "正在拉取客观事实底稿…"}
-    dossier = yield from collect_dossier(code)
+    if control.stopped.is_set():
+        return
+    dossier = yield from collect_dossier(code, control)
+    if control.stopped.is_set() or dossier is None:
+        return
     # 只有「无记录」说明、没有一条真实数据时同样算取数失败——
     # 让多空基于一份全是「未取到」的底稿互相质疑毫无意义。
     if not any(not isinstance(s["data"], str) for s in dossier["sections"]):
@@ -274,7 +352,11 @@ def run_debate_stream(cfg: dict, code: str, rounds: int = 1):
     transcript: list[dict] = []
 
     for stage in _stage_plan(rounds):
+        if control.stopped.is_set():
+            return
         yield {"type": "stage", "stage": stage, "label": _STAGE_LABEL[stage]}
+        if control.stopped.is_set():
+            return
         messages = _build_messages(stage, facts, transcript)
         buf: list[str] = []
         try:
@@ -285,21 +367,37 @@ def run_debate_stream(cfg: dict, code: str, rounds: int = 1):
             else:
                 # _call_llm_stream 返回的是上游 Response，需配 _iter_sse_deltas 解析 SSE
                 resp = chat._call_llm_stream(cfg, messages, use_tools=False)
-                for delta in chat._iter_sse_deltas(resp):
+                control.bind(resp)
+                if control.stopped.is_set():
+                    return
+                for delta in _iter_debate_deltas(resp):
+                    if control.stopped.is_set():
+                        return
                     text = delta.get("content")
                     if text:
                         buf.append(text)
                         yield {"type": "delta", "stage": stage, "text": text}
         except Exception as e:  # noqa: BLE001 — 单个角色失败不该毁掉整场辩论
+            if control.stopped.is_set():
+                return
             # 必须补一个终态事件：前端按 stage_done 把该角色标记为完成，
             # 只发 error 的话这个角色会永远停在「生成中…」，并让「全部完成」判定不成立、
             # 连带后面能正常跑完的角色也存不进沉淀。
-            yield {"type": "error", "stage": stage, "message": f"{_STAGE_LABEL[stage]}生成失败：{e}"}
+            yield {"type": "error", "stage": stage, "message": f"{_STAGE_LABEL[stage]}生成失败，请检查模型服务后重试"}
             yield {"type": "stage_done", "stage": stage, "label": _STAGE_LABEL[stage],
-                   "content": f"（本角色生成失败：{e}）", "failed": True}
+                   "content": "（本角色生成失败）", "failed": True}
             continue  # 失败内容不进 transcript——不能把错误信息当论据喂给后面的角色
+        finally:
+            control.release()
+
+        if control.stopped.is_set():
+            return
 
         content = "".join(buf).strip()
+        if not content:
+            yield {"type": "error", "stage": stage, "message": f"{_STAGE_LABEL[stage]}未返回正文，请重试"}
+            yield {"type": "stage_done", "stage": stage, "label": _STAGE_LABEL[stage], "content": "", "failed": True}
+            continue
         transcript.append({"stage": stage, "content": content})
         yield {"type": "stage_done", "stage": stage, "label": _STAGE_LABEL[stage], "content": content}
 

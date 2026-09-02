@@ -12,7 +12,7 @@ test("AI news keeps the hotspot board but replaces duplicate event cards with me
   assert.match(page, /AIHotFeed[\s\S]*showEvents=\{false\}/);
   assert.match(page, /AISubscriptionFeed/);
   assert.doesNotMatch(page, /精选事件/);
-  assert.match(state, /ithome.*qbitai.*jiqizhixin.*zhidx.*xinzhiyuan.*36kr.*tmtpost.*huxiu.*technode.*solidot.*baijingapp.*williamlong/s);
+  assert.match(state, /ithome.*qbitai.*jiqizhixin.*zhidx.*xinzhiyuan.*tmtpost.*huxiu.*solidot.*baijingapp.*williamlong/s);
   assert.match(feed, /items\.slice\(0,\s*3\)/);
   assert.match(feed, /originalUrl/);
   assert.match(feed, /target="_blank"/);
@@ -22,7 +22,7 @@ test("AI news keeps the hotspot board but replaces duplicate event cards with me
 
 test("subscription state persists order, pin, hide and custom sources locally", () => {
   assert.match(state, /localStorage/);
-  assert.match(state, /ithome.*qbitai.*jiqizhixin.*zhidx.*xinzhiyuan.*36kr.*tmtpost.*huxiu.*technode.*solidot.*baijingapp.*williamlong/s);
+  assert.match(state, /ithome.*qbitai.*jiqizhixin.*zhidx.*xinzhiyuan.*tmtpost.*huxiu.*solidot.*baijingapp.*williamlong/s);
   for (const token of ["order", "pinned", "hidden", "custom", "resetSubscriptions", "removeCustomSource"]) assert.match(state, new RegExp(token));
 });
 

@@ -10,6 +10,7 @@ import hashlib
 import html
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -28,11 +29,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CACHE_DIR = HERE / ".cache" / "rss"
-MAX_BYTES = 2 * 1024 * 1024
+MAX_BYTES = 4 * 1024 * 1024
 MAX_REDIRECTS = 4
 CONNECT_TIMEOUT = 8
 READ_TIMEOUT = 12
 MAX_ITEMS = 50
+CACHE_TTL_SECONDS = 1800
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SOURCE_DEFS: tuple[dict[str, object], ...] = (
@@ -41,10 +44,8 @@ DEFAULT_SOURCE_DEFS: tuple[dict[str, object], ...] = (
     {"id": "jiqizhixin", "name": "机器之心", "url": "https://wechat2rss.xlab.app/feed/51e92aad2728acdd1fda7314be32b16639353001.xml", "homepage": "https://www.jiqizhixin.com", "category": "ai", "region": "cn", "priority": 3},
     {"id": "zhidx", "name": "智东西", "url": "https://zhidx.com/rss", "homepage": "https://zhidx.com", "category": "ai", "region": "cn", "priority": 4},
     {"id": "xinzhiyuan", "name": "新智元", "url": "https://wechat2rss.xlab.app/feed/ede30346413ea70dbef5d485ea5cbb95cca446e7.xml", "homepage": "https://www.aixinzhiyuan.com", "category": "ai", "region": "cn", "priority": 5},
-    {"id": "36kr", "name": "36氪", "url": "https://36kr.com/feed", "homepage": "https://36kr.com", "category": "tech", "region": "cn", "priority": 6},
     {"id": "tmtpost", "name": "钛媒体", "url": "https://www.tmtpost.com/rss.xml", "homepage": "https://www.tmtpost.com", "category": "tech", "region": "cn", "priority": 7},
     {"id": "huxiu", "name": "虎嗅", "url": "https://rss.huxiu.com/", "homepage": "https://www.huxiu.com", "category": "tech", "region": "cn", "priority": 8},
-    {"id": "technode", "name": "动点科技", "url": "https://cn.technode.com/feed/", "homepage": "https://cn.technode.com", "category": "tech", "region": "cn", "priority": 9},
     {"id": "solidot", "name": "Solidot", "url": "https://www.solidot.org/index.rss", "homepage": "https://www.solidot.org", "category": "science", "region": "cn", "priority": 10},
     {"id": "baijingapp", "name": "白鲸出海", "url": "https://www.baijingapp.com/feed", "homepage": "https://www.baijingapp.com", "category": "tech", "region": "cn", "priority": 11},
     {"id": "williamlong", "name": "月光博客", "url": "https://www.williamlong.info/rss.xml", "homepage": "https://www.williamlong.info", "category": "tech", "region": "cn", "priority": 12},
@@ -199,7 +200,7 @@ def _item_id(title: str, url: str, published: str | None, guid: str) -> str:
 
 def parse_feed(raw: bytes, *, source_url: str) -> ParsedFeed:
     if len(raw) > MAX_BYTES:
-        raise RssFetchError("RSS 响应超过 2 MB 限制")
+        raise RssFetchError("RSS 响应超过 4 MB 限制")
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as exc:
@@ -254,7 +255,7 @@ def fetch_url(url: str) -> bytes:
         with opener.open(request, timeout=CONNECT_TIMEOUT) as response:
             content_length = int(response.headers.get("Content-Length", "0") or 0)
             if content_length > MAX_BYTES:
-                raise RssFetchError("RSS 响应超过 2 MB 限制")
+                raise RssFetchError("RSS 响应超过 4 MB 限制")
             chunks: list[bytes] = []
             size = 0
             while size <= MAX_BYTES:
@@ -264,7 +265,7 @@ def fetch_url(url: str) -> bytes:
                 chunks.append(chunk)
                 size += len(chunk)
                 if size > MAX_BYTES:
-                    raise RssFetchError("RSS 响应超过 2 MB 限制")
+                    raise RssFetchError("RSS 响应超过 4 MB 限制")
             return b"".join(chunks)
     except RssFetchError:
         raise
@@ -282,6 +283,7 @@ class RssCatalog:
         self.fetcher = fetcher or fetch_url
         self.validate_dns = validate_dns
         self.source_defs = [dict(item) for item in DEFAULT_SOURCE_DEFS]
+        self._cache_lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -296,11 +298,23 @@ class RssCatalog:
             return None
 
     def _write_cache(self, url: str, value: dict[str, object]) -> None:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        path = self._cache_path(url)
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
-        os.replace(temp, path)
+        # The legacy radar and RSS scheduler share this catalog and may finish
+        # the same source together. Keep their atomic replacement serialized.
+        with self._cache_lock:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            path = self._cache_path(url)
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            os.replace(temp, path)
+
+    def _record_failure(self, source: dict[str, object], error: str) -> None:
+        try:
+            with self._cache_lock:
+                url = str(source["url"])
+                cached = self._read_cache(url) or {"source": source, "items": [], "lastSuccessAt": None}
+                self._write_cache(url, {**cached, "lastError": error, "lastAttemptAt": _now()})
+        except OSError:
+            logger.warning("Could not persist RSS failure state for %s", source.get("id"))
 
     @staticmethod
     def _public_snapshot(source: dict[str, object], *, items: Iterable[dict[str, object]], last_success: str | None, stale: bool, error: str | None) -> dict[str, object]:
@@ -309,13 +323,18 @@ class RssCatalog:
     def _read_snapshot(self, source: dict[str, object], *, stale: bool = False, error: str | None = None) -> dict[str, object]:
         cached = self._read_cache(str(source["url"]))
         if cached and isinstance(cached.get("items"), list):
-            return self._public_snapshot(source, items=cached["items"], last_success=cached.get("lastSuccessAt") if isinstance(cached.get("lastSuccessAt"), str) else None, stale=stale, error=error)
+            last_success = cached.get("lastSuccessAt") if isinstance(cached.get("lastSuccessAt"), str) else None
+            last_error = error or cached.get("lastError")
+            expired = bool(last_success) and (_date_key(_now()) - _date_key(last_success) >= CACHE_TTL_SECONDS)
+            return self._public_snapshot(source, items=cached["items"], last_success=last_success,
+                                         stale=bool(last_success) and bool(stale or expired or last_error),
+                                         error=str(last_error) if last_error else (None if last_success else "尚未成功抓取"))
         return self._public_snapshot(source, items=[], last_success=None, stale=False, error=error or "尚未成功抓取")
 
     def refresh(self, source: dict[str, object]) -> dict[str, object]:
         url = str(source["url"])
-        validate_public_url(url, resolve_dns=self.validate_dns)
         try:
+            validate_public_url(url, resolve_dns=self.validate_dns)
             parsed = parse_feed(self.fetcher(url), source_url=url)
             now = _now()
             cache_value = {"source": {key: source.get(key) for key in ("id", "name", "category", "region", "priority", "homepage", "url")}, "lastSuccessAt": now, "items": [item.as_dict() for item in parsed.items]}
@@ -323,10 +342,8 @@ class RssCatalog:
             resolved_source = {**source, "name": source.get("name") or parsed.name}
             return self._public_snapshot(resolved_source, items=cache_value["items"], last_success=now, stale=False, error=None)
         except Exception as exc:  # noqa: BLE001 - stale fallback is the public contract
-            cached = self._read_cache(url)
-            if cached and isinstance(cached.get("items"), list) and cached.get("lastSuccessAt"):
-                return self._public_snapshot(source, items=cached["items"], last_success=str(cached["lastSuccessAt"]), stale=True, error=str(exc))
-            return self._public_snapshot(source, items=[], last_success=None, stale=False, error=str(exc))
+            self._record_failure(source, str(exc))
+            return self._read_snapshot(source, stale=True, error=str(exc))
 
     def resolve(self, url: str, *, source: dict[str, object] | None = None) -> dict[str, object]:
         normalized = validate_public_url(url, resolve_dns=self.validate_dns)
@@ -348,7 +365,9 @@ class RssCatalog:
         sources = [self._read_snapshot(source) for source in self.source_defs]
         for url in urls or ():
             try:
-                normalized = validate_public_url(url, resolve_dns=self.validate_dns)
+                # This path never fetches the URL. DNS outages must not prevent
+                # reading a previously validated subscription's local cache.
+                normalized = validate_public_url(url, resolve_dns=False)
             except RssSecurityError as exc:
                 sources.append(self._public_snapshot({"id": f"custom-{hashlib.sha256(str(url).encode()).hexdigest()[:16]}", "name": "自定义媒体", "url": str(url), "category": "tech", "region": "custom", "priority": 100, "homepage": ""}, items=[], last_success=None, stale=False, error=str(exc)))
                 continue
@@ -358,8 +377,8 @@ class RssCatalog:
         return sorted(sources, key=lambda item: int(item.get("priority", 100)))
 
     def record_radar_result(self, source: dict[str, object], items: list[dict[str, object]] | None) -> None:
-        """Persist a successful legacy radar fetch without changing its payload shape."""
-        if items is None:
+        """Bootstrap only: filtered radar data must never overwrite RSS snapshots."""
+        if not items:
             return
         source_url = str(source.get("url", ""))
         if not source_url or not any(normalize_url(source_url) == normalize_url(str(item["url"])) for item in self.source_defs):
@@ -368,7 +387,9 @@ class RssCatalog:
         for item in items:
             converted.append({"id": str(item.get("id") or hashlib.sha256(str(item).encode()).hexdigest()[:20]), "title": item.get("title", ""), "summary": item.get("summary", ""), "publishedAt": item.get("publishedAt") or item.get("time"), "originalUrl": item.get("originalUrl") or item.get("url", "")})
         now = _now()
-        self._write_cache(source_url, {"source": source, "lastSuccessAt": now, "items": converted})
+        with self._cache_lock:
+            if self._read_cache(source_url) is None:
+                self._write_cache(source_url, {"source": source, "lastSuccessAt": now, "items": converted})
 
     def refresh_builtins(self) -> list[dict[str, object]]:
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -377,9 +398,13 @@ class RssCatalog:
     def start_scheduler(self, interval: int = 1800) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._stop.clear()
         def run() -> None:
             while not self._stop.is_set():
-                self.refresh_builtins()
+                try:
+                    self.refresh_builtins()
+                except Exception:
+                    logger.exception("RSS refresh cycle failed; retrying at the next interval")
                 self._stop.wait(interval)
         self._thread = threading.Thread(target=run, name="rss-catalog-refresh", daemon=True)
         self._thread.start()

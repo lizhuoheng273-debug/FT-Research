@@ -43,16 +43,30 @@ export async function streamNdjson(
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop() ?? "";   // 末尾可能是半行，留到下一块
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t) continue;
-      try { onEvent(JSON.parse(t)); } catch { /* 半截行或脏行，跳过 */ }
+  const abort = () => { void reader.cancel().catch(() => undefined); };
+  const checkAbort = () => { if (signal?.aborted) throw new DOMException("已中止", "AbortError"); };
+  const dispatch = (line: string) => {
+    if (!line.trim()) return;
+    let event: NdjsonEvent;
+    try { event = JSON.parse(line); } catch { throw new ApiError("响应流格式异常，请重试", 502); }
+    checkAbort();
+    onEvent(event);
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    checkAbort();
+    for (;;) {
+      const { done, value } = await reader.read();
+      checkAbort();
+      if (done) { buf += decoder.decode(); dispatch(buf); break; }
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) dispatch(line);
     }
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }

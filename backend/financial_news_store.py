@@ -154,7 +154,7 @@ class FinancialNewsStore:
                     int(report.get("sourceTier") or 8), str(report.get("sourceLevel") or ""),
                     original_url, normalized_url, str(report.get("category") or ""),
                     str(report.get("track") or ""), json.dumps(report.get("relatedStocks") or [], ensure_ascii=False),
-                    json.dumps({key: report.get(key) for key in ("importanceType", "official", "rumor", "relatedConcepts", "conceptEvidence") if key in report}, ensure_ascii=False),
+                    json.dumps({key: report.get(key) for key in ("importanceType", "official", "rumor", "relatedConcepts", "conceptEvidence", "originSource", "stale") if key in report}, ensure_ascii=False),
                     observed, observed,
                 ),
             )

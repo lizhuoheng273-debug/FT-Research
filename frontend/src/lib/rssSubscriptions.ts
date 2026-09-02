@@ -1,7 +1,7 @@
 export const RSS_SUBSCRIPTIONS_STORAGE_KEY = "ft-research:ai-rss-subscriptions:v1";
 
 export const DEFAULT_RSS_SOURCE_ORDER = [
-  "ithome", "qbitai", "jiqizhixin", "zhidx", "xinzhiyuan", "36kr", "tmtpost", "huxiu", "technode", "solidot", "baijingapp", "williamlong",
+  "ithome", "qbitai", "jiqizhixin", "zhidx", "xinzhiyuan", "tmtpost", "huxiu", "solidot", "baijingapp", "williamlong",
 ] as const;
 
 export interface RssItem {

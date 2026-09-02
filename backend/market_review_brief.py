@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import chat
 import glm_config
-from market_review import BEIJING, PROMPT_VERSION, REVIEW_CACHE_DIR, snapshot_hash
+from market_review import BEIJING, PROMPT_VERSION, REVIEW_CACHE_DIR, REVIEW_FILE_LOCK, snapshot_hash
 
 
 def _now(value: datetime) -> datetime:
@@ -29,13 +29,15 @@ def brief_ready(snapshot: dict[str, Any]) -> bool:
     )
 
 
-def build_brief_prompt(snapshot: dict[str, Any]) -> str:
+def build_brief_context(snapshot: dict[str, Any]) -> str:
     objective = {
         "交易日": snapshot.get("tradingDate"),
         "指数": [{"名称": row.get("name"), "价格": row.get("price"), "涨跌幅": row.get("changePct")} for row in (snapshot.get("indices") or [])[:4]],
-        "市场宽度": snapshot.get("breadth"),
+        "市场宽度": {key: (snapshot.get("breadth") or {}).get(key) for key in ("up", "down", "upRatio", "downRatio")},
         "成交额": snapshot.get("liquidity"),
-        "板块资金": [{"名称": row.get("name"), "净流入": row.get("net")} for row in (snapshot.get("sectors") or [])[:8]],
+        "板块资金": [{"名称": row.get("name"), "净流入亿元": row.get("net"), "涨跌幅": row.get("pct")} for row in ((snapshot.get("sectors") or [])[:5] + (snapshot.get("sectors") or [])[-5:])],
+        "短线情绪": snapshot.get("shortTermEmotion"),
+        "成交额前五": (snapshot.get("turnoverTop") or [])[:5],
     }
     gaps = []
     for name in ("indices", "breadth", "liquidity", "shortTermEmotion", "turnoverTop", "sectors"):
@@ -46,17 +48,30 @@ def build_brief_prompt(snapshot: dict[str, Any]) -> str:
         "【客观数据】\n" + json.dumps(objective, ensure_ascii=False) + "\n"
         "【解释约束】围绕指数表现与分化、市场宽度、成交额变化、板块资金轮动；明确区分事实和推断。"
         "不要给买卖建议，不构成投资建议。\n"
-        "【验证条件】指出下一交易日需要用真实行情、成交额或公告核实的条件。\n"
+        "【验证条件】只在有必要时用一句白话说明后续观察点，避免生硬罗列框架词。\n"
         f"【数据缺口】{', '.join(gaps) or '无'}\n"
-        "请用中文输出不超过 200 个字符的盘后简述。"
     )
+
+
+def build_brief_prompt(snapshot: dict[str, Any]) -> str:
+    # Keep data and framework keywords out of the question: scope routing must
+    # not mistake a market-wide snapshot containing stock names for stock research.
+    return ("请按市场复盘框架复盘今天的行情，写成面向普通读者的盘后简述。"
+            "正文不超过400字，建议250至380字，分2至3个短段落。先用一句话概括，再结合上下文的关键数据解释。"
+            "缺失的信息不要猜测或凑齐；不输出标题、字数统计、模板说明或括号中的自我评价。"
+            "语言直接自然，不用‘避险特征属推断’一类生硬措辞，推测用‘可能’表达。以完整句子结束。")
 
 
 def _clean_text(value: Any) -> str:
     text = str(value or "")
     text = re.sub(r"```|[*_#]", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:200]
+    text = re.sub(r"[（(]\s*(?:约|共|全文|字数)?\s*\d+\s*(?:字|个字符)\s*[）)]", "", text)
+    text = re.sub(r"[ \t]+", " ", text).strip()
+    if len(text) <= 400:
+        return text
+    prefix = text[:400]
+    endings = list(re.finditer(r"[。！？!?](?:[”’」])?", prefix))
+    return prefix[:endings[-1].end()].strip() if endings else prefix[:399].rstrip("，、；： ") + "。"
 
 
 class MarketReviewBriefService:
@@ -79,13 +94,16 @@ class MarketReviewBriefService:
             return {}
 
     def _write(self, trading_date: str, snapshot: dict[str, Any], brief: dict[str, Any]) -> None:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        existing = self._read(trading_date)
-        review = {**(existing.get("review") or {}), **snapshot, "brief": brief}
-        payload = {"savedAt": brief.get("lastAttemptAt") or brief.get("generatedAt"), "review": review}
-        temp = self._path(trading_date).with_suffix(".tmp")
-        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(self._path(trading_date))
+        with REVIEW_FILE_LOCK:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            existing = self._read(trading_date)
+            latest = existing.get("review") or {}
+            base = latest if (latest.get("generatedAt") or "") > (snapshot.get("generatedAt") or "") else snapshot
+            review = {**base, "brief": brief}
+            payload = {"savedAt": brief.get("lastAttemptAt") or brief.get("generatedAt"), "review": review}
+            temp = self._path(trading_date).with_suffix(".tmp")
+            temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp.replace(self._path(trading_date))
 
     def generate(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         trading_date = str(snapshot.get("tradingDate") or _now(self.now_fn()).date().isoformat())
@@ -104,12 +122,12 @@ class MarketReviewBriefService:
         prompt = build_brief_prompt(snapshot)
         try:
             if self.llm_call is not None:
-                raw = self.llm_call(prompt)
+                raw = self.llm_call(prompt + "\n" + build_brief_context(snapshot))
             else:
                 cfg = self.config_loader()
                 if not cfg.get("apiKey"):
                     raise RuntimeError("GLM 未配置")
-                raw = chat.run_chat(cfg, [{"role": "user", "content": prompt}], analysis_scope="market").get("content", "")
+                raw = chat.run_chat(cfg, [{"role": "user", "content": prompt}], context=build_brief_context(snapshot), analysis_scope="market").get("content", "")
             text = _clean_text(raw)
             if not text:
                 raise RuntimeError("模型未返回简述")

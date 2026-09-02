@@ -60,9 +60,11 @@ def test_radar_keeps_legacy_industries_and_media_snapshots(monkeypatch):
     assert "sources" in response.json()["data"]
 
 
-def test_fetch_radar_preserves_media_items_before_cross_source_dedup(monkeypatch):
+def test_fetch_radar_preserves_media_items_before_cross_source_dedup(monkeypatch, tmp_path):
     import newsradar
 
+    monkeypatch.setattr(newsradar, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(newsradar, "CACHE_FILE", str(tmp_path / "radar.json"))
     config = {
         "fetch": {"per_source": 3, "recent_days": 7},
         "industries": [{"key": "tech", "name": "科技", "accent": "#fff"}],

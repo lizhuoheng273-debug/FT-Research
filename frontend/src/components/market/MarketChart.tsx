@@ -28,7 +28,7 @@ function movingAverage(values: number[], size: number) {
 
 function chartOption(data: MarketChartData) {
   const points = data.points;
-  const labels = points.map((point) => point.time.length > 10 ? point.time.slice(5, 16) : point.time.slice(5));
+  const labels = points.map((point) => data.period === "intraday" || data.period === "five_day" ? point.time.slice(5, 16) : point.time.slice(5, 10));
   if (data.period === "intraday" || data.period === "five_day") {
     const averages = points.map((point) => point.average);
     const validAverages = averages.filter((value) => Number.isFinite(value));
@@ -49,6 +49,7 @@ function chartOption(data: MarketChartData) {
   }
   const candles = points.map((point) => [point.open, point.close, point.low, point.high]);
   const closes = points.map((point) => point.close);
+  const initialWindow = data.period === "daily" ? { startValue: Math.max(0, points.length - 30), endValue: Math.max(0, points.length - 1) } : {};
   return {
     animation: false,
     axisPointer: { link: [{ xAxisIndex: "all" }], label: { backgroundColor: "#64748b" } },
@@ -70,7 +71,7 @@ function chartOption(data: MarketChartData) {
       { type: "value", scale: true, axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "#33415555" } } },
       { type: "value", gridIndex: 1, splitNumber: 2, axisLabel: { color: "#94a3b8" }, splitLine: { show: false } },
     ],
-    dataZoom: [{ type: "inside", xAxisIndex: [0, 1] }, { type: "slider", xAxisIndex: [0, 1], height: 16, bottom: 2, borderColor: "#334155" }],
+    dataZoom: [{ type: "inside", xAxisIndex: [0, 1], ...initialWindow }, { type: "slider", xAxisIndex: [0, 1], ...initialWindow, height: 16, bottom: 2, borderColor: "#334155" }],
     series: [
       { name: "K线", type: "candlestick", data: candles, itemStyle: { color: red, color0: green, borderColor: red, borderColor0: green } },
       { name: "MA5", type: "line", data: movingAverage(closes, 5), showSymbol: false, lineStyle: { color: "#f59e0b", width: 1.2 } },

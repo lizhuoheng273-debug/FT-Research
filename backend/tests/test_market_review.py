@@ -71,6 +71,67 @@ def test_review_falls_back_to_real_cached_snapshot_as_stale(tmp_path):
     assert any(source["status"] == "stale" for source in stale["sources"])
 
 
+def test_null_breadth_cannot_overwrite_successful_counts(tmp_path):
+    adapters = _complete_adapters()
+    service = market_review.MarketReviewService(cache_dir=tmp_path, adapters=adapters)
+    service.get_review(force=True)
+    adapters["breadth"] = lambda: {"up": None, "down": None, "limitUp": None, "limitDown": None}
+    result = service.get_review(force=True)
+    assert result["breadth"]["up"] == 1200
+    assert result["breadth"]["down"] == 800
+    assert next(s for s in result["sources"] if s["name"] == "breadth")["status"] == "stale"
+
+
+def test_empty_breadth_is_missing_not_fresh(tmp_path):
+    adapters = _complete_adapters()
+    adapters["breadth"] = lambda: {"up": None, "down": None}
+    result = market_review.MarketReviewService(cache_dir=tmp_path, adapters=adapters).get_review(force=True)
+    assert next(s for s in result["sources"] if s["name"] == "breadth")["status"] == "missing"
+
+
+def test_review_serves_last_snapshot_while_background_collection_is_busy(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    service = market_review.MarketReviewService(cache_dir=tmp_path, adapters=_complete_adapters())
+    first = service.get_review(force=True)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with service._lock:
+            future = pool.submit(service.get_review)
+            result = future.result(timeout=0.2)
+    assert result["breadth"] == first["breadth"]
+    assert result["refreshing"] is True
+
+
+def test_late_market_collection_cannot_restore_an_older_brief(tmp_path):
+    from datetime import date
+    service = market_review.MarketReviewService(cache_dir=tmp_path, adapters=_complete_adapters())
+    original = service.get_review(force=True)
+    updated = {**original, "brief": {"text": "新版完整简述。", "generatedAt": "2026-09-02T21:00:00+08:00", "promptVersion": "market-review-brief-v2"}}
+    day = date.fromisoformat(original["tradingDate"])
+    service._save(day, updated)
+    service._save(day, original)
+    assert service._load(day)["brief"]["text"] == "新版完整简述。"
+
+
+def test_breadth_fallback_counts_complete_pages_and_ignores_suspended(monkeypatch):
+    pages = {
+        1: [{"f12": "600001", "f13": 1, "f2": 10, "f3": 2}, {"f12": "600002", "f13": 1, "f2": 10, "f3": -2}],
+        2: [{"f12": "000001", "f13": 0, "f2": 10, "f3": 0}, {"f12": "000002", "f13": 0, "f2": "-", "f3": "-"}],
+        3: [{"f12": "000003", "f13": 0, "f2": 12, "f3": 1}],
+    }
+    def get(url, params, **kwargs):
+        return type("Response", (), {"json": lambda self: {"data": {"total": 5, "diff": pages[params["pn"]]}}})()
+    monkeypatch.setattr(market_review.astock, "em_get", get)
+    result = market_review.fetch_em_breadth()
+    assert result["up"] == 2
+    assert result["down"] == 1
+    assert result["limitUp"] is None  # Do not infer a price-limit count from a generic % threshold.
+
+
+def test_breadth_fallback_rejects_incomplete_or_repeated_pages(monkeypatch):
+    monkeypatch.setattr(market_review.astock, "em_get", lambda *a, **kw: type("Response", (), {"json": lambda self: {"data": {"total": 5, "diff": [{"f12": "600001", "f13": 1, "f2": 10, "f3": 2}]}}})())
+    assert market_review.fetch_em_breadth() is None
+
+
 def test_official_amount_parser_excludes_non_stock_rows():
     rows = [
         {"证券类别": "股票", "成交金额(亿元)": "1200"},

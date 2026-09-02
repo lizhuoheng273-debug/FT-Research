@@ -8,11 +8,13 @@ const llm = await readFile(new URL("../src/lib/llm.ts", import.meta.url), "utf8"
 const settings = await readFile(new URL("../src/pages/Settings.tsx", import.meta.url), "utf8");
 
 test("FT-Research exposes only the confirmed AI and finance navigation", () => {
-  for (const path of ["/ai/news", "/ai/daily", "/finance/news", "/finance/review", "/finance/watchlist", "/finance/research"]) {
+  for (const path of ["/ai/news", "/ai/daily", "/finance/news", "/finance/review", "/finance/watchlist", "/finance/debate"]) {
     assert.match(router, new RegExp(path.replaceAll("/", "\\/")));
   }
   assert.match(layout, /FT-Research/);
-  for (const hidden of ["我的持仓", "板块中心", "我的研报", "研究记录", "多空辩论"]) {
+  assert.match(layout, /多空辩论/);
+  assert.doesNotMatch(layout, /label: "AI 投研"/);
+  for (const hidden of ["我的持仓", "板块中心", "我的研报", "研究记录"]) {
     assert.doesNotMatch(layout, new RegExp(hidden));
   }
 });

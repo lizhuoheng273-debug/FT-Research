@@ -55,7 +55,7 @@ def test_global_score_does_not_reward_hype_words_or_future_dates():
     assert future_breakdown["timeliness"] == 0
 
 
-def test_compose_keeps_domestic_and_unlinked_global_events_and_caps_at_twenty(tmp_path):
+def test_compose_keeps_single_source_events_in_legacy_feed_not_curated_hot_list(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     rows = [
         service.normalize_quick_rows([{
@@ -69,9 +69,9 @@ def test_compose_keeps_domestic_and_unlinked_global_events_and_caps_at_twenty(tm
 
     result = service._compose(rows, [], [])
 
-    assert len(result["globalHighlights"]) == 20
+    assert result["globalHighlights"] == []
+    assert len(result["feed"]) == 25
     assert result["aShareHot"] == []
-    assert result["globalHighlights"][0]["importanceType"] == "policy_decision"
 
 
 def test_substantive_update_changes_event_timestamp_but_repost_does_not_refresh_importance(tmp_path):

@@ -36,7 +36,6 @@ import reflection as reflect_layer
 import signals
 import glm_config
 from financial_news import FinancialNewsScheduler, FinancialNewsService
-from market_impact import build_default_provider
 from aihot_api import AihotClient
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
@@ -50,7 +49,10 @@ from version import read_version
 
 __version__ = read_version()
 
-financial_news_service = FinancialNewsService(market_provider=build_default_provider())
+# Global headlines do not need the retired A-share reverse-market scan. Its
+# per-stock network calls could hold the news lock and delay RSS for minutes.
+# Legacy injection support stays in FinancialNewsService for explicit callers.
+financial_news_service = FinancialNewsService()
 financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
 market_review_service = market_review.market_review_service
 market_review_brief_service = MarketReviewBriefService()
@@ -341,7 +343,6 @@ def _ndjson(events):
 class DebateReq(BaseModel):
     code: str
     rounds: int = 1
-    llm: LLMConfig
 
 
 @app.post("/api/debate")
@@ -351,9 +352,28 @@ def debate(req: DebateReq):
     刻意不产出买卖结论——终点是「分歧点 + 验证清单」，判断留给用户自己。
     """
     code = _validate(req.code)
-    cfg = _check_llm(req.llm)
+    cfg = glm_config.load_glm_config()
+    if not cfg.get("apiKey"):
+        raise HTTPException(400, "尚未配置后台 GLM，请先在后端配置 GLM_API_KEY")
     rounds = 2 if req.rounds >= 2 else 1
-    return _ndjson(lambda: debate_layer.run_debate_stream(cfg, code, rounds))
+    control = debate_layer.DebateControl()
+    events = debate_layer.run_debate_stream(cfg, code, rounds, control=control)
+
+    async def stream():
+        import asyncio
+        end = object()
+        try:
+            while True:
+                event = await asyncio.to_thread(next, events, end)
+                if event is end:
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception:
+            yield json.dumps({"type": "error", "message": "辩论服务暂不可用，请稍后重试"}, ensure_ascii=False) + "\n"
+        finally:
+            control.cancel(background=True)
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 class ReflectReq(BaseModel):
@@ -521,6 +541,12 @@ def financial_news_event(event_id: str):
 @app.get("/api/finance/news/status")
 def financial_news_status():
     return {"data": financial_news_service.status()}
+
+
+@app.get("/api/finance/news/calendar")
+def financial_news_calendar():
+    """Official future events: cache-only read, filtered to the next fourteen days."""
+    return {"data": financial_news_service.calendar.overview()}
 
 
 @app.post("/api/finance/news/following")

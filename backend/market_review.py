@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -19,9 +20,11 @@ import market
 
 
 BEIJING = ZoneInfo("Asia/Shanghai")
-PROMPT_VERSION = "market-review-brief-v1"
+PROMPT_VERSION = "market-review-brief-v2"
 INDEX_CODES = ("000001", "399001", "399006", "000300")
 REVIEW_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "market-review"
+_breadth_lock = threading.Lock()
+REVIEW_FILE_LOCK = threading.RLock()
 
 
 def _as_number(value: Any) -> float | None:
@@ -51,7 +54,7 @@ def _trading_date(value: datetime) -> date:
 
 def snapshot_hash(snapshot: dict[str, Any]) -> str:
     """Hash objective snapshot content while ignoring volatile/cache-only fields."""
-    stable = {key: value for key, value in snapshot.items() if key not in {"brief", "generatedAt", "sources"}}
+    stable = {key: value for key, value in snapshot.items() if key not in {"brief", "generatedAt", "sources", "refreshing"}}
     encoded = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
 
@@ -189,16 +192,70 @@ def _normalize_indices(rows: Any) -> list[dict[str, Any]]:
     return [row for row in output if row]
 
 
+def fetch_em_breadth() -> dict[str, Any] | None:
+    """Count a complete沪深京 A-share universe; never treat a partial page as market breadth."""
+    for host in ("push2.eastmoney.com", "push2delay.eastmoney.com"):
+        try:
+            rows: dict[str, dict] = {}
+            total = None
+            for page in range(1, 101):
+                params = {"pn": page, "pz": 100, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+                          "fid": "f12", "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
+                          "fields": "f2,f3,f12,f13"}
+                payload = astock.em_get(f"https://{host}/api/qt/clist/get", params=params,
+                                       headers={"User-Agent": astock.UA}, timeout=12).json().get("data") or {}
+                count = int(payload.get("total") or 0)
+                if count <= 0 or (total is not None and count != total):
+                    raise ValueError("行情分页总数不完整")
+                total = count
+                before = len(rows)
+                for row in payload.get("diff") or []:
+                    code = str(row.get("f12", ""))
+                    if len(code) == 6 and code.isdigit():
+                        rows[f"{row.get('f13')}:{code}"] = row
+                if len(rows) == total:
+                    break
+                if len(rows) <= before:
+                    raise ValueError("行情分页为空或重复")
+            if len(rows) != total:
+                raise ValueError("行情分页未收齐")
+            changes = [_as_number(row.get("f3")) for row in rows.values()
+                       if (_as_number(row.get("f2")) or 0) > 0]
+            changes = [value for value in changes if value is not None]
+            if not changes:
+                raise ValueError("行情涨幅缺失")
+            return {"up": sum(v > 0 for v in changes), "down": sum(v < 0 for v in changes),
+                    "limitUp": None, "limitDown": None,
+                    "source": "东方财富全量沪深京A股" + ("（延迟行情）" if "delay" in host else "")}
+        except Exception:
+            continue
+    return None
+
+
+def _valid_breadth(row: Any) -> bool:
+    if not isinstance(row, dict):
+        return False
+    counts = [_as_number(row.get(key)) for key in ("up", "down")]
+    return all(v is not None and v >= 0 and v.is_integer() for v in counts) and sum(counts) > 0
+
+
 def _default_adapters(trading_date: date, previous_date: date) -> dict[str, Callable[[], Any]]:
     def indices():
         return astock.index_quote()
 
     def breadth():
         row = market._sentiment()
+        if not _valid_breadth(row):
+            with _breadth_lock:
+                fallback = market._cached("review_breadth", fetch_em_breadth)
+            if not _valid_breadth(fallback):
+                raise RuntimeError("涨跌家数主源和备用源暂不可用")
+            return fallback
         return {
             "up": row.get("up"), "down": row.get("down"),
             "limitUp": row.get("zt_real", row.get("zt")),
             "limitDown": row.get("dt_real", row.get("dt")),
+            "source": "乐咕乐股市场宽度",
         }
 
     def liquidity():
@@ -226,6 +283,7 @@ class MarketReviewService:
         self.now_fn = now_fn or (lambda: datetime.now(BEIJING))
         self.adapters = adapters
         self._memory: dict[str, tuple[datetime, dict[str, Any]]] = {}
+        self._lock = threading.RLock()
 
     def _path(self, trading_date: date) -> Path:
         return self.cache_dir / f"{trading_date.isoformat()}.json"
@@ -239,11 +297,16 @@ class MarketReviewService:
             return None
 
     def _save(self, trading_date: date, review: dict[str, Any]) -> None:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        path = self._path(trading_date)
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps({"savedAt": review["generatedAt"], "review": review}, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(path)
+        with REVIEW_FILE_LOCK:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            latest_brief = (self._load(trading_date) or {}).get("brief") or {}
+            incoming_brief = review.get("brief") or {}
+            if (latest_brief.get("generatedAt") or "") > (incoming_brief.get("generatedAt") or ""):
+                review["brief"] = latest_brief
+            path = self._path(trading_date)
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps({"savedAt": review["generatedAt"], "review": review}, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp.replace(path)
 
     @staticmethod
     def _required_complete(review: dict[str, Any]) -> bool:
@@ -261,13 +324,15 @@ class MarketReviewService:
             try:
                 raw = adapters[name]()
                 valid = raw is not None and raw != [] and raw != {}
+                if name == "breadth":
+                    valid = _valid_breadth(raw)
                 if not valid:
                     raise RuntimeError("上游返回空数据")
                 values[name] = raw
-                source_rows.append({"name": name, "status": "fresh", "fetchedAt": _iso(current), "detail": ""})
+                source_rows.append({"name": name, "status": "fresh", "fetchedAt": _iso(current), "detail": raw.get("source", "") if name == "breadth" else ""})
             except Exception as exc:
                 old = (cached or {}).get(name)
-                if old not in (None, [], {}):
+                if old not in (None, [], {}) and (name != "breadth" or _valid_breadth(old)):
                     values[name] = old
                     stale = True
                     source_rows.append({"name": name, "status": "stale", "fetchedAt": (cached or {}).get("generatedAt"), "detail": str(exc)})
@@ -300,6 +365,22 @@ class MarketReviewService:
         return review
 
     def get_review(self, force: bool = False) -> dict[str, Any]:
+        # API requests and the post-close scheduler must share one collection.
+        acquired = self._lock.acquire(blocking=False)
+        if not acquired and not force:
+            day = _trading_date(_ensure_beijing(self.now_fn()))
+            hit = self._memory.get(day.isoformat())
+            cached = hit[1] if hit else self._load(day)
+            if cached:
+                return {**cached, "stale": True, "refreshing": True}
+        if not acquired:
+            self._lock.acquire()
+        try:
+            return self._get_review(force)
+        finally:
+            self._lock.release()
+
+    def _get_review(self, force: bool = False) -> dict[str, Any]:
         current = _ensure_beijing(self.now_fn())
         trading_date = _trading_date(current)
         key = trading_date.isoformat()
@@ -315,9 +396,11 @@ class MarketReviewService:
             except ValueError:
                 pass
         review = self._collect(current, trading_date, cached)
+        completed = _ensure_beijing(self.now_fn())
+        review["generatedAt"] = _iso(completed)
         if any(row["status"] == "fresh" for row in review["sources"]):
             self._save(trading_date, review)
-        self._memory[key] = (current, review)
+        self._memory[key] = (completed, review)
         return review
 
     def set_brief(self, trading_date: str, brief: dict[str, Any]) -> None:

@@ -8,24 +8,20 @@ const workspace = await readFile(new URL("../src/pages/FinanceAiWorkspace.tsx", 
 const router = await readFile(new URL("../src/router.tsx", import.meta.url), "utf8");
 const api = await readFile(new URL("../src/lib/api.ts", import.meta.url), "utf8");
 
-test("financial news page has exactly global highlights and following as its two primary sections", () => {
-  assert.match(page, /全球要闻速览/);
-  assert.match(page, /我的关注/);
-  for (const removed of ["紧要快讯", "A股热门事件榜", "全球观察", "全部资讯流", "全球市场", "GlobalMarketStrip"]) {
+test("financial news composes only the hot list and upcoming calendar", () => {
+  assert.match(page, /<GlobalHotList/);
+  assert.match(page, /<UpcomingEvents/);
+  for (const removed of ["紧要快讯", "A股热门事件榜", "全球观察", "全部资讯流", "全球市场", "GlobalMarketStrip", "financialNewsFollowing", "loadWatch"]) {
     assert.doesNotMatch(page, new RegExp(removed));
   }
   assert.match(page, /globalHighlights/);
-  assert.match(page, /financialNewsFollowing/);
-  assert.match(page, /slice\(0,\s*globalExpanded \? 20 : 10\)/);
-  assert.match(page, /事件简述与关键数字/);
-  assert.match(page, /来源\/更新时间/);
-  assert.match(page, /target="_blank"/);
+  assert.match(page, /financialNewsCalendar/);
 });
 
-test("following selection changes cancel or ignore the previous request", () => {
+test("news snapshot refresh cancels prior requests and has a finite deadline", () => {
   assert.match(page, /AbortController/);
-  assert.match(page, /requestVersion/);
-  assert.match(page, /loadWatch/);
+  assert.match(page, /controller\?\.abort/);
+  assert.match(page, /20000/);
 });
 
 test("financial event detail keeps original links and source evidence", () => {
@@ -42,8 +38,9 @@ test("frontend exposes global highlights and query-only following endpoints", ()
   assert.match(api, /pageSize/);
 });
 
-test("AI workspace uses global highlights and following context for finance news", () => {
+test("AI workspace uses global highlights and calendar context for finance news", () => {
   assert.match(workspace, /globalHighlights/);
-  assert.match(workspace, /financialNewsFollowing/);
+  assert.match(workspace, /financialNewsCalendar/);
+  assert.doesNotMatch(workspace, /financialNewsFollowing/);
   assert.doesNotMatch(workspace, /A股热门/);
 });

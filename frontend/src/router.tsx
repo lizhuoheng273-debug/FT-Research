@@ -28,6 +28,11 @@ function LegacyResearch() {
   return <StockData />;
 }
 
+function RetiredResearch() {
+  const [params] = useSearchParams();
+  return params.get("code") ? <LegacyResearch /> : <Navigate to="/finance/debate" replace />;
+}
+
 export const router = createBrowserRouter([
   {
     element: <Layout />,
@@ -46,7 +51,8 @@ export const router = createBrowserRouter([
       { path: "/finance/stocks/:code", element: <StockDetail /> },
       { path: "/finance/stocks/:code/ai", element: <FinanceAiWorkspace /> },
       { path: "/finance/indices/:code", element: <IndexDetail /> },
-      { path: "/finance/research", element: <LegacyResearch /> },
+      { path: "/finance/research", element: <RetiredResearch /> },
+      { path: "/finance/debate", element: <Debate /> },
       // Legacy deep links remain available for existing bookmarks.
       { path: "/daily-review", element: <DailyReview /> },
       { path: "/intel", element: <Intel /> },
@@ -57,7 +63,7 @@ export const router = createBrowserRouter([
       { path: "/sectors/:key", element: <SectorDetail /> },
       { path: "/portfolio", element: <Portfolio /> },
       { path: "/stock-data", element: <LegacyResearch /> },
-      { path: "/debate", element: <Debate /> },
+      { path: "/debate", element: <Navigate to="/finance/debate" replace /> },
       { path: "/watchlist", element: <Watchlist /> },
       { path: "/my-reports", element: <MyReports /> },
       { path: "/notes", element: <Notes /> },

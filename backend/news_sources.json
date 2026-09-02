@@ -584,6 +584,9 @@
    "type": "rss",
    "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html"
   },
+  {"name": "中新网财经", "hint": "macro", "type": "rss", "url": "https://www.chinanews.com.cn/rss/finance.xml"},
+  {"name": "BBC财经", "hint": "macro", "type": "rss", "url": "https://feeds.bbci.co.uk/news/business/rss.xml"},
+  {"name": "Guardian Business", "hint": "macro", "type": "rss", "url": "https://www.theguardian.com/business/rss"},
   {
    "name": "Financial Times",
    "hint": "macro",

@@ -3,6 +3,9 @@
   "notes": "公开来源登记表；登记不等于可调用 API，实际抓取只使用 source_type=adapter/rss 的现有能力。",
   "verification": {"verified": true, "stable": true, "timeFieldReviewed": true, "ownershipReviewed": true},
   "sources": [
+    {"id": "cns-finance", "name": "中新网财经", "tier": "A", "score": 32, "type": "rss", "url": "https://www.chinanews.com.cn/rss/finance.xml", "owner": "中国新闻社", "timeField": "pubDate", "attribution": "中新网财经RSS及原文署名", "compliance": {"public": true, "redlinePolicy": "标题、来源、链接与简短摘要；不复制全文"}},
+    {"id": "bbc-business", "name": "BBC财经", "tier": "A", "score": 28, "type": "rss", "url": "https://feeds.bbci.co.uk/news/business/rss.xml", "owner": "BBC", "timeField": "pubDate", "attribution": "BBC Business RSS", "compliance": {"public": true, "redlinePolicy": "仅公开RSS元数据与原文入口"}},
+    {"id": "guardian-business", "name": "Guardian Business", "tier": "A", "score": 28, "type": "rss", "url": "https://www.theguardian.com/business/rss", "owner": "Guardian News and Media", "timeField": "pubDate", "attribution": "Guardian Business RSS", "compliance": {"public": true, "redlinePolicy": "仅本地私有非商业RSS验证；不公开转载全文"}},
     {"id": "csrc", "name": "证监会", "tier": "S", "score": 35, "type": "html", "url": "https://www.csrc.gov.cn/csrc/c100028/common_list.shtml", "owner": "中国证监会", "timeField": "发布时间/页面日期", "attribution": "页面署名与中国证监会域名", "compliance": {"public": true, "redlinePolicy": "金融资讯仅作事实展示"}},
     {"id": "sse", "name": "上交所", "tier": "S", "score": 35, "type": "html", "url": "https://www.sse.com.cn/news/newsrelease/", "owner": "上海证券交易所", "timeField": "发布时间", "attribution": "上交所页面来源标识", "compliance": {"public": true, "redlinePolicy": "金融资讯仅作事实展示"}},
     {"id": "szse", "name": "深交所", "tier": "S", "score": 35, "type": "html", "url": "https://www.szse.cn/aboutus/trends/news/", "owner": "深圳证券交易所", "timeField": "发布时间", "attribution": "深交所页面来源标识", "compliance": {"public": true, "redlinePolicy": "金融资讯仅作事实展示"}},

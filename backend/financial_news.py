@@ -25,6 +25,8 @@ from financial_news_store import FinancialNewsStore
 from market_impact import MarketImpactEnricher, MarketEvidenceProvider
 from source_registry import load_registry, registry_status, runtime_status, source_grade, source_tier
 from following_news import build_following_stream, normalize_codes
+from financial_editorial import financial_topic, independent_sources, headline, is_roundup
+from financial_calendar import FinancialCalendar
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +35,8 @@ QUICK_INTERVAL_SECONDS = 180
 RSS_INTERVAL_SECONDS = 1800
 EVENT_LIBRARY_HOURS = 72
 GLOBAL_OBSERVATION_LIMIT = 5
-GLOBAL_HIGHLIGHTS_DEFAULT = 10
-GLOBAL_HIGHLIGHTS_LIMIT = 20
+GLOBAL_HIGHLIGHTS_DEFAULT = 5
+GLOBAL_HIGHLIGHTS_LIMIT = 5
 URGENT_SCORE_THRESHOLD = 60
 _POLICY_WORDS = ("国务院", "央行", "证监会", "交易所", "监管", "政策", "新规", "财政部", "商务部", "发改委", "公告", "停牌", "复牌", "退市")
 _OVERSEAS_WORDS = ("美联储", "美国", "欧洲", "日本", "港股", "美股", "纳斯达克", "全球")
@@ -175,10 +177,14 @@ def _bigrams(text: str) -> set[str]:
 
 
 def _similar(a: str, b: str) -> bool:
-    left, right = _normalized_title(a), _normalized_title(b)
+    if is_roundup(a) or is_roundup(b):
+        return _normalized_title(a) == _normalized_title(b)
+    left, right = _normalized_title(headline(a)), _normalized_title(headline(b))
     if not left or not right:
         return False
-    if left == right or left in right or right in left:
+    if left == right:
+        return True
+    if (left in right or right in left) and min(len(left), len(right)) / max(len(left), len(right)) >= 0.60:
         return True
     aa, bb = _bigrams(left), _bigrams(right)
     return len(aa & bb) / max(1, len(aa | bb)) >= 0.62
@@ -229,7 +235,7 @@ def global_importance_score(item: dict[str, Any], *, now: datetime | None = None
     if item.get("official") is True or level == "S":
         confirmation = 20
     else:
-        confirmation = {0: 0, 1: 6, 2: 12, 3: 17}.get(min(independent, 3), 20)
+        confirmation = {0: 0, 1: 6, 2: 12, 3: 17}.get(min(independent, 4), 20)
     breakdown = {
         "importance": importance,
         "authority": authority,
@@ -252,22 +258,7 @@ def _report_story_key(report: dict[str, Any]) -> str:
 
 def _independent_source_names(reports: list[dict[str, Any]]) -> list[str]:
     """Collapse same-story reposts while retaining every report in the timeline."""
-    seen_story_sources: dict[str, set[str]] = {}
-    names: list[str] = []
-    for report in reports:
-        story_key = _report_story_key(report)
-        source = str(report.get("source") or "公开来源")
-        if story_key:
-            prior_sources = seen_story_sources.setdefault(story_key, set())
-            is_repost = bool(
-                source in prior_sources
-                or (source in _REPOST_CHANNELS and bool(prior_sources) and prior_sources <= _REPOST_CHANNELS)
-            )
-            prior_sources.add(source)
-            if is_repost:
-                continue
-        names.append(source)
-    return names
+    return independent_sources(reports)
 
 
 class FinancialNewsService:
@@ -288,7 +279,8 @@ class FinancialNewsService:
         self.quick_fetchers: dict[str, Callable[[], Any]] = self._default_fetchers()
         self.following_provider: Callable[[str], dict[str, Any]] | None = None
         self._following_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self.source_runtime: dict[str, dict[str, Any]] = {}
+        self.source_runtime: dict[str, dict[str, Any]] = self._read(self.cache_dir / "source-runtime.json") or {}
+        self.calendar = FinancialCalendar(self.cache_dir, now_fn=now_fn)
 
     def _record_source_runtime(self, source: str, status: dict[str, Any]) -> None:
         self.source_runtime[source] = {
@@ -300,6 +292,7 @@ class FinancialNewsService:
             "lastFailureAt": status.get("fetchedAt") if not status.get("ok") else self.source_runtime.get(source, {}).get("lastFailureAt"),
             "cache": "fresh" if status.get("ok") else ("stale" if self.source_runtime.get(source, {}).get("lastSuccessAt") else "missing"),
         }
+        self._write(self.cache_dir / "source-runtime.json", self.source_runtime)
 
     @staticmethod
     def _default_fetchers() -> dict[str, Callable[[], Any]]:
@@ -337,6 +330,7 @@ class FinancialNewsService:
                 "originalUrl": url, "relatedStocks": self.related_stocks(title, summary), "stale": False,
                 "importanceType": _pick(row, "importanceType", "eventType", "事件类型") or "none",
                 "official": bool(_pick(row, "official", "官方") is True),
+                "originSource": _pick(row, "originSource", "原始来源") or None,
                 "rumor": bool(_pick(row, "rumor", "传闻") is True),
             })
         return output
@@ -358,7 +352,9 @@ class FinancialNewsService:
 
     def normalize_radar(self, radar: dict[str, Any]) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
-        for industry in radar.get("industries") or []:
+        # The radar UI deduplicates across publishers; ranking must see original evidence.
+        industries = [{"name": "", "items": radar["rawReports"]}] if "rawReports" in radar else radar.get("industries") or []
+        for industry in industries:
             track = str(industry.get("name") or "")
             for raw in industry.get("items") or []:
                 title = str(raw.get("zh") or raw.get("title") or "").strip()
@@ -375,11 +371,12 @@ class FinancialNewsService:
                 output.append({
                     "id": _stable_id(f"{source}:{title}"), "title": title,
                     "summary": str(raw.get("summary") or ""), "publishedAt": published.isoformat() if published else None,
-                    "category": self.classify(title, str(raw.get("summary") or ""), track), "track": track,
+                    "category": self.classify(title, str(raw.get("summary") or ""), track), "track": raw.get("track") or track,
                     "source": source, "sourceTier": tier, "sourceLevel": source_grade(source, self.registry), "originalUrl": _safe_http_url(raw.get("url")),
-                    "relatedStocks": self.related_stocks(title, str(raw.get("summary") or "")), "stale": False,
+                    "relatedStocks": self.related_stocks(title, str(raw.get("summary") or "")),
                     "importanceType": raw.get("importanceType") or raw.get("eventType") or "none",
                     "official": bool(raw.get("official") is True), "rumor": bool(raw.get("rumor") is True),
+                    "originSource": raw.get("originSource"), "stale": bool(raw.get("stale")),
                 })
         return output
 
@@ -483,6 +480,8 @@ class FinancialNewsService:
             logger.exception("financial news ai cache write failed")
 
     def _is_global_highlight(self, event: dict[str, Any]) -> bool:
+        if not _safe_http_url(event.get("originalUrl")) or not financial_topic(event) or int(event.get("independentSourceCount") or 0) < 2:
+            return False
         published = _parse_datetime(event.get("effectiveLatestAt") or event.get("latestAt") or event.get("publishedAt"))
         if published is None:
             return False
@@ -621,11 +620,12 @@ class FinancialNewsService:
                 enriched.append(event)
         events = enriched
         for event in events:
+            event["importanceType"] = financial_topic(event) or "none"
             score, breakdown, reasons = global_importance_score(event, now=self.now_fn())
             event["globalScore"] = score
             event["globalScoreBreakdown"] = breakdown
             event["globalScoreReasons"] = reasons
-        self._apply_ai_refinements(events)
+        self._apply_ai_refinements([event for event in events if self._is_global_highlight(event)])
         urgent = sorted([
             event for event in events
             if (event["urgencyScore"] >= URGENT_SCORE_THRESHOLD or event.get("sourceLevel") == "S")
@@ -646,7 +646,7 @@ class FinancialNewsService:
         )[:GLOBAL_OBSERVATION_LIMIT]
         global_highlights = sorted(
             [event for event in events if self._is_global_highlight(event)],
-            key=lambda row: (row.get("globalScore", 0), row.get("latestAt") or row.get("publishedAt") or ""),
+            key=lambda row: (row.get("globalScore", 0), row.get("independentSourceCount", 0), row.get("latestAt") or row.get("publishedAt") or ""),
             reverse=True,
         )[:GLOBAL_HIGHLIGHTS_LIMIT]
         feed = sorted(events, key=lambda row: row.get("publishedAt") or "", reverse=True)
@@ -661,7 +661,7 @@ class FinancialNewsService:
             for name, stale in component_state.items()
         }
         return self.save_payload({
-            "generatedAt": attempted_at, "eventLibraryHours": EVENT_LIBRARY_HOURS,
+            "generatedAt": attempted_at, "eventLibraryHours": EVENT_LIBRARY_HOURS, "editorialVersion": 3,
             "urgent": urgent, "hot": hot, "aShareHot": hot, "candidates": candidates,
             "globalObservation": global_observation, "globalHighlights": global_highlights, "feed": feed,
             "sourceStatus": source_status, "staleComponents": component_state,
@@ -767,11 +767,12 @@ class FinancialNewsService:
                 radar_payload = newsradar.fetch_radar()
                 radar_status = [{"source": "RSS 资讯雷达", "ok": True, "count": sum(len(x.get("items") or []) for x in radar_payload.get("industries") or []), "fetchedAt": self.now_fn().isoformat()}]
                 self._record_source_runtime("RSS 资讯雷达", radar_status[0])
-                for source in radar_payload.get("sources") or []:
-                    source_name = str(source.get("name") or source.get("id") or "")
+                for source in radar_payload.get("sourceStatuses") or []:
+                    source_name = str(source.get("source") or "")
                     if source_name:
-                        state = {"source": source_name, "ok": not bool(source.get("stale") or source.get("error")), "count": len(source.get("items") or []), "fetchedAt": source.get("lastSuccessAt"), "error": source.get("error")}
-                        self._record_source_runtime(source_name, state)
+                        self._record_source_runtime(source_name, source)
+                if radar_payload.get("sourceStatuses"):
+                    rss_stale = any(not s.get("ok") for s in radar_payload["sourceStatuses"])
             except Exception as exc:
                 radar_payload = newsradar.get_radar(force=False)
                 rss_stale = True
@@ -882,6 +883,19 @@ class FinancialNewsService:
         payload.setdefault("candidates", [])
         payload.setdefault("globalObservation", [])
         payload.setdefault("globalHighlights", payload.get("globalObservation") or [])
+        candidates = payload["globalHighlights"]
+        if payload.get("editorialVersion") != 3:
+            candidates = payload.get("feed") or candidates
+            for event in candidates:
+                if event.get("reports"):
+                    event["independentSources"] = independent_sources(event["reports"])
+                    event["independentSourceCount"] = len(event["independentSources"])
+                event["importanceType"] = financial_topic(event) or "none"
+                event["globalScore"], event["globalScoreBreakdown"], event["globalScoreReasons"] = global_importance_score(event, now=self.now_fn())
+        payload["globalHighlights"] = sorted(
+            [event for event in candidates if self._is_global_highlight(event)],
+            key=lambda row: (row.get("globalScore", 0), row.get("independentSourceCount", 0), row.get("latestAt") or row.get("publishedAt") or ""), reverse=True,
+        )[:GLOBAL_HIGHLIGHTS_LIMIT]
         return payload
 
     def feed(self, *, category: str = "all", source: str = "", limit: int = 60) -> list[dict[str, Any]]:
@@ -973,6 +987,7 @@ class FinancialNewsScheduler:
             return
         self._started = True
         self._stop_event.clear()
+        self.service.calendar.start()
 
         def run() -> None:
             next_quick = next_rss = next_market = 0.0
@@ -981,12 +996,14 @@ class FinancialNewsScheduler:
                 if current >= next_market:
                     next_market = current + 30
                     self._refresh_safely(self.service.refresh_due_market_checks)
-                if current >= next_quick:
-                    next_quick = current + QUICK_INTERVAL_SECONDS
-                    self._refresh_safely(self.service.refresh_quick)
+                # Bootstrap RSS before vendor quick-news adapters, which may
+                # have long upstream timeouts. The redesigned board needs both.
                 if current >= next_rss:
                     next_rss = current + RSS_INTERVAL_SECONDS
                     self._refresh_safely(self.service.refresh_rss)
+                if current >= next_quick:
+                    next_quick = current + QUICK_INTERVAL_SECONDS
+                    self._refresh_safely(self.service.refresh_quick)
                 self._stop_event.wait(5)
 
         self._thread = threading.Thread(target=run, name="financial-news-scheduler", daemon=True)
@@ -994,6 +1011,7 @@ class FinancialNewsScheduler:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self.service.calendar.stop()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=6)
         self._thread = None

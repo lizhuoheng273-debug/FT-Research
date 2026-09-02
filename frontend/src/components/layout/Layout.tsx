@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, Radar, Search, Moon, Sun, ChevronsLeft, ChevronsRight, LineChart, Github, UserRound,
+  Activity, Radar, Swords, Moon, Sun, ChevronsLeft, ChevronsRight, LineChart, Github, UserRound,
   Star, FileText, Newspaper,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,7 +24,7 @@ const NAV = [
   { to: "/finance/review", icon: Activity, label: "每日复盘", section: "金融板块" },
   { to: "/finance/news", icon: Newspaper, label: "金融市场资讯" },
   { to: "/finance/watchlist", icon: Star, label: "自选股" },
-  { to: "/finance/research", icon: Search, label: "AI 投研" },
+  { to: "/finance/debate", icon: Swords, label: "多空辩论" },
 ];
 
 export function Layout() {

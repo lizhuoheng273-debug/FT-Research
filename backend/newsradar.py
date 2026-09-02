@@ -14,7 +14,7 @@ import os
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -29,6 +29,7 @@ CACHE_FILE = os.path.join(CACHE_DIR, "radar.json")
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 BEIJING = timezone(timedelta(hours=8))
+BATCH_TIMEOUT = 60
 
 # ——— 条目层去重（同步自上游 investment-news v1.0.2 的 fetch.py）———
 # 只剥公认的跟踪参数（白名单式保守剥）：有些站点用 query 区分文章 id，
@@ -159,6 +160,10 @@ def _fetch_source(src: dict, per: int, cutoff, redline: list[str]):
                     rawtime = (c.text or "").strip()
                 elif t in ("description", "summary", "content") and not d["summary"]:
                     d["summary"] = _strip_html(c.text or "")[:160]
+                elif t == "source":
+                    # RSS names the original publisher; Atom nests its title.
+                    nested = next((child.text for child in c if _local(child.tag) == "title"), None)
+                    d["originSource"] = (nested or c.text or "").strip()
             if not d["title"]:
                 continue
             blob = (d["title"] + " " + d["summary"]).lower()
@@ -176,6 +181,19 @@ def _fetch_source(src: dict, per: int, cutoff, redline: list[str]):
         return out
     except Exception:
         return None
+
+
+def _fetch_sources(tasks, per, cutoff, redline):
+    executor = ThreadPoolExecutor(max_workers=40)
+    futures = [executor.submit(_fetch_source, source, per, cutoff, redline) for _, source in tasks]
+    try:
+        done, _ = wait(futures, timeout=BATCH_TIMEOUT)
+        return [(idx, source, future.result() if future in done else None)
+                for (idx, source), future in zip(tasks, futures)]
+    finally:
+        # Socket timeouts don't bound DNS or trickle responses. Publish completed
+        # sources without waiting for one stalled publisher to release the batch.
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def fetch_radar() -> dict:
@@ -197,18 +215,29 @@ def fetch_radar() -> dict:
         for s in pool:
             tasks.append((i, s))
 
-    with ThreadPoolExecutor(max_workers=40) as ex:
-        results = list(ex.map(lambda t: (t[0], t[1], _fetch_source(t[1], per, cutoff, redline)), tasks))
+    results = _fetch_sources(tasks, per, cutoff, redline)
 
     failed = 0
+    raw_reports, source_statuses = [], []
+    previous = load_cache() or {}
+    old_states = {r["source"]: r for r in previous.get("sourceStatuses", [])}
+    fetched_at = datetime.now(timezone.utc).isoformat()
     for idx, source, items in results:
         # Keep each source's raw-before-cross-source-dedup items in the RSS
         # catalog. The industry view below may deduplicate reprints, but the
         # media feed must never lose a source's own latest stories.
         rss.rss_catalog.record_radar_result(source, items)
+        old = old_states.get(source["name"], {})
+        source_statuses.append({
+            "source": source["name"], "ok": items is not None, "count": len(items or []),
+            "fetchedAt": fetched_at, "lastSuccessAt": fetched_at if items is not None else old.get("lastSuccessAt"),
+            "error": None if items is not None else "抓取或解析失败",
+        })
         if items is None:
             failed += 1
+            raw_reports.extend({**r, "stale": True} for r in previous.get("rawReports", []) if r.get("source") == source["name"])
             continue
+        raw_reports.extend({**r, "track": industries[idx]["name"]} for r in items)
         industries[idx]["items"].extend(items)
     for ind in industries:
         ind["items"].sort(key=lambda x: x.get("ts", 0), reverse=True)
@@ -218,6 +247,7 @@ def fetch_radar() -> dict:
         "generated_at": datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M"),
         "recent_days": days,
         "industries": industries,
+        "rawReports": raw_reports, "sourceStatuses": source_statuses,
         "stats": {"industries": len(cfg["industries"]), "total_sources": len(cfg["sources"]), "failed_sources": failed},
     }
     data.update(_media_fields())
