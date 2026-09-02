@@ -20,8 +20,11 @@ export interface RssSource {
   priority: number;
   homepage: string;
   lastSuccessAt?: string | null;
+  lastAttemptAt?: string | null;
   stale: boolean;
+  staleReason?: "ttl" | "fetch_failed" | null;
   error?: string | null;
+  errorCode?: "timeout" | "http" | "parse" | "security" | "unknown" | null;
   items: RssItem[];
   url?: string;
 }

@@ -38,6 +38,7 @@ function mount(fetch) {
       if (name === "react-router-dom") return { useNavigate: () => () => {} };
       if (name === "@/lib/api") return { apiUrl: (path) => `/api${path}`, authHeaders: () => ({}) };
       if (name === "@/lib/rssSubscriptions") return { readRssSubscriptionState: () => ({ custom: [] }) };
+      if (name === "@/lib/rssRefresh") return { createRssRefresher: () => ({ refresh: async () => {}, isRefreshing: () => false, dispose: () => {} }) };
       return new Proxy({}, { get: (_target, key) => key });
     },
   });

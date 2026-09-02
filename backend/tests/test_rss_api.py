@@ -51,6 +51,30 @@ def test_rss_resolve_rejects_bad_url(monkeypatch):
     assert response.status_code == 400
 
 
+def test_rss_refresh_rejects_unknown_source(monkeypatch):
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    response = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "unknown"})
+    assert response.status_code == 404
+
+
+def test_rss_refresh_returns_retry_after_during_source_cooldown(monkeypatch):
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_clock", lambda: 100.0)
+    refreshed = {"source": {"id": "solidot", "name": "Solidot", "lastAttemptAt": "now", "lastSuccessAt": "now", "stale": False, "staleReason": None, "errorCode": None, "error": None, "items": []}, "outcome": "updated"}
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", lambda source_id, custom_url=None: refreshed)
+    client = TestClient(app.app)
+    assert client.post("/api/ai/rss/refresh", json={"sourceId": "solidot"}).status_code == 200
+    response = client.post("/api/ai/rss/refresh", json={"sourceId": "solidot"})
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "30"
+
+
+def test_rss_refresh_rejects_custom_private_url(monkeypatch):
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    response = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "custom-any", "url": "http://127.0.0.1/feed"})
+    assert response.status_code == 400
+
+
 def test_radar_keeps_legacy_industries_and_media_snapshots(monkeypatch):
     payload = {"generated_at": "now", "industries": [], "stats": {}, "sources": [], "sourceHealth": []}
     monkeypatch.setattr(app.newsradar, "get_radar", lambda force=False: payload)

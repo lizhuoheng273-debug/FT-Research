@@ -7,11 +7,23 @@ import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/
 import { AISubscriptionFeed } from "@/components/ai/AISubscriptionFeed";
 import { apiUrl, authHeaders } from "@/lib/api";
 import { readRssSubscriptionState, type RssSource } from "@/lib/rssSubscriptions";
+import { createRssRefresher } from "@/lib/rssRefresh";
 
 const storyId = (topic: HotFeedTopic, item?: HotFeedItem) => {
   const url = topic.links?.story || item?.links?.story || "";
   return url.split("/").pop() || topic.id;
 };
+
+const attemptAt = (source: RssSource) => source.lastAttemptAt || source.lastSuccessAt || "";
+const mergeRssSource = (current: RssSource[], incoming: RssSource) => [
+  ...current.filter((item) => item.id !== incoming.id),
+  ...(current.some((item) => item.id === incoming.id && attemptAt(item) > attemptAt(incoming)) ? current.filter((item) => item.id === incoming.id) : [incoming]),
+];
+
+const mergeRssSources = (current: RssSource[], incoming: RssSource[]) => incoming.map((source) => {
+  const existing = current.find((item) => item.id === source.id);
+  return existing && attemptAt(existing) > attemptAt(source) ? existing : source;
+});
 
 export function AINews() {
   const navigate = useNavigate();
@@ -23,7 +35,13 @@ export function AINews() {
   const [rssSources, setRssSources] = useState<RssSource[]>([]);
   const [rssLoading, setRssLoading] = useState(true);
   const [rssError, setRssError] = useState<string | null>(null);
+  const [refreshingIds, setRefreshingIds] = useState<string[]>([]);
+  const [refreshMessages, setRefreshMessages] = useState<Record<string, string>>({});
   const activeLoad = useRef<AbortController | null>(null);
+  const rssRefresher = useRef<ReturnType<typeof createRssRefresher> | null>(null);
+  const refreshOutcomes = useRef(new Map<string, "updated" | "cached">());
+  const refreshKnownItems = useRef(new Map<string, Set<string>>());
+  const mounted = useRef(true);
 
   const load = async () => {
     activeLoad.current?.abort();
@@ -60,7 +78,7 @@ export function AINews() {
       try {
         const customUrls = readRssSubscriptionState().custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
         const rssBody = await read(`/ai/rss/sources${customUrls ? `?${customUrls}` : ""}`);
-        if (isCurrent()) setRssSources((rssBody.sources || []) as RssSource[]);
+        if (isCurrent()) setRssSources((current) => mergeRssSources(current, (rssBody.sources || []) as RssSource[]));
       } catch (e) { if (isCurrent()) setRssError(message(e, "媒体订阅暂不可用")); }
       finally { if (isCurrent()) setRssLoading(false); }
     };
@@ -68,13 +86,52 @@ export function AINews() {
     finally { clearTimeout(timeout); }
   };
   useEffect(() => {
+    mounted.current = true;
+    rssRefresher.current = createRssRefresher(async (source, signal) => {
+      const custom = readRssSubscriptionState().custom.find((item) => item.id === source.id);
+      const response = await fetch(apiUrl("/ai/rss/refresh"), {
+        method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, signal,
+        body: JSON.stringify(custom ? { sourceId: source.id, url: custom.url } : { sourceId: source.id }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+      refreshOutcomes.current.set(source.id, body.outcome as "updated" | "cached");
+      return body.source as RssSource;
+    }, (source) => {
+      if (!mounted.current) return;
+      const outcome = refreshOutcomes.current.get(source.id);
+      const knownItems = refreshKnownItems.current.get(source.id) || new Set<string>();
+      const hasNewItems = source.items.some((item) => !knownItems.has(item.id));
+      setRssSources((current) => mergeRssSource(current, source));
+      setRefreshMessages((current) => ({ ...current, [source.id]: outcome === "cached"
+        ? (source.items.length ? "更新失败 · 使用缓存" : "更新失败，暂无缓存内容")
+        : (hasNewItems ? "已更新" : "已检查，暂无新内容") }));
+    });
     void load();
     return () => {
+      mounted.current = false;
+      rssRefresher.current?.dispose();
+      rssRefresher.current = null;
       const controller = activeLoad.current;
       activeLoad.current = null;
       controller?.abort();
     };
   }, []);
+
+  const refreshSource = async (source: RssSource) => {
+    const refresher = rssRefresher.current;
+    if (!refresher || refresher.isRefreshing(source.id)) return;
+    refreshKnownItems.current.set(source.id, new Set(source.items.map((item) => item.id)));
+    setRefreshingIds((current) => [...current, source.id]);
+    setRefreshMessages((current) => ({ ...current, [source.id]: "正在检查更新…" }));
+    try {
+      await refresher.refresh(source);
+    } catch (error) {
+      if (mounted.current) setRefreshMessages((current) => ({ ...current, [source.id]: error instanceof Error && /timeout/i.test(error.message) ? "刷新超时，请稍后重试。" : "刷新失败，请稍后重试。" }));
+    } finally {
+      if (mounted.current) setRefreshingIds((current) => current.filter((id) => id !== source.id));
+    }
+  };
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const context = topics.map((topic) => `${topic.rank}. ${topic.title}（${topic.source || "未知来源"}）`).join("\n");
@@ -87,7 +144,7 @@ export function AINews() {
     {stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">AI HOT 暂时不可用，当前显示本地缓存。</p>}
     {error && <p className="mb-3 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
     <AIHotFeed topics={topics} items={items} loading={loading} onOpenStory={openStory} showEvents={false} />
-    <AISubscriptionFeed sources={rssSources} loading={rssLoading} error={rssError} onSourcesChanged={(source) => setRssSources((current) => [...current.filter((item) => item.id !== source.id), source])} />
+    <AISubscriptionFeed sources={rssSources} loading={rssLoading} error={rssError} refreshingIds={refreshingIds} refreshMessages={refreshMessages} onRefreshSource={refreshSource} onSourcesChanged={(source) => setRssSources((current) => mergeRssSource(current, source))} />
     {!loading && topics.length === 0 && <p className="mt-4 text-sm text-muted-foreground">暂无热点资讯。</p>}
     {itemById.size === 0 && !loading && topics.length > 0 && <p className="mt-2 text-xs text-muted-foreground">部分事件暂未返回摘要，将在详情页补充。</p>}
   </div>;

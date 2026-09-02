@@ -15,6 +15,7 @@ import os
 import re
 import socket
 import threading
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -35,6 +36,7 @@ CONNECT_TIMEOUT = 8
 READ_TIMEOUT = 12
 MAX_ITEMS = 50
 CACHE_TTL_SECONDS = 1800
+MAX_CONCURRENT_REFRESHES = 4
 logger = logging.getLogger(__name__)
 
 
@@ -267,7 +269,7 @@ def fetch_url(url: str) -> bytes:
                 if size > MAX_BYTES:
                     raise RssFetchError("RSS 响应超过 4 MB 限制")
             return b"".join(chunks)
-    except RssFetchError:
+    except (RssFetchError, RssSecurityError):
         raise
     except Exception as exc:  # noqa: BLE001 - normalize network/parser boundary
         raise RssFetchError(f"RSS 抓取失败：{exc}") from exc
@@ -284,6 +286,9 @@ class RssCatalog:
         self.validate_dns = validate_dns
         self.source_defs = [dict(item) for item in DEFAULT_SOURCE_DEFS]
         self._cache_lock = threading.RLock()
+        self._source_locks_lock = threading.Lock()
+        self._source_locks: dict[str, threading.Lock] = {}
+        self._refresh_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REFRESHES)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -307,43 +312,99 @@ class RssCatalog:
             temp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
             os.replace(temp, path)
 
-    def _record_failure(self, source: dict[str, object], error: str) -> None:
+    def _source_lock(self, url: str) -> threading.Lock:
+        """Return the URL-scoped lock held from fetch through cache persistence."""
+        key = normalize_url(url)
+        with self._source_locks_lock:
+            return self._source_locks.setdefault(key, threading.Lock())
+
+    @staticmethod
+    def _error_code(error: Exception) -> str:
+        if isinstance(error, RssSecurityError):
+            return "security"
+        if isinstance(error, TimeoutError) or "timeout" in str(error).lower() or "timed out" in str(error).lower():
+            return "timeout"
+        if isinstance(error, urllib.error.HTTPError):
+            return "http"
+        if "http error" in str(error).lower():
+            return "http"
+        if isinstance(error, RssFetchError) and "解析" in str(error):
+            return "parse"
+        return "unknown"
+
+    def _record_failure(self, source: dict[str, object], error: str, error_code: str) -> None:
         try:
             with self._cache_lock:
                 url = str(source["url"])
                 cached = self._read_cache(url) or {"source": source, "items": [], "lastSuccessAt": None}
-                self._write_cache(url, {**cached, "lastError": error, "lastAttemptAt": _now()})
+                self._write_cache(url, {**cached, "lastError": error, "lastErrorCode": error_code, "lastAttemptAt": _now()})
         except OSError:
             logger.warning("Could not persist RSS failure state for %s", source.get("id"))
 
     @staticmethod
-    def _public_snapshot(source: dict[str, object], *, items: Iterable[dict[str, object]], last_success: str | None, stale: bool, error: str | None) -> dict[str, object]:
-        return {"id": source["id"], "name": source["name"], "category": source.get("category", "tech"), "region": source.get("region", "custom"), "priority": source.get("priority", 100), "homepage": source.get("homepage", ""), "lastSuccessAt": last_success, "stale": stale, "error": error, "items": list(items)[:3]}
+    def _public_snapshot(source: dict[str, object], *, items: Iterable[dict[str, object]], last_success: str | None, last_attempt: str | None, stale: bool, stale_reason: str | None, error: str | None, error_code: str | None) -> dict[str, object]:
+        return {"id": source["id"], "name": source["name"], "category": source.get("category", "tech"), "region": source.get("region", "custom"), "priority": source.get("priority", 100), "homepage": source.get("homepage", ""), "lastSuccessAt": last_success, "lastAttemptAt": last_attempt, "stale": stale, "staleReason": stale_reason, "error": error, "errorCode": error_code, "items": list(items)[:3]}
 
     def _read_snapshot(self, source: dict[str, object], *, stale: bool = False, error: str | None = None) -> dict[str, object]:
         cached = self._read_cache(str(source["url"]))
         if cached and isinstance(cached.get("items"), list):
             last_success = cached.get("lastSuccessAt") if isinstance(cached.get("lastSuccessAt"), str) else None
             last_error = error or cached.get("lastError")
+            last_attempt = cached.get("lastAttemptAt") if isinstance(cached.get("lastAttemptAt"), str) else last_success
+            error_code = cached.get("lastErrorCode") if isinstance(cached.get("lastErrorCode"), str) else None
             expired = bool(last_success) and (_date_key(_now()) - _date_key(last_success) >= CACHE_TTL_SECONDS)
             return self._public_snapshot(source, items=cached["items"], last_success=last_success,
-                                         stale=bool(last_success) and bool(stale or expired or last_error),
-                                         error=str(last_error) if last_error else (None if last_success else "尚未成功抓取"))
-        return self._public_snapshot(source, items=[], last_success=None, stale=False, error=error or "尚未成功抓取")
+                                         last_attempt=last_attempt, stale=bool(last_success) and bool(stale or expired or last_error),
+                                         stale_reason="fetch_failed" if last_error else ("ttl" if expired else None),
+                                         error=str(last_error) if last_error else (None if last_success else "尚未成功抓取"),
+                                         error_code=error_code)
+        return self._public_snapshot(source, items=[], last_success=None, last_attempt=None, stale=False,
+                                     stale_reason="fetch_failed" if error else None, error=error or "尚未成功抓取", error_code=None)
 
     def refresh(self, source: dict[str, object]) -> dict[str, object]:
         url = str(source["url"])
-        try:
-            validate_public_url(url, resolve_dns=self.validate_dns)
-            parsed = parse_feed(self.fetcher(url), source_url=url)
-            now = _now()
-            cache_value = {"source": {key: source.get(key) for key in ("id", "name", "category", "region", "priority", "homepage", "url")}, "lastSuccessAt": now, "items": [item.as_dict() for item in parsed.items]}
-            self._write_cache(url, cache_value)
-            resolved_source = {**source, "name": source.get("name") or parsed.name}
-            return self._public_snapshot(resolved_source, items=cache_value["items"], last_success=now, stale=False, error=None)
-        except Exception as exc:  # noqa: BLE001 - stale fallback is the public contract
-            self._record_failure(source, str(exc))
-            return self._read_snapshot(source, stale=True, error=str(exc))
+        # The lock intentionally includes fetch + write. A slow failure must not
+        # finish after a newer successful refresh and overwrite its cache.
+        with self._source_lock(url), self._refresh_slots:
+            try:
+                validate_public_url(url, resolve_dns=self.validate_dns)
+                parsed = parse_feed(self.fetcher(url), source_url=url)
+                now = _now()
+                cache_value = {"source": {key: source.get(key) for key in ("id", "name", "category", "region", "priority", "homepage", "url")}, "lastSuccessAt": now, "lastAttemptAt": now, "items": [item.as_dict() for item in parsed.items]}
+                self._write_cache(url, cache_value)
+                resolved_source = {**source, "name": source.get("name") or parsed.name}
+                return self._public_snapshot(resolved_source, items=cache_value["items"], last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
+            except Exception as exc:  # noqa: BLE001 - stale fallback is the public contract
+                error_code = self._error_code(exc)
+                self._record_failure(source, str(exc), error_code)
+                snapshot = self._read_snapshot(source, stale=True, error=str(exc))
+                snapshot["errorCode"] = error_code
+                return snapshot
+
+    def source_for_refresh(self, source_id: str, custom_url: str | None = None) -> dict[str, object]:
+        """Resolve a caller's id without ever accepting an alternate built-in URL."""
+        builtin = next((source for source in self.source_defs if source["id"] == source_id), None)
+        if builtin:
+            if custom_url is not None:
+                raise ValueError("内置信源不能指定 URL")
+            return dict(builtin)
+        if not custom_url:
+            raise KeyError(source_id)
+        normalized = validate_public_url(custom_url, resolve_dns=self.validate_dns)
+        expected_id = f"custom-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
+        if source_id != expected_id:
+            raise KeyError(source_id)
+        cached = self._read_cache(normalized) or {}
+        cached_source = cached.get("source") if isinstance(cached.get("source"), dict) else {}
+        return {"id": expected_id, "name": cached_source.get("name") or "自定义媒体", "url": normalized,
+                "category": cached_source.get("category") or "tech", "region": "custom",
+                "priority": cached_source.get("priority") or 100,
+                "homepage": cached_source.get("homepage") or f"{urlsplit(normalized).scheme}://{urlsplit(normalized).netloc}"}
+
+    def refresh_source(self, source_id: str, custom_url: str | None = None) -> dict[str, object]:
+        source = self.source_for_refresh(source_id, custom_url)
+        snapshot = self.refresh(source)
+        return {"source": snapshot, "outcome": "updated" if snapshot["error"] is None else "cached"}
 
     def resolve(self, url: str, *, source: dict[str, object] | None = None) -> dict[str, object]:
         normalized = validate_public_url(url, resolve_dns=self.validate_dns)
@@ -359,7 +420,7 @@ class RssCatalog:
         base["name"] = parsed.name
         now = _now()
         self._write_cache(normalized, {"source": base, "lastSuccessAt": now, "items": [item.as_dict() for item in parsed.items]})
-        return self._public_snapshot(base, items=[item.as_dict() for item in parsed.items], last_success=now, stale=False, error=None)
+        return self._public_snapshot(base, items=[item.as_dict() for item in parsed.items], last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
 
     def sources(self, urls: Iterable[str] | None = None) -> list[dict[str, object]]:
         sources = [self._read_snapshot(source) for source in self.source_defs]
@@ -369,7 +430,7 @@ class RssCatalog:
                 # reading a previously validated subscription's local cache.
                 normalized = validate_public_url(url, resolve_dns=False)
             except RssSecurityError as exc:
-                sources.append(self._public_snapshot({"id": f"custom-{hashlib.sha256(str(url).encode()).hexdigest()[:16]}", "name": "自定义媒体", "url": str(url), "category": "tech", "region": "custom", "priority": 100, "homepage": ""}, items=[], last_success=None, stale=False, error=str(exc)))
+                sources.append(self._public_snapshot({"id": f"custom-{hashlib.sha256(str(url).encode()).hexdigest()[:16]}", "name": "自定义媒体", "url": str(url), "category": "tech", "region": "custom", "priority": 100, "homepage": ""}, items=[], last_success=None, last_attempt=None, stale=False, stale_reason="fetch_failed", error=str(exc), error_code="security"))
                 continue
             cached = self._read_cache(normalized)
             if cached and isinstance(cached.get("source"), dict):
@@ -400,12 +461,33 @@ class RssCatalog:
             return
         self._stop.clear()
         def run() -> None:
-            while not self._stop.is_set():
-                try:
-                    self.refresh_builtins()
-                except Exception:
-                    logger.exception("RSS refresh cycle failed; retrying at the next interval")
-                self._stop.wait(interval)
+            # Keep each URL on its own cadence. A slow source occupies one
+            # worker but never delays another source's next 30-minute check.
+            due_at = {normalize_url(str(source["url"])): 0.0 for source in self.source_defs}
+            in_flight: dict[str, object] = {}
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REFRESHES, thread_name_prefix="rss-source-refresh") as executor:
+                while not self._stop.is_set():
+                    now = time.monotonic()
+                    for key, future in list(in_flight.items()):
+                        if future.done():  # type: ignore[union-attr]
+                            try:
+                                future.result()  # type: ignore[union-attr]
+                            except Exception as exc:
+                                # refresh normally converts fetch errors to a stale snapshot;
+                                # this only guards unexpected worker failures. Avoid formatting a
+                                # full traceback in the scheduler loop, which would delay the
+                                # next due source on slow console handlers.
+                                logger.warning("RSS refresh worker failed for %s: %s", key, exc)
+                            del in_flight[key]
+                            due_at[key] = time.monotonic() + interval
+                    for source in self.source_defs:
+                        key = normalize_url(str(source["url"]))
+                        if key not in in_flight and now >= due_at.get(key, 0.0):
+                            in_flight[key] = executor.submit(self.refresh, source)
+                    remaining = [value - time.monotonic() for key, value in due_at.items() if key not in in_flight]
+                    # Poll pending workers briefly so their next deadline is
+                    # anchored to completion rather than an unrelated slow URL.
+                    self._stop.wait(max(0.01, min(0.05, min(remaining, default=0.05))))
         self._thread = threading.Thread(target=run, name="rss-catalog-refresh", daemon=True)
         self._thread.start()
 

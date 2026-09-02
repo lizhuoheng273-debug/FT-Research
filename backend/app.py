@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -159,6 +161,17 @@ class RssResolveReq(BaseModel):
     url: str
 
 
+class RssRefreshReq(BaseModel):
+    sourceId: str = Field(min_length=1)
+    url: str | None = None
+
+
+RSS_REFRESH_COOLDOWN_SECONDS = 30
+_rss_refresh_attempts: dict[str, float] = {}
+_rss_refresh_attempts_lock = threading.Lock()
+_rss_refresh_clock = time.monotonic
+
+
 class FinancialNewsFollowingReq(BaseModel):
     codes: list[str] = Field(default_factory=list)
     page: int = 1
@@ -186,6 +199,38 @@ def ai_rss_resolve(request: RssResolveReq):
         raise HTTPException(502, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - translate malformed feed boundary
         raise HTTPException(422, f"RSS/Atom 解析失败：{exc}") from exc
+
+
+@app.post("/api/ai/rss/refresh")
+def ai_rss_refresh(request: RssRefreshReq):
+    """Fetch exactly one whitelisted built-in or id-verified custom RSS URL.
+
+    This keeps the existing unauthenticated API policy. A later owner/guest
+    subsystem must restrict this active network write to owners.
+    """
+    try:
+        source = rss_catalog.source_for_refresh(request.sourceId, request.url)
+    except KeyError as exc:
+        raise HTTPException(404, "RSS 信源不存在") from exc
+    except (RssSecurityError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    source_id = str(source["id"])
+    now = _rss_refresh_clock()
+    with _rss_refresh_attempts_lock:
+        last_attempt = _rss_refresh_attempts.get(source_id)
+        if last_attempt is not None:
+            remaining = RSS_REFRESH_COOLDOWN_SECONDS - (now - last_attempt)
+            if remaining > 0:
+                retry_after = max(1, int(remaining + 0.999))
+                raise HTTPException(429, "该信源刚刚刷新，请稍后重试", headers={"Retry-After": str(retry_after)})
+        _rss_refresh_attempts[source_id] = now
+    try:
+        return rss_catalog.refresh_source(request.sourceId, request.url)
+    except KeyError as exc:
+        raise HTTPException(404, "RSS 信源不存在") from exc
+    except (RssSecurityError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/ai/news/hot-topics")
