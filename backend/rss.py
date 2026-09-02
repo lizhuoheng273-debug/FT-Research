@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import socket
+import string
 import threading
 import time
 import urllib.request
@@ -25,7 +26,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Iterable
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlsplit, urlunparse, urlunsplit
 
 
 HERE = Path(__file__).resolve().parent
@@ -147,6 +148,47 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         if redirected is not None and remaining is not None:
             redirected.timeout = min(CONNECT_TIMEOUT, remaining)
         return redirected
+
+    def http_error_302(self, req, fp, code, msg, headers):  # type: ignore[override]
+        """Redirect without letting urllib drain an unbounded response body."""
+        if "location" in headers:
+            newurl = headers["location"]
+        elif "uri" in headers:
+            newurl = headers["uri"]
+        else:
+            return None
+        parts = urlparse(newurl)
+        if parts.scheme not in {"http", "https", "ftp", ""}:
+            raise urllib.error.HTTPError(newurl, code, f"{msg} - Redirection to url '{newurl}' is not allowed", headers, fp)
+        if not parts.path and parts.netloc:
+            parts = list(parts)
+            parts[2] = "/"
+        newurl = urlunparse(parts)
+        newurl = quote(newurl, encoding="iso-8859-1", safe=string.punctuation)
+        newurl = urljoin(req.full_url, newurl)
+        new = self.redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        if hasattr(req, "redirect_dict"):
+            visited = new.redirect_dict = req.redirect_dict
+            if visited.get(newurl, 0) >= self.max_repeats or len(visited) >= self.max_redirections:
+                raise urllib.error.HTTPError(req.full_url, code, self.inf_msg + msg, headers, fp)
+        else:
+            visited = new.redirect_dict = req.redirect_dict = {}
+        visited[newurl] = visited.get(newurl, 0) + 1
+        close = getattr(fp, "close", None)
+        if callable(close):
+            close()
+        remaining = None if self.deadline is None else self.deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise RssTimeoutError("RSS 重定向总时限已到")
+        timeout = getattr(req, "timeout", CONNECT_TIMEOUT) if remaining is None else min(CONNECT_TIMEOUT, remaining)
+        return self.parent.open(new, timeout=timeout)
+
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_307 = http_error_302
+    http_error_308 = http_error_302
 
 
 class _TextExtractor(HTMLParser):

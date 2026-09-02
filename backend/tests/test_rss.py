@@ -137,6 +137,30 @@ def test_redirect_uses_remaining_deadline_timeout(monkeypatch):
     assert redirected.timeout == 0.5
 
 
+def test_redirect_handler_closes_without_draining_and_opens_with_remaining_deadline(monkeypatch):
+    class Response:
+        def read(self): raise AssertionError("redirect body must not be drained")
+        def close(self): self.closed = True
+
+    class Parent:
+        def open(self, request, timeout):
+            self.request = request; self.timeout = timeout
+            return "redirected"
+
+    response = Response()
+    parent = Parent()
+    handler = rss.SafeRedirectHandler(deadline=10.0)
+    handler.parent = parent
+    monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
+    moments = iter([7.5, 7.5, 9.5])
+    monkeypatch.setattr(rss.time, "monotonic", lambda: next(moments))
+    request = rss.urllib.request.Request("https://example.com/original")
+    request.timeout = 8
+    assert handler.http_error_302(request, response, 302, "Found", {"location": "https://example.com/next"}) == "redirected"
+    assert response.closed is True
+    assert parent.timeout == 0.5
+
+
 def test_parse_rss_cleans_summary_and_sorts_items():
     feed = rss.parse_feed(RSS, source_url="https://example.com/feed")
     assert feed.name == "测试媒体"
