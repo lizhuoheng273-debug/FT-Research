@@ -29,6 +29,7 @@ import newsradar
 import portfolio as pf
 import market
 import market_chart
+import market_review
 import company_profile
 import myreports as mr
 import reflection as reflect_layer
@@ -48,6 +49,7 @@ __version__ = read_version()
 
 financial_news_service = FinancialNewsService(market_provider=build_default_provider())
 financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
+market_review_service = market_review.market_review_service
 
 
 @asynccontextmanager
@@ -504,6 +506,15 @@ def market_overview():
         return {"data": market.get_overview()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"市场总览异常：{e}") from e
+
+
+@app.get("/api/market/review")
+def market_review_endpoint():
+    """统一每日市场复盘快照；组件缺失通过 partial/stale 字段表达。"""
+    try:
+        return market_review_service.get_review()
+    except Exception as e:  # noqa: BLE001 - the service normally degrades per component
+        raise HTTPException(502, f"市场复盘快照异常：{e}") from e
 
 
 @app.get("/api/market/emotion")

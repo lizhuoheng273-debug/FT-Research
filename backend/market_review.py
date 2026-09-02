@@ -1,0 +1,316 @@
+"""统一每日市场复盘快照。
+
+这个模块只聚合客观数据，并为每个数据组件保留来源状态。生产路径不生成
+fixture：上游成功值才会写入快照，失败时只能回填最近一次真实快照。
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+import astock
+import market
+
+
+BEIJING = ZoneInfo("Asia/Shanghai")
+PROMPT_VERSION = "market-review-brief-v1"
+INDEX_CODES = ("000001", "399001", "399006", "000300")
+REVIEW_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "market-review"
+
+
+def _as_number(value: Any) -> float | None:
+    if value is None or value == "" or value == "-":
+        return None
+    try:
+        number = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(BEIJING).isoformat(timespec="seconds")
+
+
+def _ensure_beijing(value: datetime) -> datetime:
+    return value.replace(tzinfo=BEIJING) if value.tzinfo is None else value.astimezone(BEIJING)
+
+
+def _trading_date(value: datetime) -> date:
+    current = _ensure_beijing(value).date()
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
+def _previous_trading_date(current: date) -> date:
+    previous = current - timedelta(days=1)
+    while previous.weekday() >= 5:
+        previous -= timedelta(days=1)
+    return previous
+
+
+def build_breadth(up: int | None, down: int | None, limit_up: int | None, limit_down: int | None) -> dict[str, Any]:
+    """Normalize market breadth without exposing flat-count data."""
+    total = (up or 0) + (down or 0) if up is not None and down is not None else 0
+    up_ratio = round(up / total * 100, 2) if total and up is not None else None
+    down_ratio = round(down / total * 100, 2) if total and down is not None else None
+    return {
+        "up": up,
+        "down": down,
+        "upRatio": up_ratio,
+        "downRatio": down_ratio,
+        "limitUp": limit_up,
+        "limitDown": limit_down,
+    }
+
+
+def build_liquidity(today_amount_yuan: int | float | None, previous_amount_yuan: int | float | None) -> dict[str, Any]:
+    today = _as_number(today_amount_yuan)
+    previous = _as_number(previous_amount_yuan)
+    change = today - previous if today is not None and previous is not None else None
+    change_pct = round(change / previous * 100, 2) if change is not None and previous else None
+    direction = None
+    if change is not None:
+        direction = "expanded" if change > 0 else "contracted" if change < 0 else "unchanged"
+    return {
+        "todayAmountYuan": today,
+        "previousAmountYuan": previous,
+        "changeAmountYuan": change,
+        "changePct": change_pct,
+        "direction": direction,
+    }
+
+
+def _records(rows: Any) -> list[dict[str, Any]]:
+    if rows is None:
+        return []
+    if hasattr(rows, "to_dict"):
+        rows = rows.to_dict("records")
+    return [dict(row) for row in rows]
+
+
+def _unit_multiplier(key: str) -> float:
+    text = str(key)
+    if "亿元" in text:
+        return 100_000_000
+    if "万元" in text:
+        return 10_000
+    if "万" in text:
+        return 10_000
+    return 1
+
+
+def extract_official_stock_amount(rows: Any) -> int | None:
+    """Extract a stock-only amount from SSE/SZSE summary rows in yuan.
+
+    Official adapters expose slightly different column names. The parser accepts
+    both a row labelled ``股票`` and an amount column labelled ``成交金额``/``成交额``.
+    Explicit non-stock categories are always excluded.
+    """
+    candidates: list[float] = []
+    for row in _records(rows):
+        values = [str(value) for value in row.values() if value not in (None, "")]
+        text = " ".join(values)
+        excluded = any(word in text for word in ("基金", "债券", "回购", "期权", "权证"))
+        category = " ".join(str(value) for key, value in row.items() if any(word in str(key) for word in ("类别", "类型", "品种", "证券")))
+        stock_label = "股票" in category or any("股票" in str(key) for key in row)
+        if excluded or not stock_label:
+            continue
+        amount_items = [(str(key), value) for key, value in row.items() if any(word in str(key) for word in ("成交金额", "成交额", "成交金额", "金额"))]
+        if not amount_items:
+            amount_items = [(str(key), value) for key, value in row.items() if "股票" in str(key)]
+        for key, value in amount_items:
+            amount = _as_number(value)
+            if amount is not None:
+                candidates.append(amount * _unit_multiplier(key))
+                break
+    if not candidates:
+        return None
+    return int(round(sum(candidates)))
+
+
+def fetch_official_liquidity(trading_date: date, previous_date: date) -> dict[str, Any] | None:
+    """Fetch same-scope stock turnover from official SSE and SZSE statistics."""
+    try:
+        import akshare as ak
+
+        def ymd(value: date) -> str:
+            return value.strftime("%Y%m%d")
+
+        def total(value: date) -> int:
+            sse = extract_official_stock_amount(ak.stock_sse_deal_daily(date=ymd(value)))
+            szse = extract_official_stock_amount(ak.stock_szse_summary(date=ymd(value)))
+            if sse is None or szse is None:
+                raise RuntimeError("官方交易所统计缺少股票成交额")
+            return sse + szse
+
+        return {"todayAmountYuan": total(trading_date), "previousAmountYuan": total(previous_date)}
+    except Exception:
+        return None
+
+
+def _normalize_index(row: dict[str, Any]) -> dict[str, Any] | None:
+    code = str(row.get("code") or row.get("代码") or "")
+    if code not in INDEX_CODES:
+        return None
+    price = _as_number(row.get("price", row.get("现价")))
+    change_pct = _as_number(row.get("change_pct", row.get("changePct", row.get("涨跌幅"))))
+    change = _as_number(row.get("change_amt", row.get("change", row.get("涨跌"))))
+    if price is None:
+        return None
+    return {
+        "code": code,
+        "name": str(row.get("name") or row.get("名称") or code),
+        "price": price,
+        "change": change,
+        "changePct": change_pct,
+        "source": str(row.get("source") or "腾讯行情"),
+        "updatedAt": str(row.get("updatedAt") or row.get("更新时间") or ""),
+        "stale": bool(row.get("stale", False)),
+    }
+
+
+def _normalize_indices(rows: Any) -> list[dict[str, Any]]:
+    output = [_normalize_index(row) for row in _records(rows)]
+    return [row for row in output if row]
+
+
+def _default_adapters(trading_date: date, previous_date: date) -> dict[str, Callable[[], Any]]:
+    def indices():
+        return astock.index_quote()
+
+    def breadth():
+        row = market._sentiment()
+        return {
+            "up": row.get("up"), "down": row.get("down"),
+            "limitUp": row.get("zt_real", row.get("zt")),
+            "limitDown": row.get("dt_real", row.get("dt")),
+        }
+
+    def liquidity():
+        return fetch_official_liquidity(trading_date, previous_date)
+
+    def emotion():
+        return market.get_short_term_emotion()
+
+    def turnover():
+        return (market.get_turnover_top() or {}).get("stocks", [])
+
+    def sectors():
+        return (market.get_overview() or {}).get("sectors", [])
+
+    return {"indices": indices, "breadth": breadth, "liquidity": liquidity,
+            "shortTermEmotion": emotion, "turnoverTop": turnover, "sectors": sectors}
+
+
+class MarketReviewService:
+    """Collect and cache the shared daily market snapshot."""
+
+    def __init__(self, cache_dir: Path | None = None, now_fn: Callable[[], datetime] | None = None,
+                 adapters: dict[str, Callable[[], Any]] | None = None):
+        self.cache_dir = Path(cache_dir or REVIEW_CACHE_DIR)
+        self.now_fn = now_fn or (lambda: datetime.now(BEIJING))
+        self.adapters = adapters
+        self._memory: dict[str, tuple[datetime, dict[str, Any]]] = {}
+
+    def _path(self, trading_date: date) -> Path:
+        return self.cache_dir / f"{trading_date.isoformat()}.json"
+
+    def _load(self, trading_date: date) -> dict[str, Any] | None:
+        path = self._path(trading_date)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload.get("review") if isinstance(payload, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def _save(self, trading_date: date, review: dict[str, Any]) -> None:
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        path = self._path(trading_date)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps({"savedAt": review["generatedAt"], "review": review}, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(path)
+
+    @staticmethod
+    def _required_complete(review: dict[str, Any]) -> bool:
+        breadth = review.get("breadth") or {}
+        liquidity = review.get("liquidity") or {}
+        return len(review.get("indices") or []) >= 3 and breadth.get("up") is not None and breadth.get("down") is not None and liquidity.get("todayAmountYuan") is not None and liquidity.get("previousAmountYuan") is not None
+
+    def _collect(self, current: datetime, trading_date: date, cached: dict[str, Any] | None) -> dict[str, Any]:
+        adapters = self.adapters or _default_adapters(trading_date, _previous_trading_date(trading_date))
+        source_rows: list[dict[str, Any]] = []
+        stale = False
+        values: dict[str, Any] = {}
+        defaults = {"indices": [], "breadth": {}, "liquidity": build_liquidity(None, None), "shortTermEmotion": {}, "turnoverTop": [], "sectors": []}
+        for name in ("indices", "breadth", "liquidity", "shortTermEmotion", "turnoverTop", "sectors"):
+            try:
+                raw = adapters[name]()
+                valid = raw is not None and raw != [] and raw != {}
+                if not valid:
+                    raise RuntimeError("上游返回空数据")
+                values[name] = raw
+                source_rows.append({"name": name, "status": "fresh", "fetchedAt": _iso(current), "detail": ""})
+            except Exception as exc:
+                old = (cached or {}).get(name)
+                if old not in (None, [], {}):
+                    values[name] = old
+                    stale = True
+                    source_rows.append({"name": name, "status": "stale", "fetchedAt": (cached or {}).get("generatedAt"), "detail": str(exc)})
+                else:
+                    values[name] = defaults[name]
+                    source_rows.append({"name": name, "status": "missing", "fetchedAt": None, "detail": str(exc)})
+
+        raw_breadth = values["breadth"] or {}
+        breadth = build_breadth(raw_breadth.get("up"), raw_breadth.get("down"), raw_breadth.get("limitUp"), raw_breadth.get("limitDown"))
+        raw_liquidity = values["liquidity"] or {}
+        liquidity = build_liquidity(raw_liquidity.get("todayAmountYuan"), raw_liquidity.get("previousAmountYuan"))
+        indices = _normalize_indices(values["indices"])
+        missing_or_stale = stale or any(row["status"] != "fresh" for row in source_rows)
+        review = {
+            "tradingDate": trading_date.isoformat(),
+            "generatedAt": _iso(current),
+            "final": current.hour > 15 or (current.hour == 15 and current.minute >= 30),
+            "stale": missing_or_stale,
+            "partial": False,
+            "sources": source_rows,
+            "indices": indices,
+            "breadth": breadth,
+            "liquidity": liquidity,
+            "shortTermEmotion": values["shortTermEmotion"] or {},
+            "turnoverTop": values["turnoverTop"] or [],
+            "sectors": values["sectors"] or [],
+            "brief": (cached or {}).get("brief") or {"text": "", "status": "missing", "generatedAt": None, "promptVersion": PROMPT_VERSION},
+        }
+        review["partial"] = not self._required_complete(review) or missing_or_stale
+        return review
+
+    def get_review(self, force: bool = False) -> dict[str, Any]:
+        current = _ensure_beijing(self.now_fn())
+        trading_date = _trading_date(current)
+        key = trading_date.isoformat()
+        memory = self._memory.get(key)
+        if not force and memory and (current - memory[0]).total_seconds() < 60:
+            return memory[1]
+        cached = self._load(trading_date)
+        if not force and cached and cached.get("generatedAt"):
+            try:
+                if (current - datetime.fromisoformat(cached["generatedAt"])).total_seconds() < 60:
+                    self._memory[key] = (current, cached)
+                    return cached
+            except ValueError:
+                pass
+        review = self._collect(current, trading_date, cached)
+        if any(row["status"] == "fresh" for row in review["sources"]):
+            self._save(trading_date, review)
+        self._memory[key] = (current, review)
+        return review
+
+
+market_review_service = MarketReviewService()
