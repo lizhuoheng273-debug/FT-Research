@@ -368,6 +368,12 @@ def fetch_url(url: str) -> bytes:
                 size += len(chunk)
                 if size > MAX_BYTES:
                     raise RssFetchError("RSS 响应超过 4 MB 限制")
+                # http.client closes its underlying fp immediately after
+                # read1 consumes a known Content-Length body. Do not begin an
+                # extra EOF read that would misclassify that valid state as an
+                # unknown, unbounded response wrapper.
+                if content_length and size >= content_length:
+                    return b"".join(chunks)
             return b"".join(chunks)
     except (RssFetchError, RssSecurityError):
         raise

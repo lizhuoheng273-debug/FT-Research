@@ -126,6 +126,30 @@ def test_fetch_url_fails_closed_when_response_socket_cannot_be_bounded(monkeypat
     assert response.read_calls == 0
 
 
+@pytest.mark.parametrize("wire", [
+    b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndata",
+    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\ndata\r\n0\r\n\r\n",
+])
+def test_fetch_url_accepts_real_urllib_eof_after_complete_body(monkeypatch, wire):
+    """Known HTTPResponse EOF is valid, unlike an unknown unbounded wrapper."""
+    import socket
+    import threading
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    def serve():
+        connection, _address = listener.accept()
+        connection.recv(4096)
+        connection.sendall(wire)
+        connection.close()
+        listener.close()
+    threading.Thread(target=serve, daemon=True).start()
+    monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
+    assert rss.fetch_url(f"http://127.0.0.1:{port}/") == b"data"
+
+
 def test_redirect_uses_remaining_deadline_timeout(monkeypatch):
     handler = rss.SafeRedirectHandler(deadline=10.0)
     monkeypatch.setattr(rss, "validate_public_url", lambda url: url)
