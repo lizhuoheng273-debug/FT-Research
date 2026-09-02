@@ -43,6 +43,7 @@ from report_archive import ReportArchive
 from report_scheduler import DailyReportScheduler
 from market_review_brief import MarketReviewBriefService
 from market_review_scheduler import PostCloseReviewScheduler
+from rss import RssFetchError, RssSecurityError, rss_catalog
 
 
 from version import read_version
@@ -61,11 +62,13 @@ async def lifespan(_app: FastAPI):
     if "pytest" not in sys.modules:
         financial_news_scheduler.start()
         market_review_scheduler.start()
+        rss_catalog.start_scheduler(1800)
     try:
         yield
     finally:
         financial_news_scheduler.stop()
         market_review_scheduler.stop()
+        rss_catalog.stop_scheduler()
 
 
 app = FastAPI(title="FT-Research API", version=__version__, lifespan=lifespan)
@@ -148,6 +151,33 @@ def ai_news(mode: str = "selected", window: str = "24h", limit: int = Query(50, 
         return aihot_client.items(mode=mode, window=window, limit=limit)
     except Exception as exc:  # noqa: BLE001 - translate upstream failure
         raise HTTPException(502, f"AI HOT 暂时不可用：{exc}") from exc
+
+
+class RssResolveReq(BaseModel):
+    url: str
+
+
+@app.get("/api/ai/rss/sources")
+def ai_rss_sources(urls: list[str] = Query(default=[])):
+    """Return built-in and explicitly requested custom source snapshots.
+
+    The URL list is only a cache lookup hint from the visitor's browser; it is
+    not persisted as a server-side subscription relationship.
+    """
+    return {"sources": rss_catalog.sources(urls)}
+
+
+@app.post("/api/ai/rss/resolve")
+def ai_rss_resolve(request: RssResolveReq):
+    """Validate, fetch and preview one RSS/Atom URL without saving a relation."""
+    try:
+        return {"source": rss_catalog.resolve(request.url)}
+    except RssSecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RssFetchError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - translate malformed feed boundary
+        raise HTTPException(422, f"RSS/Atom 解析失败：{exc}") from exc
 
 
 @app.get("/api/ai/news/hot-topics")

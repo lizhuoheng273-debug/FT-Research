@@ -19,6 +19,8 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import rss
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCES_FILE = os.path.join(HERE, "news_sources.json")
 CACHE_DIR = os.path.join(HERE, ".cache")
@@ -196,10 +198,14 @@ def fetch_radar() -> dict:
             tasks.append((i, s))
 
     with ThreadPoolExecutor(max_workers=40) as ex:
-        results = list(ex.map(lambda t: (t[0], _fetch_source(t[1], per, cutoff, redline)), tasks))
+        results = list(ex.map(lambda t: (t[0], t[1], _fetch_source(t[1], per, cutoff, redline)), tasks))
 
     failed = 0
-    for idx, items in results:
+    for idx, source, items in results:
+        # Keep each source's raw-before-cross-source-dedup items in the RSS
+        # catalog. The industry view below may deduplicate reprints, but the
+        # media feed must never lose a source's own latest stories.
+        rss.rss_catalog.record_radar_result(source, items)
         if items is None:
             failed += 1
             continue
@@ -214,6 +220,7 @@ def fetch_radar() -> dict:
         "industries": industries,
         "stats": {"industries": len(cfg["industries"]), "total_sources": len(cfg["sources"]), "failed_sources": failed},
     }
+    data.update(_media_fields())
     os.makedirs(CACHE_DIR, exist_ok=True)
     tmp = CACHE_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -228,6 +235,22 @@ def load_cache():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+def _media_fields() -> dict:
+    snapshots = rss.rss_catalog.sources()
+    health = []
+    for source in snapshots:
+        if source.get("lastSuccessAt") and not source.get("stale"):
+            status = "fresh"
+        elif source.get("stale"):
+            status = "stale"
+        elif source.get("error"):
+            status = "error"
+        else:
+            status = "missing"
+        health.append({"id": source.get("id"), "name": source.get("name"), "status": status, "lastSuccessAt": source.get("lastSuccessAt"), "error": source.get("error")})
+    return {"sources": snapshots, "sourceHealth": health}
 
 
 def skeleton() -> dict:
@@ -247,4 +270,9 @@ def skeleton() -> dict:
 def get_radar(force: bool = False) -> dict:
     if force:
         return fetch_radar()
-    return load_cache() or skeleton()
+    data = load_cache() or skeleton()
+    # Upgrade older radar cache files in memory without forcing a network
+    # refresh. Existing clients still receive the original industry fields.
+    if "sources" not in data or "sourceHealth" not in data:
+        data.update(_media_fields())
+    return data
