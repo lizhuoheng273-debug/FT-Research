@@ -1,130 +1,97 @@
-import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, Flame, Loader2, Radio, RefreshCw, ShieldAlert, Star } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, Loader2, RefreshCw, Sparkles, Star } from "lucide-react";
+import { Link } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { AskAiButton } from "@/components/ui/AskAiButton";
-import { api, type FinancialNewsItem, type FinancialNewsOverview, type GlobalIndex } from "@/lib/api";
+import { api, type FinancialNewsFollowingItem, type FinancialNewsItem, type FinancialNewsOverview } from "@/lib/api";
 import { loadWatch } from "@/lib/watchlist";
-import { cn } from "@/lib/utils";
-
-const CATEGORIES = ["全部", "宏观政策", "产业", "公司", "海外"] as const;
-interface WatchRow { code: string; name: string; title: string; when: string; url?: string; kind: "新闻" | "公告" }
-
-function formatTime(value?: string | null) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
-}
 
 function safeHref(value?: string | null) {
   return value && /^https?:\/\//i.test(value) ? value : undefined;
 }
 
-function GlobalMarketStrip({ rows, loading, error }: { rows: GlobalIndex[]; loading: boolean; error: string | null }) {
-  const regions = ["美股", "港股"];
-  return <section aria-label="全球市场" className="mb-5">
-    <div className="mb-2 flex items-center gap-2"><Radio className="h-4 w-4 text-primary" /><h2 className="font-semibold">全球市场</h2><span className="text-xs text-muted-foreground">美股 / 港股指数</span>{error && <span className="text-xs text-warning">{error}</span>}</div>
-    <div className="grid gap-3 lg:grid-cols-2">
-      {regions.map((region) => {
-        const regionRows = rows.filter((row) => row.region === region);
-        return <GlassCard key={region} className="p-4"><div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-semibold">{region}</h3><span className="text-xs text-muted-foreground">{loading ? "读取中…" : regionRows.some((row) => row.status === "stale") ? "缓存" : regionRows.some((row) => row.status === "fresh") ? "实时" : "数据不可用"}</span></div><div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{regionRows.map((row) => <div key={row.key} className="min-w-0 rounded-lg bg-muted/25 p-2.5"><p className="truncate text-xs text-muted-foreground">{row.name}</p>{row.price == null ? <p className="mt-1 text-sm text-warning">数据不可用</p> : <><p className={cn("mt-1 font-mono text-sm font-semibold", row.change_pct == null ? "text-muted-foreground" : row.change_pct > 0 ? "text-danger" : row.change_pct < 0 ? "text-success" : "text-muted-foreground")}>{row.price.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}</p><p className={cn("text-xs", row.change_pct == null ? "text-muted-foreground" : row.change_pct > 0 ? "text-danger" : row.change_pct < 0 ? "text-success" : "text-muted-foreground")}>{row.change_pct == null ? "涨跌缺失" : `${row.change_pct > 0 ? "+" : ""}${row.change_pct}%`}</p></>}<p className="mt-2 truncate text-[10px] text-muted-foreground/60">{row.stale ? "缓存" : row.updatedAt || "更新时间缺失"}</p></div>)}</div></GlassCard>;
-      })}
-    </div>
-  </section>;
+function formatTime(value?: string | null) {
+  if (!value) return "日期缺失";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
-function PriorityBoard({ title, eyebrow, icon: Icon, items, totalCount = items.length, expanded, onToggle, scoreKey, reasonKey }: {
-  title: string; eyebrow: string; icon: typeof Radio; items: FinancialNewsItem[]; expanded: boolean;
-  totalCount?: number; onToggle: () => void; scoreKey: "urgencyScore" | "hotScore" | "aShareImpactScore"; reasonKey: "urgencyReasons" | "hotReasons" | "impactReasons";
-}) {
-  const visible = items;
+function SourceLink({ item }: { item: FinancialNewsItem }) {
+  const href = safeHref(item.originalUrl);
+  return href ? <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">原文 <ExternalLink className="h-3 w-3" /></a> : <span className="text-xs text-muted-foreground">原文链接暂缺</span>;
+}
+
+function ReportLinks({ item }: { item: FinancialNewsItem }) {
+  const reports = (item.reports || []).filter((report) => safeHref(report.originalUrl));
+  return reports.length ? <span className="flex flex-wrap gap-x-2 gap-y-1">{reports.map((report, index) => <a key={`${report.source}-${index}`} href={safeHref(report.originalUrl)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">{report.source} <ExternalLink className="h-3 w-3" /></a>)}</span> : <SourceLink item={item} />;
+}
+
+function GlobalHighlights({ items, globalExpanded, onToggle }: { items: FinancialNewsItem[]; globalExpanded: boolean; onToggle: () => void }) {
+  const visible = items.slice(0, globalExpanded ? 20 : 10);
   return <GlassCard className="overflow-hidden p-0">
-    <div className="border-b border-border/50 bg-gradient-to-r from-primary/10 via-transparent to-transparent px-5 py-4">
-      <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-primary">{eyebrow}</p>
-      <div className="mt-1 flex items-center gap-2"><Icon className="h-4 w-4 text-primary" /><h2 className="text-lg font-bold">{title}</h2><span className="ml-auto text-xs text-muted-foreground">本站计算</span></div>
-    </div>
-    <div className="divide-y divide-border/40 px-4">
-      {visible.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">等待后台生成第一份资讯快照</p> : visible.map((item, index) => <Link key={item.id} to={`/finance/news/story/${item.id}`} state={{ fallback: item }} className="group flex w-full gap-3 py-3 text-left">
-        <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold", index < 3 ? "bg-primary/15 text-primary" : "bg-muted/60 text-muted-foreground")}>{index + 1}</span>
-        <span className="min-w-0 flex-1"><span className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-primary">{item.title}</span><span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground"><span>{item.source}</span><span>{formatTime(item.latestAt || item.publishedAt)}</span><span>{item.confidence ? `置信度 ${item.confidence}` : ""}</span></span><span className="mt-1 block line-clamp-1 text-[11px] text-muted-foreground">{(item.impactReasons || item[reasonKey] || item.scoreReasons)?.slice(0, 2).join(" · ")}</span><span className="mt-1 block line-clamp-1 text-[11px] text-primary">{item.transmissionPath?.aShareSectors?.join("、")}{item.relatedStocks?.length ? ` · ${item.relatedStocks.join("、")}` : ""}</span><span className="sr-only">marketEvidence {item.transmissionPath?.marketEvidence?.filter(Boolean).join(" · ")}</span></span>
-        <span className="shrink-0 font-mono text-sm font-semibold text-primary">{item[scoreKey] ?? "—"}</span>
-      </Link>)}
-    </div>
-    {totalCount > 5 && <button onClick={onToggle} className="w-full border-t border-border/50 py-2.5 text-xs text-muted-foreground hover:text-primary">{expanded ? "收起至 5 条" : "展开全部 10 条"}</button>}
+    <div className="border-b border-border/50 bg-gradient-to-r from-primary/10 via-transparent to-transparent px-5 py-4"><p className="font-mono text-[10px] uppercase tracking-[0.22em] text-primary">Global Market / Highlights</p><div className="mt-1 flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary" /><h2 className="text-lg font-bold">全球要闻速览</h2><span className="ml-auto text-xs text-muted-foreground">默认 10 条 · 最多 20 条</span></div></div>
+    <div className="hidden grid-cols-[5rem_minmax(0,1fr)_14rem] gap-3 border-b border-border/40 px-5 py-2 text-xs text-muted-foreground md:grid"><span>类别</span><span>事件简述与关键数字</span><span>来源/更新时间</span></div>
+    <div className="divide-y divide-border/40">{visible.length === 0 ? <p className="py-12 text-center text-sm text-muted-foreground">等待后台生成全球资讯快照</p> : visible.map((item) => <article key={item.id} className="grid gap-2 px-5 py-4 md:grid-cols-[5rem_minmax(0,1fr)_14rem] md:gap-3"><div className="text-xs text-primary">{item.category || "全球"}</div><div className="min-w-0"><a href={safeHref(item.originalUrl)} target="_blank" rel="noreferrer" className="block text-sm font-semibold leading-6 hover:text-primary">{item.title}</a><p className="mt-1 text-sm leading-6 text-muted-foreground">{item.aiDigest || item.summary || "原始摘要暂缺"}</p><div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground"><span>重要性 {item.globalScore ?? "—"}/100</span><span>{item.globalScoreReasons?.slice(0, 1).join("") || "规则评分"}</span><ReportLinks item={item} /></div></div><div className="flex flex-wrap items-start gap-x-2 text-xs text-muted-foreground md:block"><span>{item.relatedSources?.join("、") || item.source || "来源缺失"}</span><span className="md:block md:mt-1">{formatTime(item.latestAt || item.publishedAt)}</span></div></article>)}</div>
+    {items.length > 10 && <button type="button" onClick={onToggle} className="w-full border-t border-border/50 py-2.5 text-xs text-muted-foreground hover:text-primary">{globalExpanded ? "收起至 10 条" : "展开至 20 条"}</button>}
   </GlassCard>;
 }
 
-export function FinancialNews() {
-  const navigate = useNavigate();
-  const [overview, setOverview] = useState<FinancialNewsOverview | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [urgentExpanded, setUrgentExpanded] = useState(false);
-  const [hotExpanded, setHotExpanded] = useState(false);
-  const [category, setCategory] = useState<(typeof CATEGORIES)[number]>("全部");
-  const [watchRows, setWatchRows] = useState<WatchRow[]>([]);
-  const [watchLoading, setWatchLoading] = useState(true);
-  const [globalRows, setGlobalRows] = useState<GlobalIndex[]>([]);
-  const [globalLoading, setGlobalLoading] = useState(true);
-  const [globalError, setGlobalError] = useState<string | null>(null);
+function FollowingRow({ item }: { item: FinancialNewsFollowingItem }) {
+  const href = safeHref(item.originalUrl);
+  const content = <><span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-[11px] text-primary">{item.name} · {item.relationType}</span><span className="min-w-0 flex-1 text-sm leading-6">{item.title}<span className="mt-0.5 block text-xs text-muted-foreground">{item.summary || item.evidence}</span></span><span className="shrink-0 text-xs text-muted-foreground">{formatTime(item.publishedAt)}</span></>;
+  return href ? <a href={href} target="_blank" rel="noreferrer" className="flex flex-col gap-2 py-3 hover:bg-muted/20 sm:flex-row sm:items-start sm:gap-3">{content}<ExternalLink className="hidden h-3.5 w-3.5 shrink-0 text-muted-foreground sm:block" /></a> : <div className="flex flex-col gap-2 py-3 sm:flex-row sm:items-start sm:gap-3">{content}<span className="shrink-0 text-xs text-muted-foreground">原文链接暂缺</span></div>;
+}
 
-  const load = () => { setLoading(true); setError(null); api.financialNewsOverview().then(setOverview).catch((e) => setError(e instanceof Error ? e.message : "加载失败")).finally(() => setLoading(false)); };
-  const loadGlobal = () => { setGlobalLoading(true); setGlobalError(null); api.globalIndices().then(setGlobalRows).catch((e) => setGlobalError(e instanceof Error ? e.message : "全球市场暂不可用")).finally(() => setGlobalLoading(false)); };
-  useEffect(load, []);
-  useEffect(loadGlobal, []);
+export function FinancialNews() {
+  const [overview, setOverview] = useState<FinancialNewsOverview | null>(null);
+  const [following, setFollowing] = useState<FinancialNewsFollowingItem[]>([]);
+  const [followingHasMore, setFollowingHasMore] = useState(false);
+  const [followingPage, setFollowingPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [followingLoading, setFollowingLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [followingError, setFollowingError] = useState<string | null>(null);
+  const [globalExpanded, setGlobalExpanded] = useState(false);
+  const [codes, setCodes] = useState<string[]>([]);
+  const requestVersion = useRef(0);
+  const followingAbort = useRef<AbortController | null>(null);
+
+  const loadOverview = () => { setLoading(true); setError(null); api.financialNewsOverview().then(setOverview).catch((reason) => setError(reason instanceof Error ? reason.message : "资讯快照暂不可用")).finally(() => setLoading(false)); };
+  useEffect(() => { loadOverview(); }, []);
   useEffect(() => {
-    const codes = loadWatch();
-    if (!codes.length) { setWatchRows([]); setWatchLoading(false); return; }
-    Promise.all(codes.map(async (code) => {
-      let name = code;
-      try { const quotes = await api.quote(code); name = quotes[code]?.name || code; } catch { /* code fallback */ }
-      const [news, filings] = await Promise.all([api.news(code).catch(() => []), api.announcements(code).catch(() => [])]);
-      return [
-        ...news.slice(0, 4).map((row): WatchRow => ({ code, name, title: row.新闻标题 || "个股新闻", when: row.发布时间 || "", url: row.新闻链接, kind: "新闻" })),
-        ...filings.slice(0, 4).map((row): WatchRow => ({ code, name, title: row.title, when: row.date, url: row.url, kind: "公告" })),
-      ];
-    })).then((groups) => setWatchRows(groups.flat().sort((a, b) => String(b.when).localeCompare(String(a.when))).slice(0, 12))).finally(() => setWatchLoading(false));
+    const loadFollowing = () => {
+      const nextCodes = loadWatch();
+      setCodes(nextCodes);
+      followingAbort.current?.abort();
+      const controller = new AbortController();
+      followingAbort.current = controller;
+      const version = ++requestVersion.current;
+      setFollowingPage(1); setFollowingError(null); setFollowingLoading(true);
+      if (!nextCodes.length) { setFollowing([]); setFollowingHasMore(false); setFollowingLoading(false); return; }
+      api.financialNewsFollowing(nextCodes, 1, 20, controller.signal).then((result) => { if (version !== requestVersion.current) return; setFollowing(result.items); setFollowingHasMore(result.hasMore); }).catch((reason) => { if (controller.signal.aborted || version !== requestVersion.current) return; setFollowingError(reason instanceof Error ? reason.message : "关注资讯暂不可用"); }).finally(() => { if (version === requestVersion.current) setFollowingLoading(false); });
+    };
+    loadFollowing();
+    const onWatchlistUpdated = () => loadFollowing();
+    const onStorage = (event: StorageEvent) => { if (event.key === "vr-watchlist") loadFollowing(); };
+    window.addEventListener("vr-watchlist-updated", onWatchlistUpdated);
+    window.addEventListener("storage", onStorage);
+    return () => { window.removeEventListener("vr-watchlist-updated", onWatchlistUpdated); window.removeEventListener("storage", onStorage); followingAbort.current?.abort(); };
   }, []);
 
-  const feed = useMemo(() => (overview?.feed || []).filter((item) => category === "全部" || item.category === category).slice(0, 60), [overview, category]);
-  const urgentItems = (overview?.urgent || []).slice(0, urgentExpanded ? 10 : 5);
-  const hotItems = (overview?.aShareHot || overview?.hot || []).slice(0, hotExpanded ? 10 : 5);
-  const globalItems = (overview?.globalObservation || []).slice(0, 5);
-  const openStory = (item: FinancialNewsItem) => navigate(`/finance/news/story/${item.id}`, { state: { fallback: item } });
-  const staleSources = overview?.stale ? ([
-    overview.staleComponents?.quick ? `快讯最后成功 ${formatTime(overview.freshness?.quick?.lastSuccessAt)}` : null,
-    overview.staleComponents?.rss ? `RSS 最后成功 ${formatTime(overview.freshness?.rss?.lastSuccessAt)}` : null,
-  ].filter(Boolean) as string[]) : [];
-  const unavailableSources = (overview?.sourceStatus || []).filter((source) => !source.ok).map((source) => source.source);
+  const globalItems = overview?.globalHighlights || overview?.feed || [];
+  const aiContext = useMemo(() => JSON.stringify({ source: "金融市场资讯", globalHighlights: globalItems.slice(0, 20).map((item) => ({ title: item.title, digest: item.aiDigest || item.summary, source: item.relatedSources || [item.source], updatedAt: item.latestAt || item.publishedAt })), following: following.map((item) => ({ code: item.code, title: item.title, relationType: item.relationType, publishedAt: item.publishedAt, evidence: item.evidence })) }, null, 2), [globalItems, following]);
+  const loadMoreFollowing = () => { if (!followingHasMore || followingLoading) return; const nextPage = followingPage + 1; const controller = new AbortController(); followingAbort.current?.abort(); followingAbort.current = controller; const version = ++requestVersion.current; setFollowingLoading(true); api.financialNewsFollowing(codes, nextPage, 20, controller.signal).then((result) => { if (version !== requestVersion.current) return; setFollowing((current) => [...current, ...result.items]); setFollowingPage(nextPage); setFollowingHasMore(result.hasMore); }).catch((reason) => { if (!controller.signal.aborted && version === requestVersion.current) setFollowingError(reason instanceof Error ? reason.message : "加载更多失败"); }).finally(() => { if (version === requestVersion.current) setFollowingLoading(false); }); };
 
   return <div>
-    <PageHeader title="金融市场资讯" subtitle="先看紧要、再看热门，最后按自己的关注继续下钻" actions={<div className="flex items-center gap-2"><AskAiButton context="金融资讯首页上下文由工作台按需重新读取。" workspaceSource="news" label="问 AI" suggestions={["今天最重要的三条资讯是什么", "这些资讯如何影响 A 股", "哪些结论还需要核实"]} /><button onClick={() => { load(); loadGlobal(); }} disabled={loading || globalLoading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading || globalLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button></div>} />
-    <GlobalMarketStrip rows={globalRows} loading={globalLoading} error={globalError} />
-    {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示缓存内容{staleSources.length ? ` · ${staleSources.join(" · ")}` : ""}</p>}
-    {!overview?.stale && unavailableSources.length > 0 && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">部分来源暂不可用，榜单已由其他来源生成：{unavailableSources.join("、")}</p>}
+    <PageHeader title="金融市场资讯" subtitle="全球重要事件与我关注的股票、行业和强关联概念" actions={<div className="flex items-center gap-2"><AskAiButton context={aiContext} workspaceSource="news" label="问 AI" suggestions={["今天最重要的三条全球要闻是什么", "哪些关注消息需要优先核实", "区分事实、计划和市场预期"]} /><button type="button" onClick={loadOverview} disabled={loading} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-primary disabled:opacity-50">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}读取最新缓存</button></div>} />
+    {overview?.stale && <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm text-warning">当前展示最近成功缓存；来源恢复后会由后台更新。</p>}
     {error && <p className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
-
-    <section className="market-pulse-grid grid gap-4 xl:grid-cols-2">
-      <PriorityBoard title="紧要快讯" eyebrow="Market Pulse / Urgent" icon={ShieldAlert} items={urgentItems} totalCount={overview?.urgent.length || 0} expanded={urgentExpanded} onToggle={() => setUrgentExpanded((value) => !value)} scoreKey="urgencyScore" reasonKey="urgencyReasons" />
-      <PriorityBoard title="A股热门事件榜" eyebrow="A-Share Impact / Trending" icon={Flame} items={hotItems} totalCount={(overview?.aShareHot || overview?.hot || []).length} expanded={hotExpanded} onToggle={() => setHotExpanded((value) => !value)} scoreKey="aShareImpactScore" reasonKey="hotReasons" />
-    </section>
-
-    {globalItems.length > 0 && <section className="mt-5"><div className="mb-2 flex items-center gap-2"><Radio className="h-4 w-4 text-primary" /><h2 className="font-semibold">全球观察</h2><span className="text-xs text-muted-foreground">重大海外事件；未满足 A 股主榜证据门槛</span></div><GlassCard><div className="divide-y divide-border/40">{globalItems.map((item) => <Link key={item.id} to={`/finance/news/story/${item.id}`} state={{ fallback: item }} className="flex gap-3 py-3"><span className="w-24 shrink-0 font-mono text-xs text-muted-foreground">{formatTime(item.publishedAt)}</span><span className="min-w-0 flex-1"><span className="block font-medium">{item.title}</span><span className="mt-1 block text-xs text-muted-foreground">影响分 {item.aShareImpactScore ?? 0}/100 · {item.confidence || "low"} 置信度 · {item.source}</span></span></Link>)}</div></GlassCard></section>}
-
-    <section className="mt-5">
-      <div className="mb-2 flex items-center gap-2"><Star className="h-4 w-4 text-primary" /><h2 className="font-semibold">我的关注</h2><span className="text-xs text-muted-foreground">自选股新闻与公告，不参与公共热点排名</span></div>
-      <GlassCard>
-        {watchLoading ? <p className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在汇总自选资讯…</p> : watchRows.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">暂无自选资讯；在每日复盘或自选股页面添加股票后会显示在这里。</p> : <div className="grid gap-x-6 lg:grid-cols-2">{watchRows.map((row, index) => <a key={`${row.code}-${row.kind}-${index}`} href={safeHref(row.url)} target="_blank" rel="noreferrer" className="group flex gap-3 border-b border-border/40 py-2.5 text-sm"><span className="w-14 shrink-0 text-primary">{row.name}</span><span className="min-w-0 flex-1 truncate group-hover:text-primary">{row.title}</span><span className="shrink-0 text-[11px] text-muted-foreground">{row.kind}</span></a>)}</div>}
-      </GlassCard>
-    </section>
-
-    <section className="mt-5">
-      <div className="mb-3 flex flex-wrap items-center gap-2"><Radio className="h-4 w-4 text-primary" /><h2 className="mr-2 font-semibold">全部资讯流</h2>{CATEGORIES.map((item) => <button key={item} onClick={() => setCategory(item)} className={cn("rounded-full border px-3 py-1 text-xs", category === item ? "border-primary bg-primary/15 text-primary" : "border-border text-muted-foreground hover:border-primary/50")}>{item}</button>)}</div>
-      <GlassCard>{loading && !overview ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取资讯快照…</p> : feed.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">当前筛选下暂无资讯</p> : <div className="divide-y divide-border/40">{feed.map((item) => <div key={item.id} role="link" tabIndex={0} onClick={() => openStory(item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") openStory(item); }} className="group flex cursor-pointer gap-4 py-3 text-left"><span className="w-24 shrink-0 font-mono text-xs text-muted-foreground">{formatTime(item.publishedAt)}</span><span className="min-w-0 flex-1"><span className="font-medium group-hover:text-primary">{item.title}</span><span className="mt-1 block line-clamp-1 text-xs text-muted-foreground">{item.summary || item.scoreReasons?.join(" · ")}</span></span><span className="hidden shrink-0 text-xs text-muted-foreground sm:block">{item.category} · {item.independentSourceCount ?? item.relatedSourceCount} 独立源</span>{safeHref(item.originalUrl) && <a href={safeHref(item.originalUrl)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="shrink-0 text-muted-foreground hover:text-primary" title="打开原文"><ExternalLink className="h-4 w-4" /></a>}</div>)}</div>}</GlassCard>
-    </section>
-    <p className="mt-3 text-[11px] text-muted-foreground">“紧要分”和“事件热度”为 FT-Research 基于来源、时效与独立报道数计算，不代表阅读量、评论量或投资建议。</p>
+    <section><GlobalHighlights items={globalItems} globalExpanded={globalExpanded} onToggle={() => setGlobalExpanded((value) => !value)} /></section>
+    <section className="mt-5"><div className="mb-2 flex items-center gap-2"><Star className="h-4 w-4 text-primary" /><h2 className="font-semibold">我的关注</h2><span className="text-xs text-muted-foreground">仅使用浏览器自选股，不在服务端保存清单</span></div><GlassCard><div className="divide-y divide-border/40">{followingLoading && following.length === 0 ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取关注资讯…</p> : !codes.length ? <p className="py-10 text-center text-sm text-muted-foreground">还没有自选股。<Link to="/finance/stocks" className="ml-1 text-primary hover:underline">去添加自选股</Link></p> : following.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">当前没有有依据的个股或行业资讯{followingError ? `：${followingError}` : ""}</p> : following.map((item) => <FollowingRow key={`${item.id}-${item.code}`} item={item} />)}</div>{followingHasMore && <button type="button" onClick={loadMoreFollowing} className="w-full border-t border-border/50 py-2.5 text-xs text-muted-foreground hover:text-primary">{followingLoading ? "加载中…" : "继续加载"}</button>}</GlassCard></section>
+    <p className="mt-3 text-[11px] text-muted-foreground">全球评分由事件重要性、来源权威性、时效与独立确认组成；AI 简述仅作辅助，所有数字、日期和市场口径请核对原文。</p>
     <Disclaimer />
   </div>;
 }

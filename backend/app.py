@@ -18,7 +18,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import astock
 import chat as chat_layer
@@ -155,6 +155,12 @@ def ai_news(mode: str = "selected", window: str = "24h", limit: int = Query(50, 
 
 class RssResolveReq(BaseModel):
     url: str
+
+
+class FinancialNewsFollowingReq(BaseModel):
+    codes: list[str] = Field(default_factory=list)
+    page: int = 1
+    pageSize: int = 20
 
 
 @app.get("/api/ai/rss/sources")
@@ -515,6 +521,11 @@ def financial_news_event(event_id: str):
 @app.get("/api/finance/news/status")
 def financial_news_status():
     return {"data": financial_news_service.status()}
+
+
+@app.post("/api/finance/news/following")
+def financial_news_following(request: FinancialNewsFollowingReq):
+    return {"data": financial_news_service.following(request.codes, page=request.page, page_size=request.pageSize)}
 
 
 @app.get("/api/signals/gpu-rent")

@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from "react-rout
 import { AiConversation, TOOL_LABEL } from "@/components/ai/AiConversation";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { useAiChatSession } from "@/hooks/useAiChatSession";
-import { api, type AiStatus, type FinancialNewsItem, type MarketReview, type Quote } from "@/lib/api";
+import { api, type AiStatus, type FinancialNewsFollowingResponse, type FinancialNewsItem, type FinancialNewsOverview, type MarketReview, type Quote } from "@/lib/api";
 import { buildFinanceAiKey, type FinanceAiSource } from "@/lib/financeAi";
 import { loadWatch } from "@/lib/watchlist";
 import { cn } from "@/lib/utils";
@@ -46,8 +46,10 @@ function buildContext(source: FinanceAiSource, payload: unknown, code: string, p
     return review ? [`来源：每日复盘快照`, `交易日：${review.tradingDate}`, `指数：${review.indices.slice(0, 4).map((item) => `${item.name} ${item.price}（${item.changePct ?? "缺失"}%）`).join("；")}`, `宽度：上涨 ${review.breadth.up ?? "缺失"}、下跌 ${review.breadth.down ?? "缺失"}、涨停 ${review.breadth.limitUp ?? "缺失"}、跌停 ${review.breadth.limitDown ?? "缺失"}`, `成交额：${review.liquidity.todayAmountYuan ?? "缺失"}；变化 ${review.liquidity.changePct ?? "缺失"}%`, `板块：${review.sectors.slice(0, 8).map((item) => `${item.name} ${item.net}`).join("；")}`].join("\n") : "每日复盘快照暂不可用。";
   }
   if (source === "news" ) {
-    const overview = payload as { urgent?: FinancialNewsItem[]; aShareHot?: FinancialNewsItem[] } | null;
-    return overview ? `来源：金融资讯首页\n紧要快讯：${(overview.urgent || []).slice(0, 8).map((item) => item.title).join("；")}\nA股热门：${(overview.aShareHot || []).slice(0, 8).map((item) => item.title).join("；")}` : "金融资讯快照暂不可用。";
+    const data = payload as { overview?: FinancialNewsOverview; following?: FinancialNewsFollowingResponse } | null;
+    const highlights = data?.overview?.globalHighlights || [];
+    const following = data?.following?.items || [];
+    return data ? [`来源：金融市场资讯`, `全球要闻：${highlights.slice(0, 20).map((item) => `${item.title}（${item.relatedSources?.join("、") || item.source} · ${item.latestAt || item.publishedAt || "日期缺失"}）`).join("；") || "暂无"}`, `我的关注：${following.slice(0, 20).map((item) => `${item.name}｜${item.title}（${item.publishedAt || "日期缺失"}）`).join("；") || "暂无"}`].join("\n") : "金融资讯快照暂不可用。";
   }
   if (source === "news-story") {
     const story = payload as FinancialNewsItem | null;
@@ -85,7 +87,13 @@ export function FinanceAiWorkspace() {
     setLoading(true); setError(null);
     let request: Promise<unknown>;
     if (source === "review") request = api.marketReview();
-    else if (source === "news") request = api.financialNewsOverview();
+    else if (source === "news") {
+      const codes = loadWatch();
+      request = Promise.all([
+        api.financialNewsOverview(),
+        codes.length ? api.financialNewsFollowing(codes, 1, 20) : Promise.resolve({ items: [], page: 1, pageSize: 20, hasMore: false, total: 0 }),
+      ]).then(([overview, following]) => ({ overview, following }));
+    }
     else if (source === "news-story") request = eventId ? api.financialNewsEvent(eventId) : Promise.reject(new Error("缺少资讯事件编号"));
     else if (source === "index") request = api.marketChart("index", code, "daily");
     else if (source === "stock" || source === "stock-panel") request = api.quote(code);

@@ -279,10 +279,13 @@ export interface FinancialNewsItem extends FinancialNewsReport {
   aShareImpactScore?: number; impactBreakdown?: FinancialNewsImpactBreakdown; impactReasons?: string[];
   marketEvidence?: FinancialNewsMarketEvidence; transmissionPath?: FinancialNewsTransmissionPath;
   confidence?: "high" | "medium" | "low"; mainBoardEligible?: boolean; candidate?: boolean;
-  globalObservation?: boolean; recheckDueAt?: Record<string, string>;
+  globalObservation?: boolean; globalScore?: number; globalScoreBreakdown?: Record<string, number>;
+  globalScoreReasons?: string[]; substantiveUpdate?: boolean; recheckDueAt?: Record<string, string>;
 }
 export interface FinancialNewsSourceStatus {
-  source: string; ok: boolean; count?: number; fetchedAt?: string; error?: string;
+  source?: string; id?: string; name?: string; ok?: boolean; configured?: boolean; enabled?: boolean;
+  count?: number; fetchedAt?: string; lastSuccessAt?: string | null; lastFailure?: string | null;
+  cache?: "fresh" | "stale" | "missing"; error?: string;
 }
 export interface FinancialNewsOverview {
   generatedAt: string | null; stale: boolean; urgent: FinancialNewsItem[];
@@ -292,16 +295,28 @@ export interface FinancialNewsOverview {
     rss?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
   };
   hot: FinancialNewsItem[]; aShareHot?: FinancialNewsItem[]; candidates?: FinancialNewsItem[];
-  globalObservation?: FinancialNewsItem[]; feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
+  globalObservation?: FinancialNewsItem[]; globalHighlights?: FinancialNewsItem[];
+  feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
   eventLibraryHours?: number;
 }
 export interface FinancialNewsStatus {
   quickIntervalSeconds: number; rssIntervalSeconds: number; officialIntervalSeconds?: number;
   eventLibraryHours?: number; generatedAt: string | null;
   stale: boolean; staleComponents?: { quick: boolean; rss: boolean };
-  freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[];
+  freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[]; sourceAttempts?: FinancialNewsSourceStatus[];
   sourceRegistry?: { total: number; valid: number; invalid: number; tiers: Record<string, number> };
   marketProbe?: { configured: boolean; recheckMinutes: number[] };
+}
+
+export interface FinancialNewsFollowingItem {
+  id: string; code: string; name: string; title: string; summary?: string;
+  publishedAt: string | null; originalUrl?: string; kind: string;
+  relationType: "个股" | "行业" | "强关联概念"; evidence: string;
+  relatedCodes?: string[]; relatedSources?: string[];
+}
+export interface FinancialNewsFollowingResponse {
+  items: FinancialNewsFollowingItem[]; page: number; pageSize: number;
+  hasMore: boolean; total: number;
 }
 
 // 产业信号 · GPU 租金
@@ -428,6 +443,8 @@ export const api = {
   financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),
   financialNewsEvent: (eventId: string) => get<FinancialNewsItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
   financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),
+  financialNewsFollowing: (codes: string[], page = 1, pageSize = 20, signal?: AbortSignal) =>
+    request<FinancialNewsFollowingResponse>("/finance/news/following", "POST", { codes, page, pageSize }, signal),
   gpuRent: () => get<GpuRentData>("/signals/gpu-rent"),
   gpuRentRefresh: () => request<GpuRentData>("/signals/gpu-rent/refresh", "POST"),
   portfolio: () => get<PortfolioData>("/portfolio"),

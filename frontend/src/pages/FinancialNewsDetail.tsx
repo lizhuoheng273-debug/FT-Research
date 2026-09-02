@@ -118,7 +118,7 @@ export function FinancialNewsDetail() {
                 <p className="font-medium">{report.title}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{report.source} · {report.publishedAt}</p>
                 {report.summary && <p className="mt-1 text-sm text-muted-foreground">{report.summary}</p>}
-                {safeHref(report.originalUrl) && <a href={safeHref(report.originalUrl)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-primary">原文 <ExternalLink className="h-3 w-3" /></a>}
+                {safeHref(report.originalUrl) ? <a href={safeHref(report.originalUrl)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-primary">原文 <ExternalLink className="h-3 w-3" /></a> : <span className="mt-1 inline-block text-xs text-muted-foreground">原文链接暂缺</span>}
               </div>)}
             </div>
           </GlassCard>

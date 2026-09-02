@@ -633,6 +633,12 @@
    "url": "https://www.federalreserve.gov/feeds/press_all.xml"
   },
   {
+   "name": "European Central Bank",
+   "hint": "macro",
+   "type": "rss",
+   "url": "https://www.ecb.europa.eu/rss/press.html"
+  },
+  {
    "name": "Seeking Alpha",
    "hint": "macro",
    "type": "rss",

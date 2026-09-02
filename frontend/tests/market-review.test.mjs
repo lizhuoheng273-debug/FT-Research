@@ -44,12 +44,9 @@ test("daily review modal launchers are keyboard-focusable buttons", () => {
   assert.match(daily, /<button\s+type=["']button["'][\s\S]*setModal\("turnover"\)[\s\S]*完整榜单/);
 });
 
-test("financial news places an independently failed global market strip before urgent feeds", () => {
-  assert.match(financial, /api\.globalIndices\(\)/);
-  assert.match(financial, /region/);
-  assert.match(financial, /updatedAt/);
-  assert.match(financial, /stale/);
-  assert.match(financial, /数据不可用|行情缺失/);
-  assert.ok(financial.indexOf("全球市场") < financial.indexOf("紧要快讯"));
-  assert.match(financial, /Promise\.allSettled|globalError|globalLoading/);
+test("financial news keeps market quote cards out of the two-section page", () => {
+  assert.doesNotMatch(financial, /api\.globalIndices\(\)/);
+  assert.doesNotMatch(financial, /全球市场/);
+  assert.match(financial, /全球要闻速览/);
+  assert.match(financial, /我的关注/);
 });

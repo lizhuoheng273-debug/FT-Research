@@ -95,3 +95,34 @@ def registry_status(registry: dict[str, Any] | None = None) -> dict[str, Any]:
             valid += 1
     total = len(payload.get("sources") or [])
     return {"total": total, "valid": valid, "invalid": total - valid, "tiers": {k: v for k, v in tiers.items() if v}}
+
+
+def runtime_status(registry: dict[str, Any] | None = None, runtime: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Join static registration with observed runtime health.
+
+    ``configured`` means a source has a complete registry entry; it does not
+    imply that its adapter/feed has ever succeeded.
+    """
+    payload = registry or load_registry()
+    observed = runtime or {}
+    output: list[dict[str, Any]] = []
+    for source in payload.get("sources") or []:
+        source_id = str(source.get("id") or source.get("name") or "")
+        row = observed.get(source_id) or observed.get(str(source.get("name") or "")) or {}
+        last_success = row.get("lastSuccessAt")
+        last_failure = row.get("lastFailure")
+        last_failure_at = row.get("lastFailureAt")
+        cache = row.get("cache") or ("fresh" if last_success and row.get("ok") else "stale" if last_success else "missing")
+        output.append({
+            "id": source_id,
+            "name": source.get("name"),
+            "configured": not bool(validate_source(source)),
+            "enabled": bool(source.get("enabled", True)),
+            "lastSuccessAt": last_success,
+            "lastFailure": last_failure,
+            "lastFailureAt": last_failure_at,
+            "cache": cache,
+            "ok": row.get("ok") is True,
+            "count": row.get("count", 0),
+        })
+    return output

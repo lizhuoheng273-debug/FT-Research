@@ -85,6 +85,7 @@ class FinancialNewsStore:
             category TEXT NOT NULL DEFAULT '',
             track TEXT NOT NULL DEFAULT '',
             related_stocks_json TEXT NOT NULL DEFAULT '[]',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
             first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL
         );
@@ -113,6 +114,10 @@ class FinancialNewsStore:
             payload_json TEXT NOT NULL
         );
         """)
+        try:
+            self._conn.execute("ALTER TABLE reports ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'" )
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
 
     def _prune(self) -> None:
@@ -132,8 +137,8 @@ class FinancialNewsStore:
                 """INSERT INTO reports (
                     report_id, title, summary, published_at, source, source_tier,
                     source_level, original_url, normalized_url, category, track,
-                    related_stocks_json, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    related_stocks_json, metadata_json, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(report_id) DO UPDATE SET
                     title=excluded.title, summary=excluded.summary,
                     published_at=COALESCE(excluded.published_at, reports.published_at),
@@ -141,6 +146,7 @@ class FinancialNewsStore:
                     source_level=excluded.source_level, original_url=excluded.original_url,
                     normalized_url=excluded.normalized_url, category=excluded.category,
                     track=excluded.track, related_stocks_json=excluded.related_stocks_json,
+                    metadata_json=excluded.metadata_json,
                     last_seen_at=excluded.last_seen_at""",
                 (
                     report_id, str(report.get("title") or "").strip(), str(report.get("summary") or ""),
@@ -148,6 +154,7 @@ class FinancialNewsStore:
                     int(report.get("sourceTier") or 8), str(report.get("sourceLevel") or ""),
                     original_url, normalized_url, str(report.get("category") or ""),
                     str(report.get("track") or ""), json.dumps(report.get("relatedStocks") or [], ensure_ascii=False),
+                    json.dumps({key: report.get(key) for key in ("importanceType", "official", "rumor", "relatedConcepts", "conceptEvidence") if key in report}, ensure_ascii=False),
                     observed, observed,
                 ),
             )
@@ -164,6 +171,10 @@ class FinancialNewsStore:
             "originalUrl": row["original_url"], "category": row["category"], "track": row["track"],
             "relatedStocks": json.loads(row["related_stocks_json"] or "[]"), "stale": False,
         }
+        try:
+            result.update(json.loads(row["metadata_json"] or "{}"))
+        except (json.JSONDecodeError, TypeError):
+            pass
         return result
 
     def load_reports(self, hours: int = 72) -> list[dict[str, Any]]:
