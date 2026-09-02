@@ -41,6 +41,8 @@ from aihot_api import AihotClient
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
 from report_scheduler import DailyReportScheduler
+from market_review_brief import MarketReviewBriefService
+from market_review_scheduler import PostCloseReviewScheduler
 
 
 from version import read_version
@@ -50,16 +52,20 @@ __version__ = read_version()
 financial_news_service = FinancialNewsService(market_provider=build_default_provider())
 financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
 market_review_service = market_review.market_review_service
+market_review_brief_service = MarketReviewBriefService()
+market_review_scheduler = PostCloseReviewScheduler(market_review_service, market_review_brief_service)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     if "pytest" not in sys.modules:
         financial_news_scheduler.start()
+        market_review_scheduler.start()
     try:
         yield
     finally:
         financial_news_scheduler.stop()
+        market_review_scheduler.stop()
 
 
 app = FastAPI(title="FT-Research API", version=__version__, lifespan=lifespan)

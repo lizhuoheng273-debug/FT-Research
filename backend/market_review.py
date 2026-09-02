@@ -7,6 +7,7 @@ fixture：上游成功值才会写入快照，失败时只能回填最近一次�
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,13 @@ def _trading_date(value: datetime) -> date:
     while current.weekday() >= 5:
         current -= timedelta(days=1)
     return current
+
+
+def snapshot_hash(snapshot: dict[str, Any]) -> str:
+    """Hash objective snapshot content while ignoring volatile/cache-only fields."""
+    stable = {key: value for key, value in snapshot.items() if key not in {"brief", "generatedAt", "sources"}}
+    encoded = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
 
 
 def _previous_trading_date(current: date) -> date:
@@ -311,6 +319,17 @@ class MarketReviewService:
             self._save(trading_date, review)
         self._memory[key] = (current, review)
         return review
+
+    def set_brief(self, trading_date: str, brief: dict[str, Any]) -> None:
+        """Merge a generated brief without recollecting objective market data."""
+        key = str(trading_date)
+        current = self._memory.get(key)
+        review = current[1] if current else self._load(date.fromisoformat(key))
+        if not review:
+            return
+        updated = {**review, "brief": brief}
+        self._save(date.fromisoformat(key), updated)
+        self._memory[key] = (current[0] if current else _ensure_beijing(self.now_fn()), updated)
 
 
 market_review_service = MarketReviewService()
