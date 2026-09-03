@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sys
 import threading
 import time
@@ -20,6 +21,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import astock
@@ -45,6 +47,13 @@ from report_scheduler import DailyReportScheduler
 from market_review_brief import MarketReviewBriefService
 from market_review_scheduler import PostCloseReviewScheduler
 from rss import RssFetchError, RssSecurityError, rss_catalog
+from ai_jobs import RunManager
+from ai_limits import Limits
+from auth import AuthService
+from auth_routes import install_auth_routes, require_owner, require_principal
+from conversation_routes import install_conversation_routes
+from route_policy import allowed_tools, policy_for
+from session_store import SessionStore, NotFound
 
 
 from version import read_version
@@ -70,12 +79,46 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        getattr(_app.state, "run_manager", None) and _app.state.run_manager.shutdown()
         financial_news_scheduler.stop()
         market_review_scheduler.stop()
         rss_catalog.stop_scheduler()
 
 
 app = FastAPI(title="FT-Research API", version=__version__, lifespan=lifespan)
+
+# The session database is deliberately separate from market/RSS caches.  A
+# missing password hash keeps local single-user development backwards
+# compatible, while FT_PUBLIC_DEMO refuses to expose private APIs without it.
+_session_data_dir = os.environ.get("VR_DATA_DIR", str(Path.home() / ".vibe-research"))
+session_store = SessionStore(Path(_session_data_dir) / "sessions.sqlite3")
+app.state.store = session_store
+_owner_hash = os.environ.get("FT_OWNER_PASSWORD_HASH", "").strip()
+app.state.auth = AuthService(session_store, _owner_hash) if _owner_hash else None
+app.state.secure_cookie = os.environ.get("FT_AUTH_SECURE_COOKIE", "false").lower() in {"1", "true", "yes"}
+app.state.allowed_origins = {item.strip() for item in os.environ.get("FT_ALLOWED_ORIGINS", "").split(",") if item.strip()}
+
+
+def _background_runner(run, control):
+    principal = session_store.principal_by_id(run["principal_id"])
+    cfg = glm_config.load_glm_config()
+    if not cfg.get("apiKey"):
+        yield {"type": "error", "payload": {"code": "model_unconfigured", "message": "后台模型尚未配置"}}
+        return
+    context = json.dumps(run.get("context") or {}, ensure_ascii=False)
+    history = session_store.history_for_model(principal, run["conversation_id"], 20)
+    history.append({"role": "user", "content": run["question"]})
+    requested_scope = (run.get("context") or {}).get("analysisScope", "general")
+    analysis_scope = requested_scope if requested_scope in {"general", "market", "index", "sector", "stock"} else "general"
+    for event in chat_layer.run_chat_stream(cfg, history, context, analysis_scope=analysis_scope, allowed_tool_names=allowed_tools(principal)):
+        if control.cancelled:
+            return
+        yield {"type": event.get("type", "error"), "payload": {k: v for k, v in event.items() if k != "type"}}
+
+
+app.state.run_manager = RunManager(session_store, _background_runner, Limits(session_store), clock=session_store.clock)
+install_auth_routes(app)
+install_conversation_routes(app)
 aihot_client = AihotClient()
 report_archive = ReportArchive()
 aihot_reports = AihotReportClient(report_archive)
@@ -109,6 +152,23 @@ async def _require_api_key(request: Request, call_next):
     ):
         if request.headers.get("authorization", "") != f"Bearer {_API_KEY}":
             return JSONResponse({"detail": "未授权：缺少或错误的 API Key（VR_API_KEY）"}, status_code=401)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _enforce_demo_policy(request: Request, call_next):
+    if os.environ.get("FT_PUBLIC_DEMO", "false").lower() not in {"1", "true", "yes"} or request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    policy = policy_for(request.method, request.url.path)
+    if policy == "deny":
+        return JSONResponse({"detail": "接口不存在"}, status_code=404)
+    try:
+        if policy == "owner":
+            require_owner(request)
+        elif policy == "authenticated":
+            require_principal(request)
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     return await call_next(request)
 
 _CODE_RE = r"^\d{6}$"
@@ -1025,3 +1085,21 @@ def industry(top: int = Query(20, ge=5, le=50)):
         return {"data": data}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"行业排名异常：{e}") from e
+
+
+# Same-origin production serving. The database/cache directories are outside
+# this tree; unknown /api paths remain JSON 404s instead of SPA HTML.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{frontend_path:path}")
+    def frontend_fallback(frontend_path: str):
+        if frontend_path == "api" or frontend_path.startswith(("api/", "data/", "backend/", ".")):
+            return JSONResponse({"detail": "接口不存在"}, status_code=404)
+        candidate = (_FRONTEND_DIST / frontend_path).resolve()
+        if _FRONTEND_DIST not in candidate.parents and candidate != _FRONTEND_DIST:
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

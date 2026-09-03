@@ -296,3 +296,6 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
 ## License
 
 MIT
+## 主人 / 游客 AI 会话
+
+公开演示配置 `FT_OWNER_PASSWORD_HASH`、`FT_PUBLIC_DEMO=true` 和 HTTPS 下的 `FT_AUTH_SECURE_COOKIE=true`。主人密码哈希用 `python scripts/owner_password.py` 生成；密钥与密码不写入仓库。游客令牌只在当前页面内存，刷新/退出后回到入口；服务端按身份、IP、全站和输入长度限制模型调用。主人历史保存于 `VR_DATA_DIR` 的 SQLite，单 worker；服务离线期间不会自动重跑模型请求。详见 `docs/OWNER_GUEST_DEPLOYMENT.md`。

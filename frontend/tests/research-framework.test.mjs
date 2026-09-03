@@ -26,6 +26,10 @@ test("the shared AI panel has no blogger method selector", () => {
   assert.match(askAi, /analysisScope/);
 });
 
+test("unified conversation sends the explicit research scope to the server", () => {
+  assert.match(session, /context: \{ text: context, analysisScope \}/);
+});
+
 test("the four research page types provide their explicit default scope", () => {
   assert.match(daily, /analysisScope="market"/);
   assert.match(index, /analysisScope="index"/);

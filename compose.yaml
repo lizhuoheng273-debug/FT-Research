@@ -1,0 +1,15 @@
+services:
+  ft-research:
+    build: .
+    env_file: .env
+    environment:
+      VR_DATA_DIR: /data
+      FT_PUBLIC_DEMO: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ft-research-data:/data
+    restart: unless-stopped
+
+volumes:
+  ft-research-data:

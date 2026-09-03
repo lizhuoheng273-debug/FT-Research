@@ -1,3 +1,5 @@
+import { authHeaders as sessionAuthHeaders } from "@/lib/authClient";
+
 // Vibe-Research 后端 API 客户端。/api → vite 代理到本地 FastAPI（默认 8900）。
 // 后端未启动或数据源异常时抛 ApiError，页面据此优雅降级。
 
@@ -42,7 +44,7 @@ export function saveAccessKey(key: string) {
 
 export function authHeaders(): Record<string, string> {
   const k = loadAccessKey();
-  return k ? { Authorization: `Bearer ${k}` } : {};
+  return { ...sessionAuthHeaders("GET"), ...(k ? { Authorization: `Bearer ${k}` } : {}) };
 }
 
 export interface MyReport {
@@ -64,10 +66,10 @@ export async function downloadReport(id: string, name: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
+async function request<T>(path: string, method: "GET" | "POST" | "PATCH" | "DELETE" = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   let resp: Response;
-  const headers: Record<string, string> = { ...authHeaders() };
-  const opts: RequestInit = { method, signal };
+  const headers: Record<string, string> = { ...sessionAuthHeaders(method), ...authHeaders() };
+  const opts: RequestInit = { method, signal, credentials: "include" };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
