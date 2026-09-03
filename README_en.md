@@ -283,3 +283,6 @@ If this tool saved you time, a coffee is appreciated.
 ## License
 
 MIT
+## Owner / guest AI sessions
+
+For a public demo, configure `FT_OWNER_PASSWORD_HASH`, `FT_PUBLIC_DEMO=true`, and `FT_AUTH_SECURE_COOKIE=true` behind HTTPS. Generate the owner hash with `python scripts/owner_password.py`; credentials never belong in Git. Guest tokens live only in page memory and are lost on refresh or logout. Owner history is stored in SQLite under `VR_DATA_DIR`; the service uses one worker and never reruns paid model requests automatically after restart. See `docs/OWNER_GUEST_DEPLOYMENT.md`.

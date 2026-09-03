@@ -28,6 +28,15 @@ public/user-data/
 dist/
 build/
 frontend/tsconfig.tsbuildinfo
+*.sqlite*
+*-wal
+*-shm
+*.backup
+*.bak
+owner-*.db
+data/
+portfolio/
+myreports/
 
 # ── 编辑器 / 系统 / 工具 ──────────────────────────────────────────
 **/.claude/
