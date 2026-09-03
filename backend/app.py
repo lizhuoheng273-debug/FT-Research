@@ -21,6 +21,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import astock
@@ -51,7 +52,7 @@ from ai_limits import Limits
 from auth import AuthService
 from auth_routes import install_auth_routes, require_owner, require_principal
 from conversation_routes import install_conversation_routes
-from route_policy import policy_for
+from route_policy import allowed_tools, policy_for
 from session_store import SessionStore, NotFound
 
 
@@ -107,7 +108,7 @@ def _background_runner(run, control):
     context = json.dumps(run.get("context") or {}, ensure_ascii=False)
     history = session_store.history_for_model(principal, run["conversation_id"], 20)
     history.append({"role": "user", "content": run["question"]})
-    for event in chat_layer.run_chat_stream(cfg, history, context):
+    for event in chat_layer.run_chat_stream(cfg, history, context, allowed_tool_names=allowed_tools(principal)):
         if control.cancelled:
             return
         yield {"type": event.get("type", "error"), "payload": {k: v for k, v in event.items() if k != "type"}}
@@ -1082,3 +1083,21 @@ def industry(top: int = Query(20, ge=5, le=50)):
         return {"data": data}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"行业排名异常：{e}") from e
+
+
+# Same-origin production serving. The database/cache directories are outside
+# this tree; unknown /api paths remain JSON 404s instead of SPA HTML.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{frontend_path:path}")
+    def frontend_fallback(frontend_path: str):
+        if frontend_path == "api" or frontend_path.startswith(("api/", "data/", "backend/", ".")):
+            return JSONResponse({"detail": "接口不存在"}, status_code=404)
+        candidate = (_FRONTEND_DIST / frontend_path).resolve()
+        if _FRONTEND_DIST not in candidate.parents and candidate != _FRONTEND_DIST:
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

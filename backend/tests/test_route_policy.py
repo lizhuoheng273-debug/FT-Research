@@ -13,3 +13,11 @@ def test_market_reads_need_identity_and_tools_are_scoped():
     assert policy_for("GET", "/api/health") == "public"
     assert "query_quote" in allowed_tools(Principal("g", "guest"))
     assert "query_portfolio" not in allowed_tools(Principal("g", "guest"))
+
+
+def test_scoped_tool_denial_happens_before_handler(monkeypatch):
+    import chat
+    called = []
+    monkeypatch.setattr(chat, "_exec_tool", lambda name, args: called.append(name) or {"ok": True})
+    assert chat._exec_scoped_tool("query_financials", {}, {"query_quote"})["error"]
+    assert called == []

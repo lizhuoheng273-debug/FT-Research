@@ -44,6 +44,12 @@ class RunManager:
         run = self.store.create_run(principal, conversation_id, request_id, question, context)
         if not run["created"]:
             return run
+        try:
+            self.limits.reserve_question(principal)
+        except LimitExceeded:
+            self.store.transition_run(run["id"], "queued", "failed")
+            self.store.append_event(run["id"], "error", {"code": "question_limit", "message": "本次游客体验的提问额度已用尽"})
+            raise
         if not self.slots.acquire(blocking=False):
             self.store.transition_run(run["id"], "queued", "failed")
             self.store.append_event(run["id"], "error", {"code": "queue_full", "message": "任务队列已满"})

@@ -28,6 +28,12 @@ import tools
 TOOLS = tools.TOOLS
 _exec_tool = tools.exec_tool
 
+
+def _exec_scoped_tool(name: str, args: dict, allowed_tool_names: set[str] | None):
+    if allowed_tool_names is not None and name not in allowed_tool_names:
+        return {"error": "该工具不对当前身份开放"}
+    return _exec_tool(name, args)
+
 MAX_ROUNDS = 6  # 工具调用最大轮数，防死循环
 _TOOL_RESULT_CAP = 6000  # 单次工具结果注入上限（控 token）
 
@@ -123,7 +129,7 @@ def _call_llm(cfg: dict, messages: list, use_tools: bool) -> dict:
     return r.json()
 
 
-def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general") -> dict:
+def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None) -> dict:
     """跑一轮完整对话（含 function calling 循环）。
 
     cfg: {baseURL, apiKey, model}
@@ -149,7 +155,7 @@ def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: 
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = _exec_tool(name, args)
+            result = _exec_scoped_tool(name, args, allowed_tool_names)
             trace.append({"tool": name, "args": args})
             messages.append({
                 "role": "tool",
@@ -231,7 +237,7 @@ def _iter_sse_deltas(resp):
                 yield choices[0].get("delta") or {}
 
 
-def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general"):
+def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None):
     """API 接入流式：function-calling 循环，边流答案边推工具调用事件。"""
     messages = [{"role": "system", "content": build_system_prompt(context, analysis_scope, user_messages)}]
     messages.extend(user_messages)
@@ -283,7 +289,7 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
             except json.JSONDecodeError:
                 args = {}
             yield {"type": "tool", "tool": a["name"], "args": args}
-            result = _exec_tool(a["name"], args)
+            result = _exec_scoped_tool(a["name"], args, allowed_tool_names)
             trace.append({"tool": a["name"], "args": args})
             messages.append({
                 "role": "tool", "tool_call_id": a["id"],
