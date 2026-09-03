@@ -147,7 +147,7 @@ export function Debate() {
               value={rounds}
               onChange={(e) => setRounds(Number(e.target.value))}
               disabled={running}
-              className="rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm outline-none focus:border-primary/60"
+              className="rounded-lg border border-border/60 bg-input px-3 py-2 text-sm text-input-foreground outline-none focus:border-primary/60"
             >
               <option value={1}>一轮 · 各自陈述</option>
               <option value={2}>两轮 · 加交叉反驳</option>

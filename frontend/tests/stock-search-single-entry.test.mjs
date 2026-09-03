@@ -8,11 +8,11 @@ const detail = await read("../src/pages/StockDetail.tsx");
 const watchlist = await read("../src/pages/Watchlist.tsx");
 const intel = await read("../src/pages/Intel.tsx");
 
-test("shared stock search uses a white high-contrast field and result panel", () => {
-  assert.match(input, /bg-white/);
-  assert.match(input, /text-slate-900/);
-  assert.match(input, /border-slate-200/);
-  assert.match(input, /hover:bg-slate-50/);
+test("shared stock search uses theme-aware high-contrast field and result panel", () => {
+  assert.match(input, /bg-input/);
+  assert.match(input, /text-input-foreground/);
+  assert.match(input, /border-border/);
+  assert.match(input, /hover:bg-muted\/50/);
 });
 
 test("watchlist exposes one search entry while daily review does not include deleted watch controls", () => {

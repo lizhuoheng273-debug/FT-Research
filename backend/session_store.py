@@ -212,13 +212,17 @@ class SessionStore:
             row = self._conversation_row(conn, principal, conversation_id)
             return self._conversation_dict(conn, row)
 
-    def list_conversations(self, principal: Principal, query: str = "", limit: int = 30, cursor=None) -> dict:
+    def list_conversations(self, principal: Principal, query: str = "", limit: int = 30, cursor=None, source_family: str | None = None) -> dict:
         limit = max(1, min(int(limit), 100))
         params = [principal.id]
         where = "c.principal_id=? AND c.deleted_at IS NULL"
         if query:
             where += " AND c.title LIKE ?"
             params.append(f"%{query[:100]}%")
+        if source_family == "ai":
+            where += " AND (json_extract(c.source_json, '$.type') LIKE 'ai-%' OR json_extract(c.source_json, '$.type') LIKE '/ai/%')"
+        elif source_family == "finance":
+            where += " AND (json_extract(c.source_json, '$.type') IS NULL OR (json_extract(c.source_json, '$.type') NOT LIKE 'ai-%' AND json_extract(c.source_json, '$.type') NOT LIKE '/ai/%'))"
         if cursor:
             where += " AND c.updated_at < ?"
             params.append(float(cursor))
@@ -243,6 +247,8 @@ class SessionStore:
     def auto_name_conversation(self, principal: Principal, conversation_id: str, question: str) -> dict:
         """Name a new conversation from its entry point and first question."""
         entry_names = {
+            "ai-news": "AI 热点",
+            "ai-daily": "AI 日报",
             "review": "每日复盘",
             "news": "金融资讯",
             "news-story": "资讯事件",

@@ -60,9 +60,9 @@ def _detail(store, principal, conversation_id: str) -> dict:
 
 def install_conversation_routes(app):
     @app.get("/api/conversations")
-    def list_conversations(request: Request, q: str = Query("", max_length=100), limit: int = Query(30, ge=1, le=100), cursor: str | None = None):
+    def list_conversations(request: Request, q: str = Query("", max_length=100), limit: int = Query(30, ge=1, le=100), cursor: str | None = None, sourceFamily: str | None = Query(None, pattern="^(ai|finance)$")):
         principal = require_principal(request)
-        return _store(request).list_conversations(principal, q, limit, cursor)
+        return _store(request).list_conversations(principal, q, limit, cursor, sourceFamily)
 
     @app.post("/api/conversations")
     def create_conversation(body: ConversationBody, request: Request):

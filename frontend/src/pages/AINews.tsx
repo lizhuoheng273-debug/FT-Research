@@ -140,7 +140,7 @@ export function AINews() {
   });
 
   return <div>
-    <PageHeader title="AI 热点资讯" subtitle="先看热点榜，再阅读我订阅的科技媒体" actions={<div className="flex items-center gap-2"><AskAiButton context={context || "暂无 AI 热点资讯"} label="AI 摘要与追问" suggestions={["今天最重要的三件事是什么？", "这些热点有哪些共同趋势？"]} /><button onClick={() => void load()} className="rounded-lg border border-border px-3 py-1.5 text-sm"><RefreshCw className="mr-1 inline h-4 w-4" />刷新</button></div>} />
+    <PageHeader title="AI 热点资讯" subtitle="先看热点榜，再阅读我订阅的科技媒体" actions={<div className="flex items-center gap-2"><AskAiButton context={context || "暂无 AI 热点资讯"} workspaceSource="ai-news" label="AI 摘要与追问" suggestions={["今天最重要的三件事是什么？", "这些热点有哪些共同趋势？"]} /><button onClick={() => void load()} className="rounded-lg border border-border px-3 py-1.5 text-sm"><RefreshCw className="mr-1 inline h-4 w-4" />刷新</button></div>} />
     {stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">AI HOT 暂时不可用，当前显示本地缓存。</p>}
     {error && <p className="mb-3 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
     <AIHotFeed topics={topics} items={items} loading={loading} onOpenStory={openStory} showEvents={false} />

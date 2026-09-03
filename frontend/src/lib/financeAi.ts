@@ -1,4 +1,5 @@
 export type FinanceAiSource = "review" | "news" | "watchlist" | "index" | "stock" | "stock-panel" | "news-story";
+export type AiWorkspaceSource = FinanceAiSource | "ai-news" | "ai-daily";
 
 export interface FinanceAiTarget {
   source: FinanceAiSource;
@@ -25,4 +26,13 @@ export function buildFinanceAiPath(target: FinanceAiTarget): string {
   if (target.eventId) params.set("eventId", target.eventId);
   if (target.date) params.set("date", target.date);
   return `/finance/ai?${params.toString()}`;
+}
+
+export function buildAiWorkspacePath(source: AiWorkspaceSource, identifiers: Omit<FinanceAiTarget, "source"> = {}): string {
+  if (source === "ai-news" || source === "ai-daily") {
+    const params = new URLSearchParams({ source });
+    if (identifiers.date) params.set("date", identifiers.date);
+    return `/ai/conversations?${params.toString()}`;
+  }
+  return buildFinanceAiPath({ source, ...identifiers });
 }

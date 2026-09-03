@@ -16,7 +16,9 @@ test('conversation destinations preserve source context', () => {
   assert.match(stockDestination, /code=600183/);
 });
 
-test('AI history is moved into the workspace and old route redirects', () => {
+test('AI history is hosted by the dedicated AI workspace', () => {
   assert.doesNotMatch(layout, /label: "AI 对话记录"/);
-  assert.match(router, /path: ["']\/ai\/conversations["'][\s\S]*Navigate to="\/finance\/ai"/);
+  assert.match(router, /path: ["']\/ai\/conversations["'][\s\S]*AiConversationWorkspace/);
+  assert.match(conversationDestination({ id: 'ai-1', kind: 'chat', source: { type: 'ai-news' } }), /\/ai\/conversations\?conversationId=ai-1/);
+  assert.match(conversationDestination({ id: 'legacy-ai', kind: 'chat', source: { type: '/ai/news:framework:v2:general' } }), /\/ai\/conversations\?/);
 });

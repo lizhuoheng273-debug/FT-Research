@@ -18,6 +18,7 @@ import { AINewsDetail } from "@/pages/AINewsDetail";
 import { StockDetail } from "@/pages/StockDetail";
 import { IndexDetail } from "@/pages/IndexDetail";
 import { FinanceAiWorkspace } from "@/pages/FinanceAiWorkspace";
+import { AiConversationWorkspace } from "@/pages/AiConversationWorkspace";
 import { FinancialNews } from "@/pages/FinancialNews";
 import { FinancialNewsDetail } from "@/pages/FinancialNewsDetail";
 
@@ -42,7 +43,7 @@ export const router = createBrowserRouter([
       { path: "/ai/news/story/:storyId", element: <AINewsDetail /> },
       { path: "/ai/news/:tab", element: <AINews /> },
       { path: "/ai/daily", element: <AIDaily /> },
-      { path: "/ai/conversations", element: <Navigate to="/finance/ai" replace /> },
+      { path: "/ai/conversations", element: <AiConversationWorkspace /> },
       { path: "/finance/news", element: <FinancialNews /> },
       { path: "/finance/news/story/:eventId", element: <FinancialNewsDetail /> },
       { path: "/finance/news/:tab", element: <FinancialNews /> },

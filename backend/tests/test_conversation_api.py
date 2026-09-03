@@ -74,3 +74,18 @@ def test_first_turn_updates_conversation_title_from_source(services):
     assert response.status_code == 202
     listed = client.get("/api/conversations", headers=headers["a"]).json()["items"]
     assert next(item for item in listed if item["id"] == cid)["title"] == "金融资讯 · 分析今日市场"
+
+
+def test_conversation_list_filters_ai_source_family(services):
+    client, headers = services
+    ai = client.post("/api/conversations", headers=headers["a"], json={"source": {"type": "ai-news"}}).json()
+    legacy_ai = client.post("/api/conversations", headers=headers["a"], json={"source": {"type": "/ai/news:framework:v2:general"}}).json()
+    finance = client.post("/api/conversations", headers=headers["a"], json={"source": {"type": "news"}}).json()
+
+    response = client.get("/api/conversations?sourceFamily=ai", headers=headers["a"])
+
+    assert response.status_code == 200
+    ids = {item["id"] for item in response.json()["items"]}
+    assert ai["id"] in ids
+    assert legacy_ai["id"] in ids
+    assert finance["id"] not in ids

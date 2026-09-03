@@ -92,3 +92,13 @@ def test_auto_name_unknown_source_uses_generic_entry(tmp_path):
     named = store.auto_name_conversation(principal, item["id"], "问题摘要")
 
     assert named["title"] == "AI 对话 · 问题摘要"
+
+
+def test_auto_name_ai_news_uses_ai_entry_label(tmp_path):
+    store = SessionStore(tmp_path / "sessions.sqlite3")
+    principal = store.create_principal("owner")
+    item = store.create_conversation(principal, "chat", {"type": "ai-news"})
+
+    named = store.auto_name_conversation(principal, item["id"], "总结今天热点")
+
+    assert named["title"] == "AI 热点 · 总结今天热点"
