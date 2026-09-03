@@ -108,7 +108,7 @@ export function useAiChatSession({ conversationKey, conversationId, context }: {
         target = created.id; conversations.set(conversationKey, target); setId(target);
         client.attach(target, (state) => setMessages(state.messages as StoredMsg[]));
       }
-      await client.send(target, { clientRequestId: `${Date.now()}-${Math.random().toString(36).slice(2)}`, question, context: { text: context } });
+      await client.send(target, { clientRequestId: `${Date.now()}-${Math.random().toString(36).slice(2)}`, question, context: { text: context, analysisScope } });
       setMessages(client.snapshot(target).messages as StoredMsg[]);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "对话失败"); }
   };

@@ -108,7 +108,9 @@ def _background_runner(run, control):
     context = json.dumps(run.get("context") or {}, ensure_ascii=False)
     history = session_store.history_for_model(principal, run["conversation_id"], 20)
     history.append({"role": "user", "content": run["question"]})
-    for event in chat_layer.run_chat_stream(cfg, history, context, allowed_tool_names=allowed_tools(principal)):
+    requested_scope = (run.get("context") or {}).get("analysisScope", "general")
+    analysis_scope = requested_scope if requested_scope in {"general", "market", "index", "sector", "stock"} else "general"
+    for event in chat_layer.run_chat_stream(cfg, history, context, analysis_scope=analysis_scope, allowed_tool_names=allowed_tools(principal)):
         if control.cancelled:
             return
         yield {"type": event.get("type", "error"), "payload": {k: v for k, v in event.items() if k != "type"}}
