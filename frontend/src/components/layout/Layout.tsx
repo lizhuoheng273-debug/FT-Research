@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import {
   Activity, Radar, Swords, Moon, Sun, ChevronsLeft, ChevronsRight, LineChart, Github, UserRound,
-  Star, FileText, Newspaper,
+  Star, FileText, Newspaper, MessagesSquare, LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { storageGet, storageSet } from "@/lib/storage";
+import { AuthGate } from "@/components/auth/AuthGate";
+import { useAuth } from "@/components/auth/AuthProvider";
 
 // 具名导入：只把 version 打进产物，不会把整个 package.json 塞进 bundle
 import { version as PKG_VERSION } from "../../../package.json";
@@ -21,6 +23,7 @@ const MAIL_URL = "mailto:simonlin0423@gmail.com";
 const NAV = [
   { to: "/ai/news", icon: Radar, label: "AI 热点资讯", section: "AI 板块" },
   { to: "/ai/daily", icon: FileText, label: "AI 日报" },
+  { to: "/ai/conversations", icon: MessagesSquare, label: "AI 对话" },
   { to: "/finance/review", icon: Activity, label: "每日复盘", section: "金融板块" },
   { to: "/finance/news", icon: Newspaper, label: "金融市场资讯" },
   { to: "/finance/watchlist", icon: Star, label: "自选股" },
@@ -29,6 +32,7 @@ const NAV = [
 
 export function Layout() {
   const { pathname } = useLocation();
+  const { identity, signOut } = useAuth();
   const stockAiWorkspace = /^\/finance\/stocks\/\d{6}\/ai$/.test(pathname);
   const { dark, toggle } = useDarkMode();
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
@@ -36,6 +40,7 @@ export function Layout() {
     storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
 
+  if (!identity) return <AuthGate>{null}</AuthGate>;
   return (
     <div className="flex h-screen">
       {/* Sidebar */}
@@ -124,6 +129,9 @@ export function Layout() {
               <p className="text-[11px] leading-relaxed text-muted-foreground/60">
                 {APP_VERSION} · 不荐股 · 不预测 · 无倾向
               </p>
+              <button onClick={() => void signOut()} className="flex w-full items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
+                <LogOut className="h-3.5 w-3.5" />退出{identity.kind === "guest" ? "游客体验" : "主人登录"}
+              </button>
             </>
           )}
         </div>
