@@ -40,7 +40,6 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        session.stop();
         setOpen(false);
       }
     };
@@ -49,7 +48,6 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
   }, [open]);
 
   const close = () => {
-    session.stop();
     setOpen(false);
   };
 

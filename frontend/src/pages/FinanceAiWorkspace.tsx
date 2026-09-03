@@ -77,6 +77,7 @@ export function FinanceAiWorkspace() {
   const code = params.get("code") || route.code || "";
   const panel = params.get("panel") || "overview";
   const eventId = params.get("eventId") || "";
+  const conversationId = params.get("conversationId") || undefined;
   const date = params.get("date") || "";
   const [payload, setPayload] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
@@ -105,10 +106,10 @@ export function FinanceAiWorkspace() {
   const context = useMemo(() => buildContext(source, payload, code, panel, eventId), [source, payload, code, panel, eventId]);
   const reviewDate = source === "review" ? ((payload as MarketReview | null)?.tradingDate || date || "latest") : date;
   const conversationKey = buildFinanceAiKey(source, { code, panel, eventId, date: reviewDate });
-  const session = useAiChatSession({ conversationKey, context, analysisScope: scopeFor(source) });
+  const session = useAiChatSession({ conversationKey, conversationId, context, analysisScope: scopeFor(source) });
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const title = source === "review" ? "每日复盘 AI" : source === "news" ? "金融资讯 AI" : source === "news-story" ? "资讯事件 AI" : source === "watchlist" ? "自选股 AI" : source === "index" ? "指数研究 AI" : source === "stock-panel" ? `${code} · ${panel} AI` : `${code} · 个股 AI`;
-  const returnTo = () => { session.stop(); if (stateFrom) navigate(stateFrom, { replace: true }); else navigate(source === "stock" || source === "stock-panel" ? `/finance/stocks/${code}` : "/finance/news", { replace: true }); };
+  const returnTo = () => { if (stateFrom) navigate(stateFrom, { replace: true }); else navigate(source === "stock" || source === "stock-panel" ? `/finance/stocks/${code}` : "/finance/news", { replace: true }); };
   const tools = useMemo(() => [...new Map(session.toolUses.map((tool) => [`${tool.name}:${tool.arg}`, tool])).values()], [session.toolUses]);
 
   return <div className="flex h-[calc(100dvh-1.5rem)] flex-col overflow-hidden">

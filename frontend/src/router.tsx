@@ -20,6 +20,7 @@ import { IndexDetail } from "@/pages/IndexDetail";
 import { FinanceAiWorkspace } from "@/pages/FinanceAiWorkspace";
 import { FinancialNews } from "@/pages/FinancialNews";
 import { FinancialNewsDetail } from "@/pages/FinancialNewsDetail";
+import { AiHistory } from "@/pages/AiHistory";
 
 function LegacyResearch() {
   const [params] = useSearchParams();
@@ -42,6 +43,7 @@ export const router = createBrowserRouter([
       { path: "/ai/news/story/:storyId", element: <AINewsDetail /> },
       { path: "/ai/news/:tab", element: <AINews /> },
       { path: "/ai/daily", element: <AIDaily /> },
+      { path: "/ai/conversations", element: <AiHistory /> },
       { path: "/finance/news", element: <FinancialNews /> },
       { path: "/finance/news/story/:eventId", element: <FinancialNewsDetail /> },
       { path: "/finance/news/:tab", element: <FinancialNews /> },
