@@ -60,3 +60,12 @@ def test_tool_timeout_emits_terminal_progress_and_continues_answer(monkeypatch):
     assert "timeout" in progress
     assert any(event["type"] == "delta" and event["text"] == "回答" for event in events)
     assert events[-1]["type"] == "done"
+
+
+def test_tool_round_limit_still_streams_the_final_answer(monkeypatch):
+    monkeypatch.setattr(chat, "MAX_ROUNDS", 1)
+    _two_tool_round_then_answer(monkeypatch)
+    monkeypatch.setattr(chat, "execute_scoped_tool", lambda *a, **kw: {"status": "ok"})
+    monkeypatch.setattr(chat, "_call_llm", lambda *a, **kw: {"choices": [{"message": {"content": "non-stream fallback"}}]})
+    events = list(chat.run_chat_stream(_cfg(), [{"role": "user", "content": "测试"}]))
+    assert [e["text"] for e in events if e["type"] == "delta"] == ["回答"]

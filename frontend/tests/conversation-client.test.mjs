@@ -37,7 +37,8 @@ test('detach leaves background stream alive and duplicate sequence is ignored', 
   client.resetIdentity();
 });
 
-test('stream updates publish fresh message snapshots for reactive consumers', async () => {
+test('stream updates publish fresh message snapshots for reactive consumers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const api = createFakeApi();
   const renders = [];
   const client = createConversationClient(api);
@@ -48,6 +49,7 @@ test('stream updates publish fresh message snapshots for reactive consumers', as
   api.emit({ runId: 'run1', seq: 1, type: 'delta', payload: { text: '第一段' } });
   const afterFirstDelta = renders.at(-1);
   api.emit({ runId: 'run1', seq: 2, type: 'delta', payload: { text: '第二段' } });
+  t.mock.timers.tick(100);
   const afterSecondDelta = renders.at(-1);
 
   assert.notEqual(afterFirstDelta, beforeDelta);
@@ -57,6 +59,49 @@ test('stream updates publish fresh message snapshots for reactive consumers', as
   api.emit({ runId: 'run1', seq: 3, type: 'done', payload: {} });
   assert.notEqual(renders.at(-1), afterSecondDelta);
   assert.equal(client.snapshot('c1').activeRunId, null);
+});
+
+test('burst deltas render in batches without losing text or delaying first text', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const api = createFakeApi();
+  const client = createConversationClient(api);
+  const renders = [];
+  client.attach('c1', state => renders.push(state));
+  await client.send('c1', { clientRequestId: 'r1', question: '复盘', context: {} });
+  const before = renders.length;
+  api.emit({ runId: 'run1', seq: 1, type: 'delta', payload: { text: '首' } });
+  assert.equal(renders.at(-1).messages.at(-1).content, '首');
+  for (let seq = 2; seq <= 80; seq++) api.emit({ runId: 'run1', seq, type: 'delta', payload: { text: '文' } });
+  assert.ok(renders.length - before <= 2, 'a network burst must not cause 80 Markdown renders');
+  assert.equal(client.snapshot('c1').messages.at(-1).content, '首' + '文'.repeat(79));
+  t.mock.timers.tick(100);
+  assert.equal(renders.at(-1).messages.at(-1).content, '首' + '文'.repeat(79));
+  api.emit({ runId: 'run1', seq: 81, type: 'done', payload: {} });
+  assert.equal(renders.at(-1).status, 'completed');
+  client.resetIdentity();
+});
+
+test('send shows submitting feedback before start resolves and errors end loading', async () => {
+  const api = createFakeApi();
+  let rejectStart;
+  api.start = () => new Promise((_resolve, reject) => { rejectStart = reject; });
+  const client = createConversationClient(api);
+  const sending = client.send('c1', { clientRequestId: 'r1', question: '复盘', context: {} });
+  assert.ok(client.snapshot('c1').progress?.message);
+  rejectStart(new Error('服务不可用'));
+  await assert.rejects(sending, /服务不可用/);
+  assert.equal(client.snapshot('c1').status, 'error');
+  assert.equal(client.snapshot('c1').activeRunId, null);
+  assert.equal(client.snapshot('c1').messages.at(-1).status, 'error');
+});
+
+test('legacy nested progress remains readable when replaying stored runs', async () => {
+  const api = createFakeApi();
+  const client = createConversationClient(api);
+  await client.send('c1', { clientRequestId: 'r1', question: '复盘', context: {} });
+  api.emit({ runId: 'run1', seq: 1, type: 'progress', payload: { payload: { phase: 'tool', status: 'running', message: '查询行情', tool: 'query_market' } } });
+  assert.equal(client.snapshot('c1').progress.message, '查询行情');
+  client.resetIdentity();
 });
 
 test('stream failures stop the pending assistant message', async () => {

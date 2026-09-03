@@ -44,7 +44,8 @@ test("shared conversation keeps streaming and exposes an explicit stop action", 
   const conversation = fs.readFileSync(conversationUrl, "utf8");
   const session = fs.readFileSync(sessionUrl, "utf8");
   assert.match(conversation, /停止生成/);
-  assert.match(conversation, /!m\.partial/);
+  // Partial-answer saving is covered by the rendered conversation and
+  // conversation-presentation behavior tests, not an implementation regex.
   assert.match(conversation, /stop\(\)/);
   assert.match(session, /chatStream/);
   assert.match(session, /onDelta/);

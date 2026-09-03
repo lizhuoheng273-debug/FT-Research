@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import socket
 import time
@@ -30,6 +31,7 @@ from tool_runtime import run_with_deadline
 # 这两个别名是历史入口，mcp_server 与既有测试仍按 chat.TOOLS / chat._exec_tool 取用。
 TOOLS = tools.TOOLS
 _exec_tool = tools.exec_tool
+_stream_log = logging.getLogger("uvicorn.error")
 
 
 def execute_scoped_tool(name: str, args: dict, allowed_tool_names: set[str] | None, timeout_seconds: float = 20.0):
@@ -215,11 +217,13 @@ def _call_llm_stream(cfg: dict, messages: list, use_tools: bool):
     if use_tools:
         payload["tools"] = TOOLS
         payload["tool_choice"] = "auto"
+    started = time.monotonic()
     r = requests.post(
         f"{_resolve_base(cfg)}/chat/completions",
         headers={"Authorization": f"Bearer {cfg['apiKey']}", "Content-Type": "application/json"},
         json=payload, timeout=120, stream=True,
     )
+    _stream_log.info("AI stream response headers: %.3fs, status=%s", time.monotonic() - started, r.status_code)
     if r.status_code != 200:
         raise RuntimeError(f"模型接口 HTTP {r.status_code}: {r.text[:300]}")
     return r
@@ -232,6 +236,9 @@ def _iter_sse_deltas(resp):
     故按 `\\n` 切分再解码，避免 iter_lines(decode_unicode=True) 在网络分块处切断中文导致乱码。
     """
     buf = b""
+    started = time.monotonic()
+    first_event = True
+    first_content = True
     for chunk in resp.iter_content(chunk_size=None):
         if not chunk:
             continue
@@ -250,7 +257,14 @@ def _iter_sse_deltas(resp):
                 continue
             choices = j.get("choices") or []
             if choices:
-                yield choices[0].get("delta") or {}
+                delta = choices[0].get("delta") or {}
+                if first_event:
+                    _stream_log.info("AI first upstream delta after headers: %.3fs", time.monotonic() - started)
+                    first_event = False
+                if delta.get("content") and first_content:
+                    _stream_log.info("AI first upstream text after headers: %.3fs", time.monotonic() - started)
+                    first_content = False
+                yield delta
 
 
 def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None):
@@ -343,9 +357,16 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
                 "content": json.dumps(result, ensure_ascii=False)[:_TOOL_RESULT_CAP],
             })
 
-    # 超过最大轮数：不带工具收尾（非流式一次拿完再吐）
-    data = _call_llm(cfg, messages, use_tools=False)
-    yield {"type": "delta", "text": data["choices"][0]["message"].get("content") or ""}
+    # Keep the final no-tool synthesis streaming too.
+    yield {"type": "progress", "payload": {"phase": "model", "status": "running", "message": "数据已整理，正在生成最终回答…"}}
+    resp = _call_llm_stream(cfg, messages, use_tools=False)
+    try:
+        for delta in _iter_sse_deltas(resp):
+            if delta.get("content"):
+                yield {"type": "delta", "text": delta["content"]}
+    finally:
+        if resp is not None:
+            resp.close()
     yield {"type": "done", "trace": trace, "rounds": MAX_ROUNDS}
 
 

@@ -113,7 +113,9 @@ def _background_runner(run, control):
     for event in chat_layer.run_chat_stream(cfg, history, context, analysis_scope=analysis_scope, allowed_tool_names=allowed_tools(principal)):
         if control.cancelled:
             return
-        yield {"type": event.get("type", "error"), "payload": {k: v for k, v in event.items() if k != "type"}}
+        payload = dict(event.get("payload") or {})
+        payload.update({k: v for k, v in event.items() if k not in {"type", "payload"}})
+        yield {"type": event.get("type", "error"), "payload": payload}
 
 
 app.state.run_manager = RunManager(session_store, _background_runner, Limits(session_store), clock=session_store.clock)

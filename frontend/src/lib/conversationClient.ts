@@ -11,7 +11,7 @@ type Api = {
 };
 
 type Message = { role: 'user' | 'assistant'; content: string; status?: string };
-type State = { conversation: any; messages: Message[]; activeRunId: string | null; lastSeq: number; pending: Map<number, ConversationEvent>; listeners: Set<(state: State) => void>; abort?: AbortController; requestVersion: number; attachVersion: number; status: string; progress: ConversationProgress | null; toolUses: ConversationToolUse[] };
+type State = { conversation: any; messages: Message[]; activeRunId: string | null; lastSeq: number; pending: Map<number, ConversationEvent>; listeners: Set<(state: State) => void>; abort?: AbortController; requestVersion: number; attachVersion: number; status: string; progress: ConversationProgress | null; toolUses: ConversationToolUse[]; publishTimer?: ReturnType<typeof setTimeout> };
 
 function stateFor(states: Map<string, State>, id: string): State {
   let state = states.get(id);
@@ -22,13 +22,22 @@ function stateFor(states: Map<string, State>, id: string): State {
   return state;
 }
 
-function notify(state: State) {
+function notify(state: State, batch = false) {
+  // Store every delta immediately; only coalesce React notifications in bursts.
+  // First text, progress and terminal states bypass this short render window.
+  if (batch) {
+    state.publishTimer ??= setTimeout(() => notify(state), 50);
+    return;
+  }
+  if (state.publishTimer !== undefined) clearTimeout(state.publishTimer);
+  state.publishTimer = undefined;
   const published = { ...state, messages: state.messages.map(message => ({ ...message })), progress: state.progress ? { ...state.progress } : null, toolUses: state.toolUses.map(tool => ({ ...tool })) };
   for (const listener of state.listeners) listener(published);
 }
 
 function mergeProgress(state: State, payload: Record<string, any>) {
-  const next = { ...payload } as ConversationProgress;
+  // Older runs stored progress inside payload.payload; preserve their replay.
+  const next = { ...(payload.payload || payload) } as ConversationProgress;
   if (next.status === 'running') {
     const previous = state.progress;
     next.startedAt = previous?.phase === next.phase && previous.tool === next.tool && previous.status === 'running' ? previous.startedAt : Date.now();
@@ -47,6 +56,7 @@ export function createConversationClient(api: Api) {
   const failStream = (state: State, runId: string) => {
     if (state.activeRunId !== runId) return;
     state.status = 'error';
+    state.progress = null;
     state.activeRunId = null;
     state.attachVersion++;
     const last = state.messages[state.messages.length - 1];
@@ -94,12 +104,14 @@ export function createConversationClient(api: Api) {
         state.pending.delete(next.seq);
         state.lastSeq = next.seq;
         const payload = next.payload || {};
+        let batch = false;
         if (next.type === 'progress') {
           mergeProgress(state, payload);
         } else if (next.type === 'tool') {
           mergeProgress(state, { phase: 'tool', status: 'running', tool: payload.tool || (next as any).tool, message: payload.message || `正在调用：${payload.tool || (next as any).tool}` });
         } else if (next.type === 'delta') {
           const last = state.messages[state.messages.length - 1];
+          batch = Boolean(last?.content);
           if (last?.role === 'assistant') last.content += String(payload.text || '');
           if (!state.progress || state.progress.phase !== 'model') mergeProgress(state, { phase: 'model', status: 'running', message: '模型输出中…' });
         } else if (next.type === 'done') {
@@ -109,7 +121,7 @@ export function createConversationClient(api: Api) {
           state.status = next.type; state.activeRunId = null; state.progress = null; state.attachVersion++;
           const last = state.messages[state.messages.length - 1]; if (last?.role === 'assistant') last.status = next.type;
         }
-        notify(state);
+        notify(state, batch);
       }
     }, controller.signal).then(() => {
       if (controller.signal.aborted || state.activeRunId !== runId) { clearController(); return; }
@@ -135,10 +147,19 @@ export function createConversationClient(api: Api) {
     const assistantMessage: Message = { role: 'assistant', content: '', status: 'partial' };
     state.messages.push({ role: 'user', content: input.question }, assistantMessage);
     state.status = 'running';
-    state.progress = null;
+    state.progress = { phase: 'submit', status: 'running', message: '正在提交请求…', startedAt: Date.now() };
     state.toolUses = [];
     notify(state);
-    const result = await api.start(conversationId, input);
+    let result;
+    try {
+      result = await api.start(conversationId, input);
+    } catch (error) {
+      if (state.requestVersion === requestVersion) {
+        state.status = 'error'; state.activeRunId = null; state.progress = null;
+        assistantMessage.status = 'error'; notify(state);
+      }
+      throw error;
+    }
     if (state.requestVersion !== requestVersion) {
       assistantMessage.status = 'stopped';
       notify(state);
@@ -147,8 +168,10 @@ export function createConversationClient(api: Api) {
     }
     state.activeRunId = result.runId;
     state.status = result.status;
+    state.progress = { phase: 'queue', status: 'running', message: result.status === 'queued' ? '请求已接收，等待处理…' : '请求已接收，正在分析…', startedAt: Date.now() };
     state.lastSeq = 0;
     state.pending.clear();
+    notify(state);
     subscribe(state, result.runId);
   };
 
@@ -160,6 +183,7 @@ export function createConversationClient(api: Api) {
     if (!runId) {
       if (state.status === 'running') {
         state.status = 'stopped';
+        state.progress = null;
         const last = state.messages[state.messages.length - 1];
         if (last?.role === 'assistant') last.status = 'stopped';
         notify(state);
@@ -171,13 +195,14 @@ export function createConversationClient(api: Api) {
     state.abort?.abort();
     state.activeRunId = null;
     state.status = 'stopped';
+    state.progress = null;
     const last = state.messages[state.messages.length - 1];
     if (last?.role === 'assistant') last.status = 'stopped';
     notify(state);
   };
 
   const resetIdentity = () => {
-    for (const state of states.values()) { state.abort?.abort(); state.listeners.clear(); }
+    for (const state of states.values()) { state.abort?.abort(); clearTimeout(state.publishTimer); state.listeners.clear(); }
     states.clear();
   };
 

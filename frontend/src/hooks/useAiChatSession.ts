@@ -78,6 +78,10 @@ export function useAiChatSession({ conversationKey, conversationId, context, ana
   const [messages, setMessages] = useState<StoredMsg[]>(() => id ? client.snapshot(id).messages as StoredMsg[] : []);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState('');
+  const submitPending = useRef(false);
+  const cancelledSubmission = useRef(false);
   const [progress, setProgress] = useState<ConversationProgress | null>(() => id ? client.snapshot(id).progress : null);
   const [toolUses, setToolUses] = useState<ToolUse[]>(() => id ? client.snapshot(id).toolUses : []);
   const chatKey = CHAT_KEY_PREFIX + conversationKey;
@@ -99,28 +103,35 @@ export function useAiChatSession({ conversationKey, conversationId, context, ana
     return detach;
   }, [id]);
   const snapshot = id ? client.snapshot(id) : null;
-  const loading = snapshot?.status === "running" || snapshot?.status === "queued" || Boolean(snapshot?.activeRunId);
+  const loading = submitting || snapshot?.status === "running" || snapshot?.status === "queued" || Boolean(snapshot?.activeRunId);
   const send = async (text: string) => {
-    const question = text.trim(); if (!question || loading) return;
+    const question = text.trim(); if (!question || loading || submitPending.current) return;
     if (chatKeyRef.current !== chatKey) return;
     setInput(""); setError(null);
+    setPendingQuestion(question);
+    submitPending.current = true; cancelledSubmission.current = false; setSubmitting(true);
+    setProgress({ phase: 'submit', status: 'running', message: '正在提交请求…', startedAt: Date.now() });
     let target = id;
     try {
       if (!target) {
         const created = await api.create({ kind: "chat", source: source || { type: conversationKey } });
+        if (cancelledSubmission.current) return;
         target = created.id; conversations.set(conversationKey, target); setId(target);
         client.attach(target, (state) => { setMessages(state.messages as StoredMsg[]); setProgress(state.progress); setToolUses(state.toolUses); });
       }
+      setPendingQuestion('');
       await client.send(target, { clientRequestId: `${Date.now()}-${Math.random().toString(36).slice(2)}`, question, context: { text: context, analysisScope } });
       setMessages(client.snapshot(target).messages as StoredMsg[]);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "对话失败"); }
+    } catch (reason) { setProgress(null); setError(reason instanceof Error ? reason.message : "对话失败"); }
+    finally { submitPending.current = false; setSubmitting(false); setPendingQuestion(''); }
   };
-  const stop = () => { if (id) void client.stop(id); };
+  const stop = () => { cancelledSubmission.current = true; setProgress(null); setSubmitting(false); if (id) void client.stop(id); };
   const clearChat = () => { if (id) void api.remove(id).catch(() => undefined); conversations.delete(conversationKey); setId(""); setMessages([]); setProgress(null); setToolUses([]); setError(null); };
   useEffect(() => {
     if (!progress || progress.status !== "running" || !progress.startedAt) return;
     const timer = window.setInterval(() => setProgress(current => current && current.status === "running" && current.startedAt ? { ...current, elapsedMs: Date.now() - current.startedAt } : current), 1000);
     return () => window.clearInterval(timer);
   }, [progress?.phase, progress?.tool, progress?.status, progress?.startedAt]);
-  return { conversationId: id || undefined, messages, input, setInput, loading, error, progress, toolUses, send, stop, clearChat };
+  const displayedMessages: StoredMsg[] = pendingQuestion ? [...messages, { role: 'user', content: pendingQuestion }] : messages;
+  return { conversationId: id || undefined, messages: displayedMessages, input, setInput, loading, error, progress, toolUses, send, stop, clearChat };
 }
