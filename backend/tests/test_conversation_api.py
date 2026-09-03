@@ -40,7 +40,8 @@ def test_another_guest_cannot_read_or_cancel(services):
     assert client.delete(f"/api/conversations/{cid}", headers=headers["b"]).status_code == 404
 
 
-def test_turn_events_and_idempotent_retry(services):
+def test_turn_events_and_idempotent_retry(services, monkeypatch):
+    monkeypatch.setenv("FT_PUBLIC_DEMO", "true")
     client, headers = services
     cid = client.post("/api/conversations", headers=headers["a"], json={}).json()["id"]
     response = client.post(f"/api/conversations/{cid}/turns", headers=headers["a"], json={"clientRequestId": "r1", "question": "问题", "context": {}})
@@ -57,3 +58,19 @@ def test_guest_cannot_import_history(services):
     client, headers = services
     result = client.post("/api/conversations/import", headers=headers["a"], json={"sourceKey": "legacy", "messages": [{"role": "user", "content": "x"}]})
     assert result.status_code == 403
+
+
+def test_first_turn_updates_conversation_title_from_source(services):
+    client, headers = services
+    created = client.post("/api/conversations", headers=headers["a"], json={"source": {"type": "news"}})
+    cid = created.json()["id"]
+
+    response = client.post(
+        f"/api/conversations/{cid}/turns",
+        headers=headers["a"],
+        json={"clientRequestId": "name-r1", "question": "分析今日市场", "context": {}},
+    )
+
+    assert response.status_code == 202
+    listed = client.get("/api/conversations", headers=headers["a"]).json()["items"]
+    assert next(item for item in listed if item["id"] == cid)["title"] == "金融资讯 · 分析今日市场"

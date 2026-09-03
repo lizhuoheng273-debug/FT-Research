@@ -25,7 +25,7 @@ INDEX_CODES = {
 
 STALE_MAX_AGE = 86_400
 CACHE_MAX_ENTRIES = 128
-_CACHE: OrderedDict[tuple[str, str, str, str], tuple[float, dict[str, Any]]] = OrderedDict()
+_CACHE: OrderedDict[tuple, tuple[float, dict[str, Any]]] = OrderedDict()
 class ChartUnavailable(RuntimeError):
     """没有上游数据且没有可用缓存时抛出。"""
 
@@ -255,7 +255,18 @@ def _with_fallback(primary, fallback, label: str, primary_name: str = "新浪", 
     raise ChartUnavailable(f"{label}不可用；" + "；".join(errors))
 
 
-def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
+def _request_window_days(period: str, count: int) -> int:
+    count = max(5, min(int(count or 60), 250))
+    if period in {"intraday", "five_day"}:
+        return 10
+    if period == "daily":
+        return max(35, round((count + 30) * 7 / 5))
+    if period == "weekly":
+        return (count + 8) * 7
+    return (count + 3) * 31
+
+
+def _akshare_rows(asset: str, code: str, period: str, adjust: str, count: int = 60) -> Any:
     try:
         import akshare as ak
     except ImportError as exc:
@@ -267,7 +278,7 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
             if eastmoney is None or sina is None:
                 raise ChartUnavailable("AKShare 缺少 A 股分时接口")
             end = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            start = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")
+            start = (datetime.now() - timedelta(days=_request_window_days(period, count))).strftime("%Y-%m-%d %H:%M:%S")
             return _with_fallback(
                 lambda: sina(symbol=_stock_market_symbol(code), period="1", adjust=""),
                 lambda: eastmoney(symbol=code, start_date=start, end_date=end, period="1", adjust=""),
@@ -277,11 +288,11 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
         sina = getattr(ak, "stock_zh_a_daily", None)
         if eastmoney is None or sina is None:
             raise ChartUnavailable("AKShare 缺少 A 股历史接口")
-        start = (datetime.now() - timedelta(days=1095)).strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=_request_window_days(period, count))).strftime("%Y%m%d")
         end = datetime.now().strftime("%Y%m%d")
         return _with_fallback(
             lambda: sina(symbol=_stock_market_symbol(code), start_date=start, end_date=end, adjust=adjust),
-            lambda: eastmoney(symbol=code, period="daily", adjust=adjust),
+            lambda: eastmoney(symbol=code, period="daily", adjust=adjust, start_date=start, end_date=end),
             "A 股历史行情",
         )
     if period in {"intraday", "five_day"}:
@@ -290,7 +301,7 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
         if eastmoney is None or sina is None:
             raise ChartUnavailable("AKShare 缺少指数分时接口")
         end = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        start = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")
+        start = (datetime.now() - timedelta(days=_request_window_days(period, count))).strftime("%Y-%m-%d %H:%M:%S")
         return _with_fallback(
             lambda: sina(symbol=INDEX_CODES[code][1], period="1", adjust=""),
             lambda: eastmoney(symbol=code, start_date=start, end_date=end, period="1"),
@@ -307,8 +318,8 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str) -> Any:
     )
 
 
-def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
-    points = _rows_to_points(_akshare_rows(asset, code, period, adjust))
+def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str, count: int = 60) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    points = _rows_to_points(_akshare_rows(asset, code, period, adjust, count))
     points = prepare_points(asset, period, points)
     quote_points = list(points)
     if period == "five_day":
@@ -322,6 +333,8 @@ def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str) -> tupl
         points = today_points or points[-240:]
     elif period in {"weekly", "monthly"}:
         points = _aggregate(points, period)
+    if period in {"daily", "weekly", "monthly"}:
+        points = points[-max(5, min(int(count or 60), 250)):]
     if not points:
         raise ChartUnavailable("上游未返回行情数据")
     return "AKShare", points, quote_points
@@ -350,20 +363,22 @@ def _quote(points: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def get_chart(asset: str, code: str, period: str, adjust: str = "qfq") -> dict[str, Any]:
+def get_chart(asset: str, code: str, period: str, adjust: str = "qfq", count: int = 60) -> dict[str, Any]:
     code = normalize_asset_code(asset, code)
     if period not in PERIODS:
         raise ValueError("period 不受支持")
     if adjust not in ADJUSTS:
         raise ValueError("adjust 必须是 qfq、hfq 或空字符串")
-    key = (asset, code, period, adjust)
+    count = max(5, min(int(count or 60), 250))
+    key = (asset, code, period, adjust, count)
+    legacy_key = (asset, code, period, adjust)
     now = time.time()
-    cached = _CACHE.get(key)
+    cached = _CACHE.get(key) or _CACHE.get(legacy_key)
     if cached and now - cached[0] < cache_ttl(period):
         _CACHE.move_to_end(key)
         return cached[1]
     try:
-        fetched = _fetch_from_akshare(asset, code, period, adjust)
+        fetched = _fetch_from_akshare(asset, code, period, adjust, count)
         if isinstance(fetched, tuple) and len(fetched) == 3:
             source, points, quote_points = fetched
         elif isinstance(fetched, tuple) and len(fetched) == 2:

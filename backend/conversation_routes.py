@@ -107,6 +107,7 @@ def install_conversation_routes(app):
             # Context is an immutable snapshot, not an authorization input.
             if len(json.dumps(body.context, ensure_ascii=False)) > 24000:
                 raise HTTPException(413, "上下文过长")
+            _store(request).auto_name_conversation(principal, conversation_id, body.question)
             ip = request.client.host if request.client else "unknown"
             result = _manager(request).submit(principal, conversation_id, body.clientRequestId, body.question, body.context, ip)
             return {"runId": result["id"], "status": result["status"]}

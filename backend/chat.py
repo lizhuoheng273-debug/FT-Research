@@ -13,6 +13,8 @@ import ipaddress
 import json
 import os
 import socket
+import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import requests
@@ -22,11 +24,25 @@ import cli_runtime
 import gstock
 import research_framework
 import tools
+from tool_runtime import run_with_deadline
 
 # 工具定义与执行统一由 tools.py 提供（chat / mcp_server / debate 共用一套）。
 # 这两个别名是历史入口，mcp_server 与既有测试仍按 chat.TOOLS / chat._exec_tool 取用。
 TOOLS = tools.TOOLS
 _exec_tool = tools.exec_tool
+
+
+def execute_scoped_tool(name: str, args: dict, allowed_tool_names: set[str] | None, timeout_seconds: float = 20.0):
+    # Keep the historical chat._exec_tool seam usable by debate and stream tests
+    # while production uses the bounded shared tool runtime.
+    if _exec_tool is not tools.exec_tool:
+        outcome = run_with_deadline(lambda: _exec_scoped_tool(name, args, allowed_tool_names), timeout_seconds)
+        if outcome.status == "ok":
+            return outcome.value
+        if outcome.status == "timeout":
+            return {"status": "unavailable", "data_gap": "数据源响应超过 20 秒，已跳过"}
+        return {"status": "unavailable", "data_gap": f"{name} 执行失败：{outcome.error}"}
+    return tools.execute_scoped_tool(name, args, allowed_tool_names, timeout_seconds)
 
 
 def _exec_scoped_tool(name: str, args: dict, allowed_tool_names: set[str] | None):
@@ -244,6 +260,7 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
     trace: list[dict] = []
 
     for rnd in range(1, MAX_ROUNDS + 1):
+        yield {"type": "progress", "payload": {"phase": "model", "status": "running", "message": "模型分析中…"}}
         resp = _call_llm_stream(cfg, messages, use_tools=True)
         content_parts: list[str] = []
         tool_acc: dict[int, dict] = {}
@@ -270,6 +287,7 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
                     acc["arguments"] += fn["arguments"]
 
         if not tool_acc:  # 本轮是纯答案（已流完）→ 结束
+            yield {"type": "progress", "payload": {"phase": "model", "status": "completed", "message": "模型分析完成"}}
             yield {"type": "done", "trace": trace, "rounds": rnd}
             return
 
@@ -282,17 +300,46 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
                 "function": {"name": tool_acc[i]["name"], "arguments": tool_acc[i]["arguments"]},
             } for i in sorted(tool_acc)],
         })
+        calls = []
         for i in sorted(tool_acc):
             a = tool_acc[i]
             try:
                 args = json.loads(a["arguments"] or "{}")
             except json.JSONDecodeError:
                 args = {}
-            yield {"type": "tool", "tool": a["name"], "args": args}
-            result = _exec_scoped_tool(a["name"], args, allowed_tool_names)
-            trace.append({"tool": a["name"], "args": args})
+            calls.append((i, a["name"], args, time.monotonic()))
+            yield {"type": "progress", "payload": {
+                "phase": "tool", "status": "running", "tool": a["name"],
+                "elapsedMs": 0, "message": f"正在调用：{a['name']}…",
+            }}
+
+        max_workers = min(4, len(calls))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ft-ai-tool") as executor:
+            futures = {
+                i: executor.submit(execute_scoped_tool, name, args, allowed_tool_names, 20.0)
+                for i, name, args, _started in calls
+            }
+            results = {}
+            for i, name, args, started in calls:
+                result = futures[i].result()
+                results[i] = result
+                gap = str(result.get("data_gap", "")) if isinstance(result, dict) else ""
+                if isinstance(result, dict) and result.get("status") == "unavailable":
+                    status = "timeout" if ("超时" in gap or "timeout" in gap.lower() or "20" in gap) else "unavailable"
+                else:
+                    status = "completed"
+                message = f"{name} 超时，继续分析" if status == "timeout" else f"{name} 不可用，继续分析" if status == "unavailable" else f"{name} 调用完成"
+                yield {"type": "progress", "payload": {
+                    "phase": "tool", "status": status, "tool": name,
+                    "elapsedMs": int((time.monotonic() - started) * 1000),
+                    "message": message,
+                }}
+                trace.append({"tool": name, "args": args})
+
+        for i, name, args, _started in calls:
+            result = results[i]
             messages.append({
-                "role": "tool", "tool_call_id": a["id"],
+                "role": "tool", "tool_call_id": tool_acc[i]["id"],
                 "content": json.dumps(result, ensure_ascii=False)[:_TOOL_RESULT_CAP],
             })
 

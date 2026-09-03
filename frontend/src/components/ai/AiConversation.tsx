@@ -19,7 +19,7 @@ export function AiConversation({ session, suggestions = [], mode = "compact", pl
   mode?: "compact" | "workspace";
   placeholder?: string;
 }) {
-  const { messages: msgs, input, setInput, loading, error, send, stop } = session;
+  const { messages: msgs, input, setInput, loading, error, progress, send, stop } = session;
   const scrollRef = useRef<HTMLDivElement>(null);
   const workspace = mode === "workspace";
 
@@ -50,7 +50,7 @@ export function AiConversation({ session, suggestions = [], mode = "compact", pl
           {m.role === "assistant" && m.content && !m.partial && <div className="mt-2"><SaveNoteButton kind="问AI" title={`问 AI · ${msgs[i - 1]?.content?.slice(0, 24) || "对话"}`} content={m.content} /></div>}
         </div>
       </div>)}
-      {loading && <div className="mx-auto flex max-w-4xl items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />AI 正在思考 / 调取数据，回答会逐步显示…</div>}
+      {loading && <div className="mx-auto flex max-w-4xl items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{progress?.message || "模型分析中…"}{typeof progress?.elapsedMs === "number" && progress.elapsedMs > 1000 ? ` · ${Math.floor(progress.elapsedMs / 1000)} 秒` : ""}</div>}
       {error && <div className="mx-auto flex max-w-4xl items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive"><AlertCircle className="h-3.5 w-3.5 shrink-0" />{error}</div>}
       {msgs.length === 0 && suggestions.length > 0 && <div className="mx-auto flex max-w-2xl flex-wrap justify-center gap-2 pt-1">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void send(suggestion)} className="rounded-full border border-border bg-muted/40 px-3 py-1.5 text-xs hover:border-primary/40 hover:text-primary">{suggestion}</button>)}</div>}
     </div>
