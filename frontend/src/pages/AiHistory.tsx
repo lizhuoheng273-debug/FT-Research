@@ -16,7 +16,7 @@ export function AiHistory() {
   const label = useMemo(() => identity?.kind === "guest" ? "仅本次体验 · 游客额度由服务端控制" : "主人历史已保存到服务器", [identity?.kind]);
   return <div className="space-y-5">
     <div className="flex flex-wrap items-end justify-between gap-3">
-      <div><h1 className="text-2xl font-bold">AI 对话</h1><p className="mt-1 text-sm text-muted-foreground">{label}</p></div>
+      <div><h1 className="text-2xl font-bold">AI 对话记录</h1><p className="mt-1 text-sm text-muted-foreground">{label}</p></div>
       <Link to="/finance/ai" className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">新对话</Link>
     </div>
     <input aria-label="搜索对话" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题" className="w-full rounded-lg border border-border bg-background px-3 py-2" />
