@@ -70,7 +70,7 @@ export async function legacyStreamCleanup(activeController: AbortController | nu
   } finally { /* request identity cleanup is complete */ }
 }
 
-export function useAiChatSession({ conversationKey, conversationId, context }: {
+export function useAiChatSession({ conversationKey, conversationId, context, analysisScope = "general" }: {
   conversationKey: string; conversationId?: string; context: string; analysisScope?: AnalysisScope;
 }): AiChatSession {
   const [id, setId] = useState(() => conversationId || conversations.get(conversationKey) || "");
