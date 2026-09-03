@@ -46,6 +46,8 @@ def policy_for(method: str, path: str) -> str:
         return "authenticated"
     if method == "GET" and any(_matches(path, item) for item in _MARKET_READ):
         return "authenticated"
+    if method == "GET" and re.fullmatch(r"/api/runs/[^/]+/events", path):
+        return "authenticated"
     if method in {"GET", "POST", "PATCH", "DELETE"} and path.startswith("/api/conversations"):
         return "authenticated"
     if method == "POST" and path in {"/api/chat", "/api/debate"}:

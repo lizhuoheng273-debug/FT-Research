@@ -40,7 +40,8 @@ def test_another_guest_cannot_read_or_cancel(services):
     assert client.delete(f"/api/conversations/{cid}", headers=headers["b"]).status_code == 404
 
 
-def test_turn_events_and_idempotent_retry(services):
+def test_turn_events_and_idempotent_retry(services, monkeypatch):
+    monkeypatch.setenv("FT_PUBLIC_DEMO", "true")
     client, headers = services
     cid = client.post("/api/conversations", headers=headers["a"], json={}).json()["id"]
     response = client.post(f"/api/conversations/{cid}/turns", headers=headers["a"], json={"clientRequestId": "r1", "question": "问题", "context": {}})

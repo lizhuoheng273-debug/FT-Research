@@ -15,6 +15,10 @@ def test_market_reads_need_identity_and_tools_are_scoped():
     assert "query_portfolio" not in allowed_tools(Principal("g", "guest"))
 
 
+def test_run_event_stream_requires_identity():
+    assert policy_for("GET", "/api/runs/run-id/events") == "authenticated"
+
+
 def test_scoped_tool_denial_happens_before_handler(monkeypatch):
     import chat
     called = []
