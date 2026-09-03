@@ -4,7 +4,7 @@ import { Settings, Sparkles, Trash2, X } from "lucide-react";
 import { AiConversation } from "@/components/ai/AiConversation";
 import { useAiChatSession } from "@/hooks/useAiChatSession";
 import { hasLlm, type AnalysisScope } from "@/lib/llm";
-import { buildFinanceAiPath, type FinanceAiSource } from "@/lib/financeAi";
+import { buildAiWorkspacePath, type AiWorkspaceSource } from "@/lib/financeAi";
 
 interface Props {
   context: string;
@@ -12,7 +12,7 @@ interface Props {
   label?: string;
   scopeKey?: string;
   analysisScope?: AnalysisScope;
-  workspaceSource?: FinanceAiSource;
+  workspaceSource?: AiWorkspaceSource;
   workspaceCode?: string;
   workspacePanel?: string;
   workspaceEventId?: string;
@@ -51,7 +51,7 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
     setOpen(false);
   };
 
-  const openWorkspace = () => navigate(buildFinanceAiPath({ source: workspaceSource!, code: workspaceCode, panel: workspacePanel, eventId: workspaceEventId, date: workspaceDate }), { state: { from: pathname + window.location.search } });
+  const openWorkspace = () => navigate(buildAiWorkspacePath(workspaceSource!, { code: workspaceCode, panel: workspacePanel, eventId: workspaceEventId, date: workspaceDate }), { state: { from: pathname + window.location.search } });
 
   if (workspaceSource) {
     return <button type="button" onClick={openWorkspace} className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-3 py-1.5 text-sm font-medium text-primary shadow-glow transition-colors hover:bg-primary/25"><Sparkles className="h-4 w-4" />{label}</button>;

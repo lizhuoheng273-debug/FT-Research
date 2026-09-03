@@ -26,11 +26,11 @@ test("AI workspace provides a wide responsive research layout", () => {
   assert.match(workspace, /AiConversation/);
   assert.match(workspace, /行情/);
   assert.match(workspace, /按需查询|按需重新读取/);
-  assert.match(workspace, /工具调用记录/);
+  assert.match(workspace, /ConversationRail/);
+  assert.doesNotMatch(workspace, /已带入上下文|工具调用记录/);
   assert.match(workspace, /lg:grid-cols/);
   assert.match(workspace, /h-\[calc\(100dvh-1\.5rem\)\]/);
   assert.match(workspace, /min-h-0 flex-1/);
-  assert.match(workspace, /max-h-72.*overflow-auto/);
   assert.match(layout, /stockAiWorkspace/);
   assert.match(layout, /max-w-none/);
   assert.ok(fs.existsSync(quoteHookUrl));

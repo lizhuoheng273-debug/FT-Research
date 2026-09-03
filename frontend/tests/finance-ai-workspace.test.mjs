@@ -26,6 +26,9 @@ test("finance AI workspace exposes the shared route and all source keys", async 
   assert.match(workspace, /useSearchParams/);
   assert.match(workspace, /useAiChatSession/);
   assert.match(workspace, /AiConversation/);
+  assert.match(workspace, /ConversationRail/);
+  assert.doesNotMatch(workspace, /已带入上下文/);
+  assert.doesNotMatch(workspace, /工具调用记录/);
   assert.match(workspace, /state\.from|location\.state/);
   assert.doesNotMatch(workspace, /JSON\.stringify\([^)]*\)\.replace/);
 });

@@ -25,6 +25,9 @@
     --destructive: 0 72% 58%;
     --destructive-foreground: 0 0% 100%;
     --border: 210 30% 22%;             /* surface-3 边框 */
+    --input: 220 28% 12%;              /* 文字输入 surface */
+    --input-foreground: 210 30% 94%;
+    --input-placeholder: 215 18% 58%;
     --radius: 1rem;
 
     /* 语义色（涨跌配色由页面按 A股红涨绿跌自行选用 success/danger） */
@@ -61,6 +64,9 @@
     --destructive: 0 74% 55%;
     --destructive-foreground: 0 0% 100%;
     --border: 214 20% 84%;
+    --input: 0 0% 100%;
+    --input-foreground: 222 40% 12%;
+    --input-placeholder: 215 16% 48%;
 
     --success: 145 62% 40%;
     --danger: 0 74% 52%;
@@ -78,6 +84,14 @@
   }
 
   * { @apply border-border; }
+
+  /* 所有文字输入入口共用主题 surface，避免深色界面残留白底或灰黑底。 */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea, select {
+    background-color: hsl(var(--input)) !important;
+    color: hsl(var(--input-foreground)) !important;
+    caret-color: hsl(var(--primary));
+  }
+  input::placeholder, textarea::placeholder { color: hsl(var(--input-placeholder)) !important; }
 
   body {
     @apply bg-background text-foreground;

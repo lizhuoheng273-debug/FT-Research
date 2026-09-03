@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createConversationApi } from "@/lib/conversationApi";
 import { createConversationClient } from "@/lib/conversationClient";
+import type { ConversationProgress } from "@/lib/conversationClient";
 import type { AnalysisScope, ChatMsg } from "@/lib/llm";
 import { storageGet, storageRemove, storageSet } from "@/lib/storage";
 
-export interface ToolUse { name: string; arg: string }
+export interface ToolUse { name: string; arg?: string; status?: string; message?: string; elapsedMs?: number }
 export type StoredMsg = ChatMsg & { tools?: ToolUse[]; partial?: boolean; status?: string };
 export interface AiChatSession {
-  messages: StoredMsg[]; input: string; setInput: (value: string) => void; loading: boolean; error: string | null;
-  toolUses: ToolUse[]; send: (text: string) => Promise<void>; stop: () => void; clearChat: () => void;
+  conversationId?: string; messages: StoredMsg[]; input: string; setInput: (value: string) => void; loading: boolean; error: string | null;
+  progress: ConversationProgress | null; toolUses: ToolUse[]; send: (text: string) => Promise<void>; stop: () => void; clearChat: () => void;
 }
 
 const api = createConversationApi();
@@ -70,13 +71,15 @@ export async function legacyStreamCleanup(activeController: AbortController | nu
   } finally { /* request identity cleanup is complete */ }
 }
 
-export function useAiChatSession({ conversationKey, conversationId, context, analysisScope = "general" }: {
-  conversationKey: string; conversationId?: string; context: string; analysisScope?: AnalysisScope;
+export function useAiChatSession({ conversationKey, conversationId, context, analysisScope = "general", source }: {
+  conversationKey: string; conversationId?: string; context: string; analysisScope?: AnalysisScope; source?: Record<string, any>;
 }): AiChatSession {
   const [id, setId] = useState(() => conversationId || conversations.get(conversationKey) || "");
   const [messages, setMessages] = useState<StoredMsg[]>(() => id ? client.snapshot(id).messages as StoredMsg[] : []);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ConversationProgress | null>(() => id ? client.snapshot(id).progress : null);
+  const [toolUses, setToolUses] = useState<ToolUse[]>(() => id ? client.snapshot(id).toolUses : []);
   const chatKey = CHAT_KEY_PREFIX + conversationKey;
   const [chat, setChat] = useState<{ key: string; msgs: StoredMsg[] }>(() => ({ key: chatKey, msgs: [] }));
   const abortRef = useRef<AbortController | null>(null);
@@ -89,14 +92,14 @@ export function useAiChatSession({ conversationKey, conversationId, context, ana
     if (chat.key !== chatKey) return;
     setChat({ key: chatKey, msgs: [] });
   }, [chatKey, legacyConversationKey]);
-  useEffect(() => { const next = conversationId || conversations.get(conversationKey) || ""; setId(next); setMessages(next ? client.snapshot(next).messages as StoredMsg[] : []); }, [conversationKey, conversationId]);
+  useEffect(() => { const next = conversationId || conversations.get(conversationKey) || ""; setId(next); setMessages(next ? client.snapshot(next).messages as StoredMsg[] : []); setProgress(next ? client.snapshot(next).progress : null); setToolUses(next ? client.snapshot(next).toolUses : []); }, [conversationKey, conversationId]);
   useEffect(() => {
     if (!id) return;
-    const detach = client.attach(id, (state) => { setMessages(state.messages as StoredMsg[]); });
+    const detach = client.attach(id, (state) => { setMessages(state.messages as StoredMsg[]); setProgress(state.progress); setToolUses(state.toolUses); });
     return detach;
   }, [id]);
   const snapshot = id ? client.snapshot(id) : null;
-  const loading = Boolean(snapshot?.activeRunId);
+  const loading = snapshot?.status === "running" || snapshot?.status === "queued" || Boolean(snapshot?.activeRunId);
   const send = async (text: string) => {
     const question = text.trim(); if (!question || loading) return;
     if (chatKeyRef.current !== chatKey) return;
@@ -104,16 +107,20 @@ export function useAiChatSession({ conversationKey, conversationId, context, ana
     let target = id;
     try {
       if (!target) {
-        const created = await api.create({ kind: "chat", source: { type: conversationKey } });
+        const created = await api.create({ kind: "chat", source: source || { type: conversationKey } });
         target = created.id; conversations.set(conversationKey, target); setId(target);
-        client.attach(target, (state) => setMessages(state.messages as StoredMsg[]));
+        client.attach(target, (state) => { setMessages(state.messages as StoredMsg[]); setProgress(state.progress); setToolUses(state.toolUses); });
       }
       await client.send(target, { clientRequestId: `${Date.now()}-${Math.random().toString(36).slice(2)}`, question, context: { text: context, analysisScope } });
       setMessages(client.snapshot(target).messages as StoredMsg[]);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "对话失败"); }
   };
   const stop = () => { if (id) void client.stop(id); };
-  const clearChat = () => { if (id) void api.remove(id).catch(() => undefined); conversations.delete(conversationKey); setId(""); setMessages([]); setError(null); };
-  const toolUses = useMemo(() => [], [messages]);
-  return { messages, input, setInput, loading, error, toolUses, send, stop, clearChat };
+  const clearChat = () => { if (id) void api.remove(id).catch(() => undefined); conversations.delete(conversationKey); setId(""); setMessages([]); setProgress(null); setToolUses([]); setError(null); };
+  useEffect(() => {
+    if (!progress || progress.status !== "running" || !progress.startedAt) return;
+    const timer = window.setInterval(() => setProgress(current => current && current.status === "running" && current.startedAt ? { ...current, elapsedMs: Date.now() - current.startedAt } : current), 1000);
+    return () => window.clearInterval(timer);
+  }, [progress?.phase, progress?.tool, progress?.status, progress?.startedAt]);
+  return { conversationId: id || undefined, messages, input, setInput, loading, error, progress, toolUses, send, stop, clearChat };
 }

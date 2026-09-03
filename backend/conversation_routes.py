@@ -60,9 +60,9 @@ def _detail(store, principal, conversation_id: str) -> dict:
 
 def install_conversation_routes(app):
     @app.get("/api/conversations")
-    def list_conversations(request: Request, q: str = Query("", max_length=100), limit: int = Query(30, ge=1, le=100), cursor: str | None = None):
+    def list_conversations(request: Request, q: str = Query("", max_length=100), limit: int = Query(30, ge=1, le=100), cursor: str | None = None, sourceFamily: str | None = Query(None, pattern="^(ai|finance)$")):
         principal = require_principal(request)
-        return _store(request).list_conversations(principal, q, limit, cursor)
+        return _store(request).list_conversations(principal, q, limit, cursor, sourceFamily)
 
     @app.post("/api/conversations")
     def create_conversation(body: ConversationBody, request: Request):
@@ -107,6 +107,7 @@ def install_conversation_routes(app):
             # Context is an immutable snapshot, not an authorization input.
             if len(json.dumps(body.context, ensure_ascii=False)) > 24000:
                 raise HTTPException(413, "上下文过长")
+            _store(request).auto_name_conversation(principal, conversation_id, body.question)
             ip = request.client.host if request.client else "unknown"
             result = _manager(request).submit(principal, conversation_id, body.clientRequestId, body.question, body.context, ip)
             return {"runId": result["id"], "status": result["status"]}

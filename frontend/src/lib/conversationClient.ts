@@ -1,5 +1,7 @@
 export type ConversationEvent = { runId: string; seq: number; type: string; payload?: Record<string, any> };
 export type ConversationInput = { clientRequestId: string; question: string; context: Record<string, any> };
+export type ConversationProgress = { phase: string; status: string; message: string; tool?: string; elapsedMs?: number; startedAt?: number };
+export type ConversationToolUse = { name: string; arg?: string; status: string; message?: string; elapsedMs?: number };
 
 type Api = {
   get(id: string): Promise<any>;
@@ -9,20 +11,34 @@ type Api = {
 };
 
 type Message = { role: 'user' | 'assistant'; content: string; status?: string };
-type State = { conversation: any; messages: Message[]; activeRunId: string | null; lastSeq: number; pending: Map<number, ConversationEvent>; listeners: Set<(state: State) => void>; abort?: AbortController; requestVersion: number; attachVersion: number; status: string };
+type State = { conversation: any; messages: Message[]; activeRunId: string | null; lastSeq: number; pending: Map<number, ConversationEvent>; listeners: Set<(state: State) => void>; abort?: AbortController; requestVersion: number; attachVersion: number; status: string; progress: ConversationProgress | null; toolUses: ConversationToolUse[] };
 
 function stateFor(states: Map<string, State>, id: string): State {
   let state = states.get(id);
   if (!state) {
-    state = { conversation: { id }, messages: [], activeRunId: null, lastSeq: 0, pending: new Map(), listeners: new Set(), requestVersion: 0, attachVersion: 0, status: 'idle' };
+    state = { conversation: { id }, messages: [], activeRunId: null, lastSeq: 0, pending: new Map(), listeners: new Set(), requestVersion: 0, attachVersion: 0, status: 'idle', progress: null, toolUses: [] };
     states.set(id, state);
   }
   return state;
 }
 
 function notify(state: State) {
-  const published = { ...state, messages: state.messages.map((message) => ({ ...message })) };
+  const published = { ...state, messages: state.messages.map(message => ({ ...message })), progress: state.progress ? { ...state.progress } : null, toolUses: state.toolUses.map(tool => ({ ...tool })) };
   for (const listener of state.listeners) listener(published);
+}
+
+function mergeProgress(state: State, payload: Record<string, any>) {
+  const next = { ...payload } as ConversationProgress;
+  if (next.status === 'running') {
+    const previous = state.progress;
+    next.startedAt = previous?.phase === next.phase && previous.tool === next.tool && previous.status === 'running' ? previous.startedAt : Date.now();
+  }
+  state.progress = next;
+  if (next.phase !== 'tool' || !next.tool) return;
+  const index = state.toolUses.findIndex(tool => tool.name === next.tool);
+  const tool = { name: next.tool, status: next.status, message: next.message, elapsedMs: next.elapsedMs };
+  if (index < 0) state.toolUses.push(tool);
+  else state.toolUses[index] = { ...state.toolUses[index], ...tool };
 }
 
 export function createConversationClient(api: Api) {
@@ -78,14 +94,19 @@ export function createConversationClient(api: Api) {
         state.pending.delete(next.seq);
         state.lastSeq = next.seq;
         const payload = next.payload || {};
-        if (next.type === 'delta') {
+        if (next.type === 'progress') {
+          mergeProgress(state, payload);
+        } else if (next.type === 'tool') {
+          mergeProgress(state, { phase: 'tool', status: 'running', tool: payload.tool || (next as any).tool, message: payload.message || `正在调用：${payload.tool || (next as any).tool}` });
+        } else if (next.type === 'delta') {
           const last = state.messages[state.messages.length - 1];
           if (last?.role === 'assistant') last.content += String(payload.text || '');
+          if (!state.progress || state.progress.phase !== 'model') mergeProgress(state, { phase: 'model', status: 'running', message: '模型输出中…' });
         } else if (next.type === 'done') {
-          state.status = 'completed'; state.activeRunId = null; state.attachVersion++;
+          state.status = 'completed'; state.activeRunId = null; state.progress = null; state.attachVersion++;
           const last = state.messages[state.messages.length - 1]; if (last?.role === 'assistant') last.status = 'complete';
         } else if (next.type === 'stopped' || next.type === 'error' || next.type === 'interrupted') {
-          state.status = next.type; state.activeRunId = null; state.attachVersion++;
+          state.status = next.type; state.activeRunId = null; state.progress = null; state.attachVersion++;
           const last = state.messages[state.messages.length - 1]; if (last?.role === 'assistant') last.status = next.type;
         }
         notify(state);
@@ -114,6 +135,8 @@ export function createConversationClient(api: Api) {
     const assistantMessage: Message = { role: 'assistant', content: '', status: 'partial' };
     state.messages.push({ role: 'user', content: input.question }, assistantMessage);
     state.status = 'running';
+    state.progress = null;
+    state.toolUses = [];
     notify(state);
     const result = await api.start(conversationId, input);
     if (state.requestVersion !== requestVersion) {
@@ -160,7 +183,7 @@ export function createConversationClient(api: Api) {
 
   const snapshot = (conversationId: string) => {
     const state = stateFor(states, conversationId);
-    return { conversation: state.conversation, messages: state.messages.map((message) => ({ ...message })), activeRunId: state.activeRunId, status: state.status, lastSeq: state.lastSeq };
+    return { conversation: state.conversation, messages: state.messages.map((message) => ({ ...message })), activeRunId: state.activeRunId, status: state.status, lastSeq: state.lastSeq, progress: state.progress ? { ...state.progress } : null, toolUses: state.toolUses.map(tool => ({ ...tool })) };
   };
 
   return { attach, send, stop, resetIdentity, snapshot };

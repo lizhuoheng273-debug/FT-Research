@@ -76,7 +76,7 @@ export function StockBatchPicker({
           onChange={(event) => onRawValueChange(event.target.value)}
           rows={2}
           placeholder="也可粘贴代码：600519 000858, 002463\n300750 688017"
-          className="flex-1 resize-y rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="flex-1 resize-y rounded-lg border border-border bg-input px-3 py-2 text-sm text-input-foreground outline-none placeholder:text-input-placeholder focus:border-primary/50"
         />
         <button
           type="button"

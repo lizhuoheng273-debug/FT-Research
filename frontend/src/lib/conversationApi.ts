@@ -18,7 +18,7 @@ async function jsonRequest<T>(path: string, method = "GET", body?: unknown): Pro
 export function createConversationApi() {
   return {
     create: (input: { kind?: string; source?: Record<string, any> }) => jsonRequest<ConversationSummary>("/conversations", "POST", input),
-    list: (query = "", cursor?: string) => jsonRequest<{ items: ConversationSummary[]; nextCursor: string | null }>(`/conversations?q=${encodeURIComponent(query)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+    list: (query = "", cursor?: string, sourceFamily?: "ai" | "finance") => jsonRequest<{ items: ConversationSummary[]; nextCursor: string | null }>(`/conversations?q=${encodeURIComponent(query)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${sourceFamily ? `&sourceFamily=${encodeURIComponent(sourceFamily)}` : ""}`),
     get: (id: string) => jsonRequest<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`),
     update: (id: string, title: string) => jsonRequest<ConversationSummary>(`/conversations/${encodeURIComponent(id)}`, "PATCH", { title }),
     remove: (id: string) => jsonRequest<{ ok: boolean }>(`/conversations/${encodeURIComponent(id)}`, "DELETE"),

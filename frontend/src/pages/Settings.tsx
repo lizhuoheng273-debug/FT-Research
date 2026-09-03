@@ -45,7 +45,7 @@ export function Settings() {
         <p className="mb-3 text-xs text-muted-foreground">仅当部署时设置了 VR_API_KEY 才需要填写，用于防止公网接口被滥用。</p>
         <div className="flex items-center gap-2">
           <input type="password" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} placeholder="VR_API_KEY"
-            className="flex-1 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
+            className="flex-1 rounded-lg border border-border bg-input px-3 py-2 text-sm text-input-foreground outline-none placeholder:text-input-placeholder focus:border-primary/50" />
           <button onClick={saveAccess} className="rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/25">保存</button>
         </div>
       </GlassCard>

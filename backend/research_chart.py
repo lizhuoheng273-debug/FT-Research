@@ -7,7 +7,6 @@ import statistics
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta
-from functools import lru_cache
 from typing import Any
 
 import market_chart
@@ -15,13 +14,17 @@ import market_chart
 
 SECTOR_CACHE_TTL = 300
 SECTOR_STALE_MAX_AGE = 86_400
+CATALOG_STALE_MAX_AGE = 86_400
 _SECTOR_CACHE: OrderedDict[tuple[str, str, str, int], tuple[float, dict[str, Any]]] = OrderedDict()
+_CATALOG_CACHE: tuple[float, dict[str, list[str]]] | None = None
 _PERIOD_MAP = {"day": "daily", "week": "weekly", "month": "monthly"}
 _SECTOR_PERIOD_MAP = {"day": "日k", "week": "周k", "month": "月k"}
 
 
 def clear_cache() -> None:
+    global _CATALOG_CACHE
     _SECTOR_CACHE.clear()
+    _CATALOG_CACHE = None
 
 
 def _round(value: float) -> float:
@@ -115,20 +118,29 @@ def _catalog_names(rows: Any) -> list[str]:
     return output
 
 
-@lru_cache(maxsize=1)
 def load_sector_catalogs() -> dict[str, list[str]]:
+    global _CATALOG_CACHE
+    now = time.time()
+    if _CATALOG_CACHE and now - _CATALOG_CACHE[0] < SECTOR_CACHE_TTL:
+        return _CATALOG_CACHE[1]
+    try:
+        import akshare as ak
+        catalogs = {
+            "concept": _catalog_names(ak.stock_board_concept_name_em()),
+            "industry": _catalog_names(ak.stock_board_industry_name_em()),
+        }
+    except Exception:
+        if _CATALOG_CACHE and now - _CATALOG_CACHE[0] <= CATALOG_STALE_MAX_AGE:
+            return _CATALOG_CACHE[1]
+        raise
+    _CATALOG_CACHE = (now, catalogs)
+    return catalogs
+
+
+def _fetch_sector_points(board_type: str, symbol: str, period: str, count: int = 60) -> list[dict[str, Any]]:
     import akshare as ak
 
-    return {
-        "concept": _catalog_names(ak.stock_board_concept_name_em()),
-        "industry": _catalog_names(ak.stock_board_industry_name_em()),
-    }
-
-
-def _fetch_sector_points(board_type: str, symbol: str, period: str) -> list[dict[str, Any]]:
-    import akshare as ak
-
-    start = (datetime.now() - timedelta(days=1095)).strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=market_chart._request_window_days(_PERIOD_MAP[period], count))).strftime("%Y%m%d")
     end = datetime.now().strftime("%Y%m%d")
     function = ak.stock_board_concept_hist_em if board_type == "concept" else ak.stock_board_industry_hist_em
     rows = function(symbol=symbol, start_date=start, end_date=end, period=_SECTOR_PERIOD_MAP[period], adjust="")
@@ -146,7 +158,7 @@ def _sector_summary(identifier: str, period: str, count: int) -> dict[str, Any]:
     if cached and now - cached[0] < SECTOR_CACHE_TTL:
         return dict(cached[1])
     try:
-        points = _fetch_sector_points(match["board_type"], match["symbol"], period)
+        points = _fetch_sector_points(match["board_type"], match["symbol"], period, count)
         result = {
             "asset": "sector",
             "identifier": identifier,
@@ -185,7 +197,7 @@ def fetch_chart_summary(asset: str, identifier: str, period: str = "day", count:
     count = max(5, min(int(count or 60), 250))
     if asset == "sector":
         return _sector_summary(str(identifier or "").strip(), period, count)
-    chart = market_chart.get_chart(asset, identifier, _PERIOD_MAP[period], "qfq" if asset == "stock" else "")
+    chart = market_chart.get_chart(asset, identifier, _PERIOD_MAP[period], "qfq" if asset == "stock" else "", count)
     return {
         "asset": asset,
         "identifier": identifier,

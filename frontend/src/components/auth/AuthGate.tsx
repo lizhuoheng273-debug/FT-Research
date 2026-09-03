@@ -17,7 +17,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <h1 className="text-2xl font-extrabold">FT-<span className="text-primary">Research</span></h1>
         <p className="mt-2 text-sm text-muted-foreground">主人登录可恢复历史；游客体验仅在当前页面保留。</p>
         <form onSubmit={submit} className="mt-6 space-y-3">
-          <label className="block text-sm"><span className="mb-1 block">主人密码</span><input aria-label="主人密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2" /></label>
+          <label className="block text-sm"><span className="mb-1 block">主人密码</span><input aria-label="主人密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-lg border border-border bg-input px-3 py-2 text-input-foreground placeholder:text-input-placeholder" /></label>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <button className="w-full rounded-lg bg-primary px-3 py-2 font-medium text-primary-foreground">主人登录</button>
         </form>

@@ -212,13 +212,17 @@ class SessionStore:
             row = self._conversation_row(conn, principal, conversation_id)
             return self._conversation_dict(conn, row)
 
-    def list_conversations(self, principal: Principal, query: str = "", limit: int = 30, cursor=None) -> dict:
+    def list_conversations(self, principal: Principal, query: str = "", limit: int = 30, cursor=None, source_family: str | None = None) -> dict:
         limit = max(1, min(int(limit), 100))
         params = [principal.id]
         where = "c.principal_id=? AND c.deleted_at IS NULL"
         if query:
             where += " AND c.title LIKE ?"
             params.append(f"%{query[:100]}%")
+        if source_family == "ai":
+            where += " AND (json_extract(c.source_json, '$.type') LIKE 'ai-%' OR json_extract(c.source_json, '$.type') LIKE '/ai/%')"
+        elif source_family == "finance":
+            where += " AND (json_extract(c.source_json, '$.type') IS NULL OR (json_extract(c.source_json, '$.type') NOT LIKE 'ai-%' AND json_extract(c.source_json, '$.type') NOT LIKE '/ai/%'))"
         if cursor:
             where += " AND c.updated_at < ?"
             params.append(float(cursor))
@@ -238,6 +242,34 @@ class SessionStore:
             self._conversation_row(conn, principal, conversation_id)
             conn.execute("UPDATE conversation SET title=?,updated_at=? WHERE id=? AND principal_id=?", (title, self.clock(), conversation_id, principal.id))
             row = self._conversation_row(conn, principal, conversation_id)
+            return self._conversation_dict(conn, row)
+
+    def auto_name_conversation(self, principal: Principal, conversation_id: str, question: str) -> dict:
+        """Name a new conversation from its entry point and first question."""
+        entry_names = {
+            "ai-news": "AI 热点",
+            "ai-daily": "AI 日报",
+            "review": "每日复盘",
+            "news": "金融资讯",
+            "news-story": "资讯事件",
+            "watchlist": "自选股",
+            "index": "指数研究",
+            "stock": "个股研究",
+            "stock-panel": "个股研究",
+        }
+        normalized_question = " ".join(str(question or "").split())[:60]
+        with self._connect() as conn:
+            row = self._conversation_row(conn, principal, conversation_id)
+            if row["title"] == "新对话" and normalized_question:
+                source = json.loads(row["source_json"])
+                source_type = str(source.get("type") or "") if isinstance(source, dict) else ""
+                label = entry_names.get(source_type, "AI 对话")
+                title = f"{label} · {normalized_question}"[:100]
+                conn.execute(
+                    "UPDATE conversation SET title=?,updated_at=? WHERE id=? AND principal_id=? AND title=?",
+                    (title, self.clock(), conversation_id, principal.id, "新对话"),
+                )
+                row = self._conversation_row(conn, principal, conversation_id)
             return self._conversation_dict(conn, row)
 
     def create_run(self, principal: Principal, conversation_id: str, client_request_id: str, question: str, context: dict) -> dict:

@@ -70,3 +70,35 @@ def test_same_request_with_different_payload_conflicts(tmp_path):
     store.create_run(owner, conversation["id"], "same", "问题", {})
     with pytest.raises(Conflict):
         store.create_run(owner, conversation["id"], "same", "另一个问题", {})
+
+
+def test_first_turn_auto_name_preserves_manual_title(tmp_path):
+    store = SessionStore(tmp_path / "sessions.sqlite3")
+    principal = store.create_principal("owner")
+    item = store.create_conversation(principal, "chat", {"type": "news"})
+
+    named = store.auto_name_conversation(principal, item["id"], "  分析 PCB 板块  ")
+
+    assert named["title"] == "金融资讯 · 分析 PCB 板块"
+    store.update_conversation_title(principal, item["id"], "手动标题")
+    assert store.auto_name_conversation(principal, item["id"], "第二问")["title"] == "手动标题"
+
+
+def test_auto_name_unknown_source_uses_generic_entry(tmp_path):
+    store = SessionStore(tmp_path / "sessions.sqlite3")
+    principal = store.create_principal("owner")
+    item = store.create_conversation(principal, "chat", {"type": "old-entry"})
+
+    named = store.auto_name_conversation(principal, item["id"], "问题摘要")
+
+    assert named["title"] == "AI 对话 · 问题摘要"
+
+
+def test_auto_name_ai_news_uses_ai_entry_label(tmp_path):
+    store = SessionStore(tmp_path / "sessions.sqlite3")
+    principal = store.create_principal("owner")
+    item = store.create_conversation(principal, "chat", {"type": "ai-news"})
+
+    named = store.auto_name_conversation(principal, item["id"], "总结今天热点")
+
+    assert named["title"] == "AI 热点 · 总结今天热点"
