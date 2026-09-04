@@ -20,6 +20,7 @@ export function saveWatch(codes: string[]) {
   } catch {
     /* 存储不可用：本次会话内仍可正常使用，只是关掉页面后不保留 */
   }
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("vr-watchlist-updated"));
 }
 
 // 从任意文本里抽取 6 位 A 股代码（逗号 / 空格 / 换行 / 顿号分隔都行，方便一次粘贴一串）。

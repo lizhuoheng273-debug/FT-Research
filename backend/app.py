@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import sys
+import threading
+import time
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 import astock
 import chat as chat_layer
@@ -27,22 +33,103 @@ import newsradar
 import portfolio as pf
 import market
 import market_chart
+import market_review
 import company_profile
 import myreports as mr
 import reflection as reflect_layer
 import signals
 import glm_config
+from financial_news import FinancialNewsScheduler, FinancialNewsService
 from aihot_api import AihotClient
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
 from report_scheduler import DailyReportScheduler
+from market_review_brief import MarketReviewBriefService
+from market_review_scheduler import PostCloseReviewScheduler
+from rss import RssFetchError, RssSecurityError, rss_catalog
+from ai_jobs import RunManager
+from ai_limits import Limits
+from auth import AuthService
+from auth_routes import install_auth_routes, require_owner, require_principal
+from conversation_routes import install_conversation_routes
+from route_policy import allowed_tools, policy_for
+from session_store import SessionStore, NotFound
 
 
 from version import read_version
 
 __version__ = read_version()
 
-app = FastAPI(title="FT-Research API", version=__version__)
+# Global headlines do not need the retired A-share reverse-market scan. Its
+# per-stock network calls could hold the news lock and delay RSS for minutes.
+# Legacy injection support stays in FinancialNewsService for explicit callers.
+financial_news_service = FinancialNewsService()
+financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
+_calendar_refresh_lock = threading.Lock()
+_calendar_refresh_clock = time.monotonic
+_calendar_refresh_last_attempt: float | None = None
+_CALENDAR_REFRESH_COOLDOWN_SECONDS = 60
+market_review_service = market_review.market_review_service
+market_review_brief_service = MarketReviewBriefService()
+market_review_scheduler = PostCloseReviewScheduler(market_review_service, market_review_brief_service)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if "pytest" not in sys.modules:
+        astock.prewarm_a_stock_universe()
+        market_review_service.prewarm()
+        financial_news_scheduler.start()
+        market_review_scheduler.start()
+        rss_catalog.start_scheduler(1800)
+    try:
+        yield
+    finally:
+        getattr(_app.state, "run_manager", None) and _app.state.run_manager.shutdown()
+        financial_news_scheduler.stop()
+        market_review_scheduler.stop()
+        rss_catalog.stop_scheduler()
+
+
+app = FastAPI(title="FT-Research API", version=__version__, lifespan=lifespan)
+
+# The session database is deliberately separate from market/RSS caches.  A
+# missing password hash keeps local single-user development backwards
+# compatible, while FT_PUBLIC_DEMO refuses to expose private APIs without it.
+_session_data_dir = os.environ.get("VR_DATA_DIR", str(Path.home() / ".vibe-research"))
+session_store = SessionStore(Path(_session_data_dir) / "sessions.sqlite3")
+app.state.store = session_store
+_owner_hash = os.environ.get("FT_OWNER_PASSWORD_HASH", "").strip()
+app.state.auth = AuthService(session_store, _owner_hash) if _owner_hash else None
+app.state.secure_cookie = os.environ.get("FT_AUTH_SECURE_COOKIE", "false").lower() in {"1", "true", "yes"}
+app.state.allowed_origins = {item.strip() for item in os.environ.get("FT_ALLOWED_ORIGINS", "").split(",") if item.strip()}
+
+
+def _background_runner(run, control):
+    principal = session_store.principal_by_id(run["principal_id"])
+    cfg = glm_config.load_glm_config()
+    if not cfg.get("apiKey"):
+        yield {"type": "error", "payload": {"code": "model_unconfigured", "message": "后台模型尚未配置"}}
+        return
+    context_data = dict(run.get("context") or {})
+    effort = context_data.pop("_reasoningEffort", "max")
+    cfg = {**cfg, "reasoningEffort": effort if effort in {"low", "high", "max"} else "max"}
+    context = json.dumps(context_data, ensure_ascii=False)
+    history = session_store.history_for_model(principal, run["conversation_id"], 20)
+    history.append({"role": "user", "content": run["question"]})
+    requested_scope = (run.get("context") or {}).get("analysisScope", "general")
+    analysis_scope = requested_scope if requested_scope in {"general", "market", "index", "sector", "stock"} else "general"
+    for event in chat_layer.run_chat_stream(cfg, history, context, analysis_scope=analysis_scope, allowed_tool_names=allowed_tools(principal)):
+        if control.cancelled:
+            return
+        payload = dict(event.get("payload") or {})
+        payload.update({k: v for k, v in event.items() if k not in {"type", "payload"}})
+        yield {"type": event.get("type", "error"), "payload": payload}
+
+
+app.state.run_manager = RunManager(session_store, _background_runner, Limits(session_store), clock=session_store.clock)
+install_auth_routes(app)
+install_conversation_routes(app)
 aihot_client = AihotClient()
 report_archive = ReportArchive()
 aihot_reports = AihotReportClient(report_archive)
@@ -76,6 +163,23 @@ async def _require_api_key(request: Request, call_next):
     ):
         if request.headers.get("authorization", "") != f"Bearer {_API_KEY}":
             return JSONResponse({"detail": "未授权：缺少或错误的 API Key（VR_API_KEY）"}, status_code=401)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _enforce_demo_policy(request: Request, call_next):
+    if os.environ.get("FT_PUBLIC_DEMO", "false").lower() not in {"1", "true", "yes"} or request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    policy = policy_for(request.method, request.url.path)
+    if policy == "deny":
+        return JSONResponse({"detail": "接口不存在"}, status_code=404)
+    try:
+        if policy == "owner":
+            require_owner(request)
+        elif policy == "authenticated":
+            require_principal(request)
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     return await call_next(request)
 
 _CODE_RE = r"^\d{6}$"
@@ -122,6 +226,81 @@ def ai_news(mode: str = "selected", window: str = "24h", limit: int = Query(50, 
         return aihot_client.items(mode=mode, window=window, limit=limit)
     except Exception as exc:  # noqa: BLE001 - translate upstream failure
         raise HTTPException(502, f"AI HOT 暂时不可用：{exc}") from exc
+
+
+class RssResolveReq(BaseModel):
+    url: str
+
+
+class RssRefreshReq(BaseModel):
+    sourceId: str = Field(min_length=1)
+    url: str | None = None
+
+
+RSS_REFRESH_COOLDOWN_SECONDS = 30
+_rss_refresh_attempts: dict[str, float] = {}
+_rss_refresh_attempts_lock = threading.Lock()
+_rss_refresh_clock = time.monotonic
+
+
+class FinancialNewsFollowingReq(BaseModel):
+    codes: list[str] = Field(default_factory=list)
+    page: int = 1
+    pageSize: int = 20
+
+
+@app.get("/api/ai/rss/sources")
+def ai_rss_sources(urls: list[str] = Query(default=[])):
+    """Return built-in and explicitly requested custom source snapshots.
+
+    The URL list is only a cache lookup hint from the visitor's browser; it is
+    not persisted as a server-side subscription relationship.
+    """
+    return {"sources": rss_catalog.sources(urls)}
+
+
+@app.post("/api/ai/rss/resolve")
+def ai_rss_resolve(request: RssResolveReq):
+    """Validate, fetch and preview one RSS/Atom URL without saving a relation."""
+    try:
+        return {"source": rss_catalog.resolve(request.url)}
+    except RssSecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RssFetchError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - translate malformed feed boundary
+        raise HTTPException(422, f"RSS/Atom 解析失败：{exc}") from exc
+
+
+@app.post("/api/ai/rss/refresh")
+def ai_rss_refresh(request: RssRefreshReq):
+    """Fetch exactly one whitelisted built-in or id-verified custom RSS URL.
+
+    This keeps the existing unauthenticated API policy. A later owner/guest
+    subsystem must restrict this active network write to owners.
+    """
+    try:
+        source_id = rss_catalog.refresh_identity(request.sourceId, request.url)
+    except KeyError as exc:
+        raise HTTPException(404, "RSS 信源不存在") from exc
+    except (RssSecurityError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    now = _rss_refresh_clock()
+    with _rss_refresh_attempts_lock:
+        last_attempt = _rss_refresh_attempts.get(source_id)
+        if last_attempt is not None:
+            remaining = RSS_REFRESH_COOLDOWN_SECONDS - (now - last_attempt)
+            if remaining > 0:
+                retry_after = max(1, int(remaining + 0.999))
+                raise HTTPException(429, "该信源刚刚刷新，请稍后重试", headers={"Retry-After": str(retry_after)})
+        _rss_refresh_attempts[source_id] = now
+    try:
+        return rss_catalog.refresh_source(request.sourceId, request.url)
+    except KeyError as exc:
+        raise HTTPException(404, "RSS 信源不存在") from exc
+    except (RssSecurityError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/ai/news/hot-topics")
@@ -279,7 +458,6 @@ def _ndjson(events):
 class DebateReq(BaseModel):
     code: str
     rounds: int = 1
-    llm: LLMConfig
 
 
 @app.post("/api/debate")
@@ -289,9 +467,28 @@ def debate(req: DebateReq):
     刻意不产出买卖结论——终点是「分歧点 + 验证清单」，判断留给用户自己。
     """
     code = _validate(req.code)
-    cfg = _check_llm(req.llm)
+    cfg = glm_config.load_glm_config()
+    if not cfg.get("apiKey"):
+        raise HTTPException(400, "尚未配置后台 GLM，请先在后端配置 GLM_API_KEY")
     rounds = 2 if req.rounds >= 2 else 1
-    return _ndjson(lambda: debate_layer.run_debate_stream(cfg, code, rounds))
+    control = debate_layer.DebateControl()
+    events = debate_layer.run_debate_stream(cfg, code, rounds, control=control)
+
+    async def stream():
+        import asyncio
+        end = object()
+        try:
+            while True:
+                event = await asyncio.to_thread(next, events, end)
+                if event is end:
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception:
+            yield json.dumps({"type": "error", "message": "辩论服务暂不可用，请稍后重试"}, ensure_ascii=False) + "\n"
+        finally:
+            control.cancel(background=True)
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 class ReflectReq(BaseModel):
@@ -437,6 +634,56 @@ def radar_refresh():
         raise HTTPException(502, f"资讯雷达刷新失败：{e}") from e
 
 
+@app.get("/api/finance/news/overview")
+def financial_news_overview():
+    """紧要快讯、热门事件与来源状态；只读取后台缓存。"""
+    return {"data": financial_news_service.overview()}
+
+
+@app.get("/api/finance/news/feed")
+def financial_news_feed(category: str = Query("all"), source: str = Query(""), limit: int = Query(60, ge=1, le=200)):
+    return {"data": financial_news_service.feed(category=category, source=source, limit=limit)}
+
+
+@app.get("/api/finance/news/events/{event_id}")
+def financial_news_event(event_id: str):
+    event = financial_news_service.event(event_id)
+    if not event:
+        raise HTTPException(404, "金融资讯事件不存在或缓存已更新")
+    return {"data": event}
+
+
+@app.get("/api/finance/news/status")
+def financial_news_status():
+    return {"data": financial_news_service.status()}
+
+
+@app.get("/api/finance/news/calendar")
+def financial_news_calendar():
+    """Official future events: cache-only read, filtered to the next fourteen days."""
+    return {"data": financial_news_service.calendar.overview()}
+
+
+@app.post("/api/finance/news/calendar/refresh")
+def financial_news_calendar_refresh():
+    """Immediately refresh public official calendars with a shared cooldown."""
+    global _calendar_refresh_last_attempt
+    with _calendar_refresh_lock:
+        now = _calendar_refresh_clock()
+        if _calendar_refresh_last_attempt is not None:
+            remaining = _CALENDAR_REFRESH_COOLDOWN_SECONDS - (now - _calendar_refresh_last_attempt)
+            if remaining > 0:
+                return {"data": {"calendar": financial_news_service.calendar.overview(), "outcome": "cooldown", "retryAfter": max(1, int(remaining + 0.999))}}
+        data = financial_news_service.calendar.refresh(blocking=True)
+        _calendar_refresh_last_attempt = _calendar_refresh_clock()
+        return {"data": {"calendar": data, "outcome": "partial" if data.get("partial") else "updated", "retryAfter": 0}}
+
+
+@app.post("/api/finance/news/following")
+def financial_news_following(request: FinancialNewsFollowingReq):
+    return {"data": financial_news_service.following(request.codes, page=request.page, page_size=request.pageSize)}
+
+
 @app.get("/api/signals/gpu-rent")
 def signals_gpu_rent():
     """GPU 租金信号（算力温度计）：读缓存，无缓存返回结构骨架。"""
@@ -462,6 +709,15 @@ def market_overview():
         return {"data": market.get_overview()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"市场总览异常：{e}") from e
+
+
+@app.get("/api/market/review")
+def market_review_endpoint(refresh: bool = False):
+    """统一每日市场复盘快照；组件缺失通过 partial/stale 字段表达。"""
+    try:
+        return market_review_service.get_review(refresh=True) if refresh else market_review_service.get_review()
+    except Exception as e:  # noqa: BLE001 - the service normally degrades per component
+        raise HTTPException(502, f"市场复盘快照异常：{e}") from e
 
 
 @app.get("/api/market/emotion")
@@ -490,7 +746,7 @@ def market_turnover_top():
 def global_indices():
     """全球指数快照（道指 / 标普500 / 纳斯达克 / 恒生 / 恒生科技）—— A 股看隔夜外围脸色。缓存 5 分钟。"""
     try:
-        return {"data": market.get_global_indices()}
+        return {"data": market.get_global_indices_snapshot()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"全球指数异常：{e}") from e
 
@@ -555,6 +811,8 @@ def stock_search(q: str = Query("", max_length=40), limit: int = Query(20, ge=1,
         seen: set[str] = set()
         unique = [row for row in rows if row.get("code") and not (row["code"] in seen or seen.add(row["code"]))]
         return {"data": unique[:limit]}
+    except astock.StockUniverseWarming as e:
+        raise HTTPException(503, str(e), headers={"Retry-After": "1"}) from e
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -855,3 +1113,21 @@ def industry(top: int = Query(20, ge=5, le=50)):
         return {"data": data}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"行业排名异常：{e}") from e
+
+
+# Same-origin production serving. The database/cache directories are outside
+# this tree; unknown /api paths remain JSON 404s instead of SPA HTML.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{frontend_path:path}")
+    def frontend_fallback(frontend_path: str):
+        if frontend_path == "api" or frontend_path.startswith(("api/", "data/", "backend/", ".")):
+            return JSONResponse({"detail": "接口不存在"}, status_code=404)
+        candidate = (_FRONTEND_DIST / frontend_path).resolve()
+        if _FRONTEND_DIST not in candidate.parents and candidate != _FRONTEND_DIST:
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

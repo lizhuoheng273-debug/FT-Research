@@ -1,5 +1,5 @@
 // 多 agent 能力的前端客户端：多空辩论 + 反思审计。
-// 两者都走后端 NDJSON 流；模型配置沿用「接入 AI」里存的那一份（用户自己的 key / 本机 CLI）。
+// 两者都走后端 NDJSON 流；辩论使用后台 GLM 配置，旧反思接口保持兼容。
 
 import { ApiError } from "@/lib/api";
 import { loadLlm } from "@/lib/llm";
@@ -13,7 +13,7 @@ export interface DebateHandlers {
   onDossierReady?: (sections: { title: string; tool: string }[], missing: string[]) => void;
   onStageStart?: (stage: DebateStage, label: string) => void;
   onDelta?: (stage: DebateStage, text: string) => void;
-  onStageDone?: (stage: DebateStage, label: string, content: string) => void;
+  onStageDone?: (stage: DebateStage, label: string, content: string, failed?: boolean) => void;
   onError?: (message: string, stage?: DebateStage) => void;
 }
 
@@ -41,7 +41,7 @@ function dispatchDebate(ev: NdjsonEvent, h: DebateHandlers) {
       h.onDelta?.(ev.stage, ev.text);
       break;
     case "stage_done":
-      h.onStageDone?.(ev.stage, ev.label, ev.content);
+      h.onStageDone?.(ev.stage, ev.label, ev.content, !!ev.failed);
       break;
     case "error":
       h.onError?.(ev.message, ev.stage);
@@ -56,8 +56,15 @@ export async function debateStream(
   handlers: DebateHandlers = {},
   signal?: AbortSignal,
 ): Promise<void> {
-  const llm = requireLlm();
-  await streamNdjson("/api/debate", { code, rounds, llm }, (ev) => dispatchDebate(ev, handlers), signal);
+  let done = false;
+  let fatal = "";
+  await streamNdjson("/api/debate", { code, rounds }, (ev) => {
+    if (ev.type === "done") done = true;
+    if (ev.type === "error" && !ev.stage) fatal = ev.message;
+    dispatchDebate(ev, handlers);
+  }, signal);
+  if (fatal) throw new ApiError(fatal, 502);
+  if (!done) throw new ApiError("辩论连接中断，未收到完整结束标记，请重试", 502);
 }
 
 export interface ReflectHandlers {

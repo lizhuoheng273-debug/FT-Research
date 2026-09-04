@@ -11,10 +11,12 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
 import re
+import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta
@@ -34,6 +36,10 @@ def get_prefix(code: str) -> str:
 
 class DependencyMissing(RuntimeError):
     """惰性依赖未安装时抛出，前端据此提示 pip install。"""
+
+
+class StockUniverseWarming(RuntimeError):
+    """The persistent search directory is being prepared in the background."""
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +70,12 @@ def _parse_gtimg(data: str) -> dict[str, dict]:
             except (ValueError, IndexError):
                 return 0.0
 
+        updated_raw = vals[30] if len(vals) > 30 else ""
+        try:
+            updated_at = datetime.strptime(updated_raw, "%Y%m%d%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            updated_at = ""
+        amount_wan = num(37)
         result[code] = {
             "name": vals[1],
             "price": num(3),
@@ -74,7 +86,9 @@ def _parse_gtimg(data: str) -> dict[str, dict]:
             "high": num(33),
             "low": num(34),
             "volume": num(36),
-            "amount_wan": num(37),
+            "amount_wan": amount_wan,
+            "amount_yuan": amount_wan * 10_000,
+            "updated_at": updated_at,
             "turnover_pct": num(38),
             "pe_ttm": num(39),
             "amplitude_pct": num(43),
@@ -106,8 +120,45 @@ def index_quote() -> list[dict]:
     for full in A_INDICES:
         q = parsed.get(full[2:])
         if q:
-            out.append({"code": full[2:], "name": q["name"], "price": q["price"], "change_pct": q["change_pct"], "change_amt": q["change_amt"]})
+            out.append({"code": full[2:], "name": q["name"], "price": q["price"], "change_pct": q["change_pct"],
+                        "change_amt": q["change_amt"], "amountYuan": q["amount_yuan"], "updatedAt": q["updated_at"]})
     return out
+
+
+def _parse_index_intraday_days(payload: dict, prefixed_code: str) -> list[dict]:
+    """Normalize Tencent five-day minute data to yuan-denominated amounts."""
+    raw_days = (((payload.get("data") or {}).get(prefixed_code) or {}).get("data") or [])
+    days: list[dict] = []
+    for raw_day in raw_days:
+        raw_date = str(raw_day.get("date") or "")
+        try:
+            day = datetime.strptime(raw_date, "%Y%m%d").date().isoformat()
+        except ValueError:
+            continue
+        points: list[dict] = []
+        for raw_point in raw_day.get("data") or []:
+            fields = str(raw_point).split()
+            if len(fields) < 4:
+                continue
+            try:
+                amount_yuan = float(fields[3])
+                point_time = datetime.strptime(fields[0], "%H%M").strftime("%H:%M")
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(amount_yuan):
+                points.append({"time": point_time, "amountYuan": amount_yuan})
+        if points:
+            days.append({"date": day, "points": points})
+    return days
+
+
+def index_intraday_days(prefixed_code: str) -> list[dict]:
+    """Fetch Tencent's recent index minute totals for same-time comparison."""
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/day/query?code={prefixed_code}"
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=3) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return _parse_index_intraday_days(payload, prefixed_code)
 
 
 # ---------------------------------------------------------------------------
@@ -209,29 +260,133 @@ def stock_news(code: str, limit: int = 20) -> list[dict]:
 
 
 _A_STOCK_UNIVERSE_TTL = 6 * 60 * 60
+_A_STOCK_UNIVERSE_RETRY_SECONDS = 60
+_A_STOCK_UNIVERSE_PERSISTED_PATH = Path(os.environ.get("VR_DATA_DIR") or (Path.home() / ".vibe-research")) / "cache" / "a-stock-universe.json"
+_A_STOCK_UNIVERSE_CACHE_PATH = _A_STOCK_UNIVERSE_PERSISTED_PATH
+_A_STOCK_UNIVERSE_LEGACY_PATH = Path(__file__).resolve().parent / ".cache" / "a-stock-universe.json"
 _a_stock_universe: list[dict[str, str]] = []
 _a_stock_universe_at = 0.0
+_a_stock_universe_attempt_at = 0.0
+_a_stock_universe_lock = threading.Lock()
+_a_stock_universe_refresh_guard = threading.Lock()
+_a_stock_universe_refresh_thread: threading.Thread | None = None
+
+
+def _valid_a_stock_universe(rows) -> list[dict[str, str]]:
+    valid = []
+    for raw in rows if isinstance(rows, list) else []:
+        code = str(raw.get("code", "")).strip() if isinstance(raw, dict) else ""
+        name = str(raw.get("name", "")).strip() if isinstance(raw, dict) else ""
+        if re.fullmatch(r"\d{6}", code) and name:
+            valid.append({"code": code, "name": name})
+    return valid
+
+
+def _read_a_stock_universe_cache() -> tuple[list[dict[str, str]], float]:
+    paths = [_A_STOCK_UNIVERSE_CACHE_PATH]
+    if _A_STOCK_UNIVERSE_CACHE_PATH == _A_STOCK_UNIVERSE_PERSISTED_PATH:
+        paths.append(_A_STOCK_UNIVERSE_LEGACY_PATH)
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            rows = _valid_a_stock_universe(payload.get("items"))
+            saved_at = float(payload.get("savedAt") or 0)
+            if rows:
+                if path != _A_STOCK_UNIVERSE_CACHE_PATH:
+                    _save_a_stock_universe_cache(rows, saved_at)
+                return rows, saved_at
+        except (OSError, TypeError, ValueError):
+            continue
+    return [], 0.0
+
+
+def _save_a_stock_universe_cache(rows: list[dict[str, str]], saved_at: float) -> None:
+    _A_STOCK_UNIVERSE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp = _A_STOCK_UNIVERSE_CACHE_PATH.with_suffix(".tmp")
+    temp.write_text(json.dumps({"savedAt": saved_at, "items": rows}, ensure_ascii=False), encoding="utf-8")
+    temp.replace(_A_STOCK_UNIVERSE_CACHE_PATH)
+
+
+def _fetch_a_stock_universe() -> list[dict[str, str]]:
+    ak = _akshare()
+    df = ak.stock_info_a_code_name()
+    return _valid_a_stock_universe(df.to_dict("records") if df is not None and not df.empty else [])
+
+
+def _refresh_a_stock_universe(*, blocking: bool) -> list[dict[str, str]]:
+    global _a_stock_universe, _a_stock_universe_at, _a_stock_universe_attempt_at
+    if not _a_stock_universe_lock.acquire(blocking=blocking):
+        return _a_stock_universe
+    try:
+        if _a_stock_universe and time.time() - _a_stock_universe_at < _A_STOCK_UNIVERSE_TTL:
+            return _a_stock_universe
+        now = time.time()
+        if _a_stock_universe_attempt_at and now - _a_stock_universe_attempt_at < _A_STOCK_UNIVERSE_RETRY_SECONDS:
+            return _a_stock_universe
+        _a_stock_universe_attempt_at = now
+        try:
+            rows = _fetch_a_stock_universe()
+        except Exception:
+            if _a_stock_universe:
+                return _a_stock_universe
+            raise
+        if rows:
+            saved_at = time.time()
+            _a_stock_universe = rows
+            _a_stock_universe_at = saved_at
+            _save_a_stock_universe_cache(rows, saved_at)
+        return _a_stock_universe
+    finally:
+        _a_stock_universe_lock.release()
+
+
+def _refresh_a_stock_universe_in_background() -> None:
+    global _a_stock_universe_refresh_thread
+    with _a_stock_universe_refresh_guard:
+        if _a_stock_universe_refresh_thread and _a_stock_universe_refresh_thread.is_alive():
+            return
+        def run():
+            global _a_stock_universe_refresh_thread
+            try:
+                _refresh_a_stock_universe(blocking=False)
+            except Exception:
+                pass
+            finally:
+                with _a_stock_universe_refresh_guard:
+                    _a_stock_universe_refresh_thread = None
+        _a_stock_universe_refresh_thread = threading.Thread(target=run, name="ft-stock-universe", daemon=True)
+        _a_stock_universe_refresh_thread.start()
+
+
+def prewarm_a_stock_universe() -> None:
+    """Hydrate the persisted directory and refresh it without delaying startup."""
+    global _a_stock_universe, _a_stock_universe_at
+    rows, saved_at = _read_a_stock_universe_cache()
+    if rows:
+        _a_stock_universe = rows
+        _a_stock_universe_at = saved_at
+    if not rows or time.time() - saved_at >= _A_STOCK_UNIVERSE_TTL:
+        _refresh_a_stock_universe_in_background()
 
 
 def _load_a_stock_universe() -> list[dict[str, str]]:
     """加载并缓存 A 股代码-名称列表，避免名称搜索每次都抓取全市场。"""
     global _a_stock_universe, _a_stock_universe_at
-    if _a_stock_universe and time.time() - _a_stock_universe_at < _A_STOCK_UNIVERSE_TTL:
+    now = time.time()
+    if _a_stock_universe:
+        if now - _a_stock_universe_at >= _A_STOCK_UNIVERSE_TTL:
+            _refresh_a_stock_universe_in_background()
         return _a_stock_universe
 
-    ak = _akshare()
-    df = ak.stock_info_a_code_name()
-    rows: list[dict[str, str]] = []
-    if df is not None and not df.empty:
-        for raw in df.to_dict("records"):
-            code = str(raw.get("code", "")).strip()
-            name = str(raw.get("name", "")).strip()
-            if re.fullmatch(r"\d{6}", code) and name:
-                rows.append({"code": code, "name": name})
+    rows, saved_at = _read_a_stock_universe_cache()
     if rows:
         _a_stock_universe = rows
-        _a_stock_universe_at = time.time()
-    return _a_stock_universe
+        _a_stock_universe_at = saved_at
+        if now - saved_at >= _A_STOCK_UNIVERSE_TTL:
+            _refresh_a_stock_universe_in_background()
+        return rows
+    _refresh_a_stock_universe_in_background()
+    raise StockUniverseWarming("股票搜索目录正在准备，请稍候")
 
 
 def search_a_stocks(query: str, limit: int = 20) -> list[dict[str, str]]:

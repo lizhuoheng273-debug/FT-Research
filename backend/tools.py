@@ -19,6 +19,7 @@ import market
 import newsradar
 import research_chart
 import signals
+from tool_runtime import run_with_deadline
 
 # ——— schema 简写：让 20+ 个工具定义保持一屏可读 ———
 
@@ -476,3 +477,23 @@ def exec_tool(name: str, args: dict):
         return {"error": f"{name} 缺少必填参数 {e}"}
     except Exception as e:  # noqa: BLE001 — 工具错误回喂给模型，不中断循环
         return {"error": f"{name} 执行失败：{e}"}
+
+
+def execute_scoped_tool(
+    name: str,
+    args: dict,
+    allowed_tool_names: set[str] | None,
+    timeout_seconds: float = 20.0,
+) -> dict:
+    """Execute one AI tool without letting a blocked upstream stall the run."""
+    if allowed_tool_names is not None and name not in allowed_tool_names:
+        return {"status": "unavailable", "data_gap": "该工具不对当前身份开放"}
+    fn = _HANDLERS.get(name)
+    if fn is None:
+        return {"status": "unavailable", "data_gap": f"未知工具 {name}"}
+    outcome = run_with_deadline(lambda: fn(args or {}), timeout_seconds)
+    if outcome.status == "ok":
+        return outcome.value
+    if outcome.status == "timeout":
+        return {"status": "unavailable", "data_gap": "数据源响应超过 20 秒，已跳过"}
+    return {"status": "unavailable", "data_gap": f"{name} 执行失败：{outcome.error}"}

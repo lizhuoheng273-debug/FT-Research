@@ -18,11 +18,11 @@ test("AI research uses the shared input and preserves external market symbols", 
 test("debate uses shared selection and submits a normalized A-share code", () => {
   assert.match(debate, /StockSearchInput/);
   assert.match(debate, /onSelect/);
-  assert.ok(debate.includes("navigate(`/finance/stocks/${result.code}`)"));
+  assert.doesNotMatch(debate, /navigate\(/);
   assert.match(debate, /onSubmitCode/);
   assert.match(debate, /debateStream\(c,/);
   assert.match(debate, /d\{6\}/);
-  assert.match(debate, /onChange=\{setCode\}/);
+  assert.match(debate, /onChange=\{changeCode\}/);
 });
 
 test("portfolio holding and close forms use shared selection without changing API calls", () => {

@@ -17,13 +17,21 @@ import { AIDaily } from "@/pages/AIDaily";
 import { AINewsDetail } from "@/pages/AINewsDetail";
 import { StockDetail } from "@/pages/StockDetail";
 import { IndexDetail } from "@/pages/IndexDetail";
-import { StockAiWorkspace } from "@/pages/StockAiWorkspace";
+import { FinanceAiWorkspace } from "@/pages/FinanceAiWorkspace";
+import { AiConversationWorkspace } from "@/pages/AiConversationWorkspace";
+import { FinancialNews } from "@/pages/FinancialNews";
+import { FinancialNewsDetail } from "@/pages/FinancialNewsDetail";
 
 function LegacyResearch() {
   const [params] = useSearchParams();
   const code = params.get("code");
   if (code && /^\d{6}$/.test(code)) return <Navigate to={`/finance/stocks/${code}`} replace />;
   return <StockData />;
+}
+
+function RetiredResearch() {
+  const [params] = useSearchParams();
+  return params.get("code") ? <LegacyResearch /> : <Navigate to="/finance/debate" replace />;
 }
 
 export const router = createBrowserRouter([
@@ -35,14 +43,18 @@ export const router = createBrowserRouter([
       { path: "/ai/news/story/:storyId", element: <AINewsDetail /> },
       { path: "/ai/news/:tab", element: <AINews /> },
       { path: "/ai/daily", element: <AIDaily /> },
-      { path: "/finance/news", element: <Intel /> },
-      { path: "/finance/news/:tab", element: <Intel /> },
+      { path: "/ai/conversations", element: <AiConversationWorkspace /> },
+      { path: "/finance/news", element: <FinancialNews /> },
+      { path: "/finance/news/story/:eventId", element: <FinancialNewsDetail /> },
+      { path: "/finance/news/:tab", element: <FinancialNews /> },
       { path: "/finance/review", element: <DailyReview /> },
+      { path: "/finance/ai", element: <FinanceAiWorkspace /> },
       { path: "/finance/watchlist", element: <Watchlist /> },
       { path: "/finance/stocks/:code", element: <StockDetail /> },
-      { path: "/finance/stocks/:code/ai", element: <StockAiWorkspace /> },
+      { path: "/finance/stocks/:code/ai", element: <FinanceAiWorkspace /> },
       { path: "/finance/indices/:code", element: <IndexDetail /> },
-      { path: "/finance/research", element: <LegacyResearch /> },
+      { path: "/finance/research", element: <RetiredResearch /> },
+      { path: "/finance/debate", element: <Debate /> },
       // Legacy deep links remain available for existing bookmarks.
       { path: "/daily-review", element: <DailyReview /> },
       { path: "/intel", element: <Intel /> },
@@ -53,7 +65,7 @@ export const router = createBrowserRouter([
       { path: "/sectors/:key", element: <SectorDetail /> },
       { path: "/portfolio", element: <Portfolio /> },
       { path: "/stock-data", element: <LegacyResearch /> },
-      { path: "/debate", element: <Debate /> },
+      { path: "/debate", element: <Navigate to="/finance/debate" replace /> },
       { path: "/watchlist", element: <Watchlist /> },
       { path: "/my-reports", element: <MyReports /> },
       { path: "/notes", element: <Notes /> },

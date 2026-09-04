@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import socket
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
 import requests
@@ -22,11 +25,32 @@ import cli_runtime
 import gstock
 import research_framework
 import tools
+from tool_runtime import run_with_deadline
 
 # 工具定义与执行统一由 tools.py 提供（chat / mcp_server / debate 共用一套）。
 # 这两个别名是历史入口，mcp_server 与既有测试仍按 chat.TOOLS / chat._exec_tool 取用。
 TOOLS = tools.TOOLS
 _exec_tool = tools.exec_tool
+_stream_log = logging.getLogger("uvicorn.error")
+
+
+def execute_scoped_tool(name: str, args: dict, allowed_tool_names: set[str] | None, timeout_seconds: float = 20.0):
+    # Keep the historical chat._exec_tool seam usable by debate and stream tests
+    # while production uses the bounded shared tool runtime.
+    if _exec_tool is not tools.exec_tool:
+        outcome = run_with_deadline(lambda: _exec_scoped_tool(name, args, allowed_tool_names), timeout_seconds)
+        if outcome.status == "ok":
+            return outcome.value
+        if outcome.status == "timeout":
+            return {"status": "unavailable", "data_gap": "数据源响应超过 20 秒，已跳过"}
+        return {"status": "unavailable", "data_gap": f"{name} 执行失败：{outcome.error}"}
+    return tools.execute_scoped_tool(name, args, allowed_tool_names, timeout_seconds)
+
+
+def _exec_scoped_tool(name: str, args: dict, allowed_tool_names: set[str] | None):
+    if allowed_tool_names is not None and name not in allowed_tool_names:
+        return {"error": "该工具不对当前身份开放"}
+    return _exec_tool(name, args)
 
 MAX_ROUNDS = 6  # 工具调用最大轮数，防死循环
 _TOOL_RESULT_CAP = 6000  # 单次工具结果注入上限（控 token）
@@ -45,6 +69,10 @@ SYSTEM_PROMPT = """你是 FT-Research 里的投研助理。你可以调用工具
 估值贵贱看 query_valuation_percentile，资金动向看 query_fund_flow，风险排查看 query_announcements + query_lockup。
 
 {research_guidance}
+
+表达要求：默认用简洁中文，先给结论，再用小标题和短段落解释。每个相关维度通常一两句；
+只展开与问题有关的分析，不机械补齐整套框架。用户要求详细时再充分展开。
+已有上下文足够回答时直接作答；仅为关键数据缺口调用工具，不重复查询相同工具和参数。
 
 当前页面上下文：
 {context}"""
@@ -119,11 +147,13 @@ def _call_llm(cfg: dict, messages: list, use_tools: bool) -> dict:
         timeout=90,
     )
     if r.status_code != 200:
-        raise RuntimeError(f"模型接口 HTTP {r.status_code}: {r.text[:300]}")
+        status = r.status_code
+        r.close()
+        raise RuntimeError(f"模型接口 HTTP {status}")
     return r.json()
 
 
-def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general") -> dict:
+def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None) -> dict:
     """跑一轮完整对话（含 function calling 循环）。
 
     cfg: {baseURL, apiKey, model}
@@ -149,7 +179,7 @@ def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: 
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = _exec_tool(name, args)
+            result = _exec_scoped_tool(name, args, allowed_tool_names)
             trace.append({"tool": name, "args": args})
             messages.append({
                 "role": "tool",
@@ -190,14 +220,23 @@ def _resolve_base(cfg: dict) -> str:
 def _call_llm_stream(cfg: dict, messages: list, use_tools: bool):
     _check_base_url(cfg.get("baseURL", ""))
     payload = {"model": cfg["model"], "messages": messages, "temperature": 0.3, "stream": True}
+    if cfg.get("reasoningEffort") in {"low", "high", "max"}:
+        payload["reasoning_effort"] = cfg["reasoningEffort"]
     if use_tools:
         payload["tools"] = TOOLS
         payload["tool_choice"] = "auto"
+    _stream_log.info(
+        "AI request shape: messages=%d input_chars=%d tools=%d",
+        len(messages), sum(len(str(m.get("content") or "")) for m in messages),
+        len(payload.get("tools") or []),
+    )
+    started = time.monotonic()
     r = requests.post(
         f"{_resolve_base(cfg)}/chat/completions",
         headers={"Authorization": f"Bearer {cfg['apiKey']}", "Content-Type": "application/json"},
         json=payload, timeout=120, stream=True,
     )
+    _stream_log.info("AI stream response headers: %.3fs, status=%s", time.monotonic() - started, r.status_code)
     if r.status_code != 200:
         raise RuntimeError(f"模型接口 HTTP {r.status_code}: {r.text[:300]}")
     return r
@@ -210,6 +249,10 @@ def _iter_sse_deltas(resp):
     故按 `\\n` 切分再解码，避免 iter_lines(decode_unicode=True) 在网络分块处切断中文导致乱码。
     """
     buf = b""
+    started = time.monotonic()
+    first_event = True
+    first_content = True
+    seen_phases = set()
     for chunk in resp.iter_content(chunk_size=None):
         if not chunk:
             continue
@@ -228,20 +271,49 @@ def _iter_sse_deltas(resp):
                 continue
             choices = j.get("choices") or []
             if choices:
-                yield choices[0].get("delta") or {}
+                delta = choices[0].get("delta") or {}
+                if first_event:
+                    _stream_log.info("AI first upstream delta after headers: %.3fs", time.monotonic() - started)
+                    first_event = False
+                if delta.get("content") and first_content:
+                    _stream_log.info("AI first upstream text after headers: %.3fs", time.monotonic() - started)
+                    first_content = False
+                phase = "output" if delta.get("content") else "reasoning" if delta.get("reasoning_content") else "planning" if delta.get("tool_calls") else "metadata"
+                if phase not in seen_phases:
+                    seen_phases.add(phase)
+                    _stream_log.info("AI upstream phase after headers: phase=%s elapsed=%.3fs", phase, time.monotonic() - started)
+                yield delta
 
 
-def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general"):
+def _stream_round(resp):
+    try:
+        yield from _iter_sse_deltas(resp)
+    finally:
+        if resp is not None and hasattr(resp, "close"):
+            resp.close()
+
+
+def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None):
     """API 接入流式：function-calling 循环，边流答案边推工具调用事件。"""
     messages = [{"role": "system", "content": build_system_prompt(context, analysis_scope, user_messages)}]
     messages.extend(user_messages)
     trace: list[dict] = []
 
     for rnd in range(1, MAX_ROUNDS + 1):
+        yield {"type": "progress", "payload": {"phase": "model", "status": "running", "message": "模型分析中…"}}
         resp = _call_llm_stream(cfg, messages, use_tools=True)
         content_parts: list[str] = []
         tool_acc: dict[int, dict] = {}
-        for delta in _iter_sse_deltas(resp):
+        last_phase = None
+        for delta in _stream_round(resp):
+            phase = "output" if delta.get("content") else "reasoning" if delta.get("reasoning_content") else "planning" if delta.get("tool_calls") else None
+            if phase and phase != last_phase:
+                last_phase = phase
+                if phase != "output":
+                    yield {"type": "progress", "payload": {
+                        "phase": phase, "status": "running",
+                        "message": "模型正在推理…" if phase == "reasoning" else "模型正在准备数据查询…",
+                    }}
             if delta.get("content"):
                 content_parts.append(delta["content"])
                 yield {"type": "delta", "text": delta["content"]}
@@ -264,6 +336,7 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
                     acc["arguments"] += fn["arguments"]
 
         if not tool_acc:  # 本轮是纯答案（已流完）→ 结束
+            yield {"type": "progress", "payload": {"phase": "model", "status": "completed", "message": "模型分析完成"}}
             yield {"type": "done", "trace": trace, "rounds": rnd}
             return
 
@@ -276,23 +349,69 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
                 "function": {"name": tool_acc[i]["name"], "arguments": tool_acc[i]["arguments"]},
             } for i in sorted(tool_acc)],
         })
+        calls = []
         for i in sorted(tool_acc):
             a = tool_acc[i]
             try:
                 args = json.loads(a["arguments"] or "{}")
             except json.JSONDecodeError:
                 args = {}
-            yield {"type": "tool", "tool": a["name"], "args": args}
-            result = _exec_tool(a["name"], args)
-            trace.append({"tool": a["name"], "args": args})
+            calls.append((i, a["name"], args, time.monotonic()))
+            yield {"type": "progress", "payload": {
+                "phase": "tool", "status": "running", "tool": a["name"], "callId": f"{rnd}:{i}",
+                "elapsedMs": 0, "message": f"正在调用：{a['name']}…",
+            }}
+
+        max_workers = min(4, len(calls))
+        def timed_tool(name, args):
+            started = time.monotonic()
+            result = execute_scoped_tool(name, args, allowed_tool_names, 20.0)
+            return result, int((time.monotonic() - started) * 1000)
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ft-ai-tool") as executor:
+            submitted = {}
+            futures = {}
+            for i, name, args, _started in calls:
+                key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+                if key not in submitted:
+                    submitted[key] = executor.submit(timed_tool, name, args)
+                futures[i] = submitted[key]
+            results = {}
+            for future in as_completed(set(futures.values())):
+                result, elapsed = future.result()
+                for i, name, args, _started in calls:
+                    if futures[i] is not future:
+                        continue
+                    results[i] = result
+                    gap = str(result.get("data_gap", "")) if isinstance(result, dict) else ""
+                    if isinstance(result, dict) and result.get("status") == "unavailable":
+                        status = "timeout" if ("超时" in gap or "timeout" in gap.lower() or "20" in gap) else "unavailable"
+                    else:
+                        status = "completed"
+                    message = f"{name} 超时，继续分析" if status == "timeout" else f"{name} 不可用，继续分析" if status == "unavailable" else f"{name} 调用完成"
+                    yield {"type": "progress", "payload": {
+                        "phase": "tool", "status": status, "tool": name, "callId": f"{rnd}:{i}",
+                        "elapsedMs": elapsed, "message": message,
+                    }}
+                    trace.append({"tool": name, "args": args})
+
+        for i, name, args, _started in calls:
+            result = results[i]
             messages.append({
-                "role": "tool", "tool_call_id": a["id"],
+                "role": "tool", "tool_call_id": tool_acc[i]["id"],
                 "content": json.dumps(result, ensure_ascii=False)[:_TOOL_RESULT_CAP],
             })
 
-    # 超过最大轮数：不带工具收尾（非流式一次拿完再吐）
-    data = _call_llm(cfg, messages, use_tools=False)
-    yield {"type": "delta", "text": data["choices"][0]["message"].get("content") or ""}
+    # Keep the final no-tool synthesis streaming too.
+    yield {"type": "progress", "payload": {"phase": "model", "status": "running", "message": "数据已整理，正在生成最终回答…"}}
+    resp = _call_llm_stream(cfg, messages, use_tools=False)
+    try:
+        for delta in _stream_round(resp):
+            if delta.get("content"):
+                yield {"type": "delta", "text": delta["content"]}
+    finally:
+        if resp is not None:
+            resp.close()
     yield {"type": "done", "trace": trace, "rounds": MAX_ROUNDS}
 
 

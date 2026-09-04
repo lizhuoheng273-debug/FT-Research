@@ -10,7 +10,7 @@ const askAi = read("components/ui/AskAiButton.tsx");
 const daily = read("pages/DailyReview.tsx");
 const index = read("pages/IndexDetail.tsx");
 const sector = read("pages/SectorDetail.tsx");
-const stockWorkspace = read("pages/StockAiWorkspace.tsx");
+const stockWorkspace = read("pages/FinanceAiWorkspace.tsx");
 const stockData = read("pages/StockData.tsx");
 const stockTabs = read("components/stock/StockResearchTabs.tsx");
 
@@ -26,23 +26,27 @@ test("the shared AI panel has no blogger method selector", () => {
   assert.match(askAi, /analysisScope/);
 });
 
+test("unified conversation sends the explicit research scope to the server", () => {
+  assert.match(session, /context: savedContext \|\| \{ text: context, analysisScope \}/);
+});
+
 test("the four research page types provide their explicit default scope", () => {
   assert.match(daily, /analysisScope="market"/);
   assert.match(index, /analysisScope="index"/);
   assert.match(sector, /analysisScope="sector"/);
-  assert.match(stockWorkspace, /analysisScope: "stock"/);
+  assert.match(stockWorkspace, /scopeFor/);
   assert.match(stockData, /analysisScope="stock"/);
   assert.match(stockTabs, /analysisScope="stock"/);
 });
 
 test("daily review sends the full objective market context", () => {
-  for (const marker of ["globalIdx", "sentiment", "sectors", "emotion", "turnover", "数据缺口"]) {
+  for (const marker of ["marketReview", "breadth", "liquidity", "shortTermEmotion", "turnoverTop", "sectors", "数据缺口"]) {
     assert.match(daily, new RegExp(marker));
   }
-  assert.match(daily, /chatStream\([\s\S]*"market"/);
+  assert.doesNotMatch(daily, /globalIndices|globalIdx/);
 });
 
 test("new framework conversations use a versioned key", () => {
   assert.match(askAi, /framework:v2/);
-  assert.match(stockWorkspace, /framework:v2/);
+  assert.match(stockWorkspace, /buildFinanceAiKey/);
 });

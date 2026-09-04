@@ -1,8 +1,10 @@
+import { authHeaders as sessionAuthHeaders } from "@/lib/authClient";
+
 // Vibe-Research 后端 API 客户端。/api → vite 代理到本地 FastAPI（默认 8900）。
 // 后端未启动或数据源异常时抛 ApiError，页面据此优雅降级。
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly retryAfterMs?: number) {
     super(message);
   }
 }
@@ -42,7 +44,7 @@ export function saveAccessKey(key: string) {
 
 export function authHeaders(): Record<string, string> {
   const k = loadAccessKey();
-  return k ? { Authorization: `Bearer ${k}` } : {};
+  return { ...sessionAuthHeaders("GET"), ...(k ? { Authorization: `Bearer ${k}` } : {}) };
 }
 
 export interface MyReport {
@@ -64,10 +66,10 @@ export async function downloadReport(id: string, name: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET", body?: unknown): Promise<T> {
+async function request<T>(path: string, method: "GET" | "POST" | "PATCH" | "DELETE" = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   let resp: Response;
-  const headers: Record<string, string> = { ...authHeaders() };
-  const opts: RequestInit = { method };
+  const headers: Record<string, string> = { ...sessionAuthHeaders(method), ...authHeaders() };
+  const opts: RequestInit = { method, signal, credentials: "include" };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -75,7 +77,8 @@ async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET
   if (Object.keys(headers).length > 0) opts.headers = headers;
   try {
     resp = await fetch(apiUrl(path), opts);
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
     throw new ApiError("连接不到后端，请先启动 backend（uvicorn app:app --port 8900）", 0);
   }
   let payload: any = null;
@@ -88,7 +91,9 @@ async function request<T>(path: string, method: "GET" | "POST" | "DELETE" = "GET
     if (resp.status === 401) {
       throw new ApiError("后端开启了访问鉴权（VR_API_KEY）：请在「接入 AI」页底部填写后端访问密钥", 401);
     }
-    throw new ApiError(payload?.detail || `HTTP ${resp.status}`, resp.status);
+    const retryAfterSeconds = Number(resp.headers.get("Retry-After"));
+    throw new ApiError(payload?.detail || `HTTP ${resp.status}`, resp.status,
+      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1_000 : undefined);
   }
   return (payload?.data ?? payload) as T;
 }
@@ -166,7 +171,7 @@ export interface IndexQuote {
 export type ChartPeriod = "intraday" | "five_day" | "daily" | "weekly" | "monthly";
 export interface ChartPoint {
   time: string; open: number; high: number; low: number; close: number;
-  average: number; volume: number; amount: number;
+  average: number | null; volume: number; amount: number;
 }
 export interface MarketChart {
   asset: "stock" | "index"; code: string; name: string; period: ChartPeriod;
@@ -213,6 +218,32 @@ export interface TurnoverStock {
 }
 export interface TurnoverTop { stocks: TurnoverStock[]; updated: string }
 
+export interface MarketReviewIndex {
+  code: string; name: string; price: number; change: number | null; changePct: number | null;
+  source: string; updatedAt: string; stale: boolean;
+}
+export interface MarketReviewBreadth {
+  up: number | null; down: number | null; upRatio: number | null; downRatio: number | null;
+  limitUp: number | null; limitDown: number | null;
+}
+export interface MarketReviewLiquidity {
+  todayAmountYuan: number | null; previousAmountYuan: number | null;
+  changeAmountYuan: number | null; changePct: number | null;
+  direction: "expanded" | "contracted" | "unchanged" | null;
+}
+export interface MarketReviewBrief {
+  text: string; status: "pending" | "generated" | "unavailable" | "missing";
+  generatedAt: string | null; promptVersion: string;
+}
+export interface MarketReview {
+  refreshing?: boolean;
+  tradingDate: string; generatedAt: string; final: boolean; stale: boolean; partial: boolean;
+  sources: Array<{ name: string; status: "fresh" | "stale" | "missing" | "error"; fetchedAt: string | null; detail: string }>;
+  indices: MarketReviewIndex[]; breadth: MarketReviewBreadth; liquidity: MarketReviewLiquidity;
+  shortTermEmotion: ShortTermEmotion; turnoverTop: TurnoverStock[]; sectors: SectorFlow[];
+  brief: MarketReviewBrief;
+}
+
 export interface RadarItem {
   title: string; url: string; time: string; source: string; summary?: string; zh?: string;
 }
@@ -222,6 +253,89 @@ export interface Industry {
 export interface RadarData {
   generated_at: string | null; recent_days: number; industries: Industry[];
   stats: { industries: number; total_sources: number; failed_sources?: number };
+}
+
+export interface FinancialNewsReport {
+  id: string; title: string; summary: string; publishedAt: string | null;
+  source: string; originalUrl: string; category: string; sourceTier?: number; sourceLevel?: string;
+}
+export interface FinancialNewsImpactBreakdown {
+  marketReaction: number; sectorSpread: number; causalRelation: number; authority: number; timeliness: number;
+}
+export interface FinancialNewsMarketEvidence {
+  status?: string; observedAt?: string; stocks?: Array<Record<string, unknown>>;
+  sectors?: Array<Record<string, unknown>>; reverseChecks?: Record<string, Record<string, unknown>>;
+  verifiedStocks?: string[]; verifiedSectors?: string[]; error?: string;
+}
+export interface FinancialNewsTransmissionPath {
+  catalyst: string; industry: string; aShareSectors: string[]; relatedStocks: string[];
+  marketEvidence: string[]; verified: boolean;
+}
+export interface FinancialNewsSourceTimeline {
+  title?: string; source: string; publishedAt: string | null; originalUrl: string; independent: boolean;
+}
+export interface FinancialNewsItem extends FinancialNewsReport {
+  displayTitle?: string;
+  sourceTier: number; sourceLevel?: string; urgencyScore: number; hotScore: number;
+  scoreReasons: string[]; urgencyReasons?: string[]; hotReasons?: string[];
+  relatedSourceCount: number; relatedSources: string[];
+  relatedStocks: string[]; reports?: FinancialNewsReport[]; firstReportAt?: string;
+  latestAt?: string; status?: string; aiDigest?: string; impactTags?: string[]; stale: boolean;
+  independentSourceCount?: number; independentSources?: string[]; sourceTimeline?: FinancialNewsSourceTimeline[];
+  aShareImpactScore?: number; impactBreakdown?: FinancialNewsImpactBreakdown; impactReasons?: string[];
+  marketEvidence?: FinancialNewsMarketEvidence; transmissionPath?: FinancialNewsTransmissionPath;
+  confidence?: "high" | "medium" | "low"; mainBoardEligible?: boolean; candidate?: boolean;
+  globalObservation?: boolean; globalScore?: number; globalScoreBreakdown?: Record<string, number>;
+  globalScoreReasons?: string[]; substantiveUpdate?: boolean; recheckDueAt?: Record<string, string>;
+}
+export interface FinancialNewsSourceStatus {
+  source?: string; id?: string; name?: string; ok?: boolean; configured?: boolean; enabled?: boolean;
+  count?: number; fetchedAt?: string; lastSuccessAt?: string | null; lastFailure?: string | null;
+  cache?: "fresh" | "stale" | "missing"; error?: string;
+}
+export interface FinancialNewsOverview {
+  generatedAt: string | null; stale: boolean; urgent: FinancialNewsItem[];
+  staleComponents?: { quick: boolean; rss: boolean };
+  freshness?: {
+    quick?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
+    rss?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
+  };
+  hot: FinancialNewsItem[]; aShareHot?: FinancialNewsItem[]; candidates?: FinancialNewsItem[];
+  globalObservation?: FinancialNewsItem[]; globalHighlights?: FinancialNewsItem[];
+  feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
+  eventLibraryHours?: number;
+}
+export interface FinancialNewsStatus {
+  quickIntervalSeconds: number; rssIntervalSeconds: number; officialIntervalSeconds?: number;
+  eventLibraryHours?: number; generatedAt: string | null;
+  stale: boolean; staleComponents?: { quick: boolean; rss: boolean };
+  freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[]; sourceAttempts?: FinancialNewsSourceStatus[];
+  sourceRegistry?: { total: number; valid: number; invalid: number; tiers: Record<string, number> };
+  marketProbe?: { configured: boolean; recheckMinutes: number[] };
+}
+export interface FinancialCalendarEvent {
+  id: string; title: string; category: string; date: string; startsAt: string | null;
+  precision: "date" | "time"; sourceTimezone: string; originalUrl: string;
+  source: string; status: string; stale: boolean; fetchedAt?: string;
+}
+export interface FinancialCalendarResponse {
+  items: FinancialCalendarEvent[]; generatedAt: string | null; windowStart: string; windowEnd: string;
+  timezone: string; stale: boolean; partial: boolean; refreshIntervalSeconds: number;
+  sources: {id:string;name:string;url:string;ok:boolean;lastSuccessAt:string|null;error:string|null;count:number}[];
+}
+export interface FinancialCalendarRefreshResponse {
+  calendar: FinancialCalendarResponse; outcome: "updated" | "partial" | "cooldown"; retryAfter: number;
+}
+
+export interface FinancialNewsFollowingItem {
+  id: string; code: string; name: string; title: string; summary?: string;
+  publishedAt: string | null; originalUrl?: string; kind: string;
+  relationType: "个股" | "行业" | "强关联概念"; evidence: string;
+  relatedCodes?: string[]; relatedSources?: string[];
+}
+export interface FinancialNewsFollowingResponse {
+  items: FinancialNewsFollowingItem[]; page: number; pageSize: number;
+  hasMore: boolean; total: number;
 }
 
 // 产业信号 · GPU 租金
@@ -303,6 +417,7 @@ export interface IndustryData { top: IndustryRow[]; bottom: IndustryRow[]; total
 export interface GlobalIndex {
   key: string; name: string; region: string;
   price: number | null; change_pct: number | null;
+  updatedAt?: string | null; stale?: boolean; source?: string; status?: "fresh" | "stale" | "unavailable";
 }
 export interface GlobalQuote {
   code: string; name: string;
@@ -337,11 +452,20 @@ export const api = {
   marketOverview: () => get<MarketOverview>("/market/overview"),
   emotion: () => get<ShortTermEmotion>("/market/emotion"),
   turnoverTop: () => get<TurnoverTop>("/market/turnover-top"),
+  marketReview: (refresh = false) => get<MarketReview>(`/market/review${refresh ? "?refresh=true" : ""}`),
   globalIndices: () => get<GlobalIndex[]>("/global/indices"),
   globalStock: (symbol: string) => get<GlobalStock>(`/global/stock?symbol=${encodeURIComponent(symbol)}`),
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
+  financialNewsOverview: (signal?: AbortSignal) => request<FinancialNewsOverview>("/finance/news/overview", "GET", undefined, signal),
+  financialNewsCalendar: (signal?: AbortSignal) => request<FinancialCalendarResponse>("/finance/news/calendar", "GET", undefined, signal),
+  financialNewsCalendarRefresh: (signal?: AbortSignal) => request<FinancialCalendarRefreshResponse>("/finance/news/calendar/refresh", "POST", undefined, signal),
+  financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),
+  financialNewsEvent: (eventId: string) => get<FinancialNewsItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
+  financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),
+  financialNewsFollowing: (codes: string[], page = 1, pageSize = 20, signal?: AbortSignal) =>
+    request<FinancialNewsFollowingResponse>("/finance/news/following", "POST", { codes, page, pageSize }, signal),
   gpuRent: () => get<GpuRentData>("/signals/gpu-rent"),
   gpuRentRefresh: () => request<GpuRentData>("/signals/gpu-rent/refresh", "POST"),
   portfolio: () => get<PortfolioData>("/portfolio"),
@@ -352,7 +476,8 @@ export const api = {
     request<PortfolioData>("/portfolio/close", "POST", { code, date, price, shares, cost }),
   removeClosed: (index: number) => request<PortfolioData>(`/portfolio/close?index=${index}`, "DELETE"),
   valuation: (code: string) => get<Valuation>(`/valuation?code=${code}`),
-  stockSearch: (query: string, limit = 10) => get<StockSearchResult[]>(`/stock/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+  stockSearch: (query: string, limit = 10, signal?: AbortSignal) =>
+    request<StockSearchResult[]>(`/stock/search?q=${encodeURIComponent(query)}&limit=${limit}`, "GET", undefined, signal),
   percentile: (code: string) => get<ValPercentile>(`/valuation/percentile?code=${code}`),
   financials: (code: string) => get<Financials>(`/financials?code=${code}`),
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),

@@ -93,6 +93,11 @@ def global_indices() -> list[dict]:
     return out
 
 
+def global_index_specs() -> tuple[dict, ...]:
+    """返回全球指数展示槽位，供上层保留各区域的独立可用/不可用状态。"""
+    return tuple(dict(item) for item in _INDICES)
+
+
 class SearchUnavailable(RuntimeError):
     """证券搜索接口不可用（网络 / 风控 / 返回体变形）。
 

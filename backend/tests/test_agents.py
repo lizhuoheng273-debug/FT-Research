@@ -225,10 +225,10 @@ def test_reflect_prompt_forbids_own_judgement():
 
 @pytest.mark.parametrize("body,code", [
     ({"code": "abc", "llm": _LLM}, 400),                       # 非 6 位代码
-    ({"code": "600519", "llm": {**_LLM, "model": ""}}, 400),   # 缺模型
-    ({"code": "600519", "llm": {**_LLM, "apiKey": ""}}, 400),  # 缺 key
+    ({"code": "600519"}, 400),  # 后台缺少 GLM key
 ])
-def test_debate_route_validation(body, code):
+def test_debate_route_validation(body, code, monkeypatch):
+    monkeypatch.setattr(app_module.glm_config, "load_glm_config", lambda: {"apiKey": ""})
     assert client.post("/api/debate", json=body).status_code == code
 
 

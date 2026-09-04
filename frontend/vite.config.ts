@@ -13,7 +13,9 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     resolve: {
-      alias: { "@": path.resolve(__dirname, "./src") },
+      // Resolve from the project root rather than the temporary directory Vite
+      // uses when bundling this config on Windows.
+      alias: { "@": path.resolve(process.cwd(), "src") },
     },
     server: {
       port: 5899,

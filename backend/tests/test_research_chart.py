@@ -90,7 +90,7 @@ def test_sector_fetch_uses_stale_cache_when_upstream_temporarily_fails(monkeypat
     monkeypatch.setattr(
         research_chart,
         "_fetch_sector_points",
-        lambda _kind, _symbol, _period: [_point(day) for day in range(1, 11)],
+        lambda _kind, _symbol, _period, _count=60: [_point(day) for day in range(1, 11)],
     )
 
     first = research_chart.fetch_chart_summary("sector", "低空经济", "day", 10)
@@ -132,7 +132,7 @@ def test_stock_and_index_use_existing_market_chart_service(monkeypatch, asset, i
     monkeypatch.setattr(
         research_chart.market_chart,
         "get_chart",
-        lambda got_asset, got_identifier, period, adjust: {
+        lambda got_asset, got_identifier, period, adjust, count=60: {
             "asset": got_asset,
             "code": got_identifier,
             "period": period,
@@ -148,6 +148,25 @@ def test_stock_and_index_use_existing_market_chart_service(monkeypatch, asset, i
     assert result["asset"] == asset
     assert result["identifier"] == identifier
     assert result["period"] == "day"
+
+
+def test_sector_history_request_uses_requested_count_window(monkeypatch):
+    research_chart.clear_cache()
+    seen = {}
+    monkeypatch.setattr(
+        research_chart,
+        "load_sector_catalogs",
+        lambda: {"concept": ["低空经济"], "industry": []},
+    )
+
+    def fetch(_kind, _symbol, _period, count=60):
+        seen["count"] = count
+        return [_point(day) for day in range(1, 11)]
+
+    monkeypatch.setattr(research_chart, "_fetch_sector_points", fetch)
+    research_chart.fetch_chart_summary("sector", "低空经济", "day", 30)
+
+    assert seen["count"] == 30
 
 
 def test_ai_tool_exposes_condensed_market_chart_summary(monkeypatch):

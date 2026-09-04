@@ -44,7 +44,7 @@ test("watchlist and review use real links for row navigation", () => {
   assert.doesNotMatch(watchlist, /role="link"/);
   assert.match(watchlist, /<Link[^>]+to=\{`\/finance\/stocks\/\$\{c\}`\}/);
   assert.doesNotMatch(review, /role="link"/);
-  assert.match(review, /<Link[^>]+to=\{`\/finance\/stocks\/\$\{s\.code\}`\}/);
+  assert.match(review, /to=\{`\/finance\/stocks\/\$\{stock\.code\}`\}/);
 });
 
 test("chart requests and embedded stock data guard route changes", () => {

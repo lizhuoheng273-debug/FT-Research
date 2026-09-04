@@ -1,489 +1,108 @@
-import { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, X, Flame, BarChart3, Globe } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { ArrowDownUp, BarChart3, Flame, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
-import { api, ApiError, type IndexQuote, type Quote, type MarketOverview, type ShortTermEmotion, type TurnoverTop, type GlobalIndex } from "@/lib/api";
-import { hasLlm, chatStream } from "@/lib/llm";
-import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
-import { loadWatch, saveWatch } from "@/lib/watchlist";
-import { StockSearchInput } from "@/components/stock/StockSearchInput";
+import { MarketReviewModal } from "@/components/market/MarketReviewModal";
+import { api, type MarketReview, type SectorFlow, type ShortTermEmotion, type TurnoverStock } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-// A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
-// 对中国用户最不易看错（Simon 2026-07-05 确认；非国际绿涨惯例，是有意选择，勿改）。
-const pctColor = (p: number) => (p > 0 ? "text-danger" : p < 0 ? "text-success" : "text-muted-foreground");
-const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
-const yi = (v: number | null) => (v == null ? "—" : `${fmt(v / 1e8)} 亿`); // 元 → 亿
+const pctColor = (value: number | null) => value == null ? "text-muted-foreground" : value > 0 ? "text-danger" : value < 0 ? "text-success" : "text-muted-foreground";
+const fmt = (value: number | null) => value == null ? "—" : value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+const amount = (value: number | null) => value == null ? "—" : `${(value / 1e8).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 亿`;
+const rate = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`;
+
+function statusText(review: MarketReview | null) {
+  if (!review) return "加载中…";
+  if (review.refreshing) return "正在更新 · 先展示已有快照";
+  if (review.stale) return "部分数据来自最近一次真实缓存";
+  if (review.partial) return "部分市场数据暂缺";
+  return review.final ? "收盘快照" : "盘中快照";
+}
+
+function briefPlaceholder(review: MarketReview | null) {
+  if (!review) return "盘后简述加载中…";
+  if (!review.final) return "当前尚未收盘，AI 收盘简述将在收盘后生成。";
+  if (review.brief?.status === "unavailable") return "盘后简述生成失败，页面仍展示客观市场数据。";
+  return "收盘数据已就绪，AI 简述生成中…";
+}
+
+function EmotionDetails({ emotion }: { emotion: ShortTermEmotion }) {
+  const rates: Array<[string, number | null]> = [["封板率", emotion.seal_rate], ["炸板率", emotion.break_rate], ["晋级率", emotion.promotion_rate]];
+  return <div className="space-y-5">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{[["最高连板", `${emotion.max_boards ?? "—"} 板`], ["连板家数", `${emotion.lianban_count ?? "—"} 家`], ["涨停", `${emotion.zt_count ?? "—"} 家`], ["跌停", `${emotion.dt_count ?? "—"} 家`], ["昨涨停", `${emotion.yzt_count ?? "—"} 家`]].map(([label, value]) => <div key={label} className="rounded-xl border border-border/60 bg-card p-3 shadow-sm"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-mono text-lg font-bold">{value}</p></div>)}</div>
+    <div className="grid grid-cols-3 gap-2">{rates.map(([label, value]) => <div key={label} className="rounded-xl border border-border/60 bg-card p-3 text-center shadow-sm"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-mono font-bold">{rate(value)}</p></div>)}</div>
+    <div><h3 className="mb-2 text-sm font-semibold">连板梯队</h3><div className="flex flex-wrap gap-2">{(emotion.ladder || []).map((tier) => <span key={tier.boards} className="rounded-full bg-primary/10 px-3 py-1 text-xs text-primary">{tier.boards}{tier.plus ? "+" : ""} 板 · {tier.count} 家</span>)}</div></div>
+    <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-border/50 text-left text-xs text-muted-foreground"><th className="px-2 py-2">名称</th><th className="px-2 py-2">连板</th><th className="px-2 py-2">现价</th><th className="px-2 py-2">涨跌</th><th className="px-2 py-2">成交额</th></tr></thead><tbody>{(emotion.lianban_stocks || []).map((stock) => <tr key={stock.code} className="border-b border-border/30"><td className="px-2 py-2"><Link className="font-medium hover:text-primary" to={`/finance/stocks/${stock.code}`}>{stock.name}</Link><span className="ml-1 text-xs text-muted-foreground">{stock.code}</span></td><td className="px-2 py-2 font-mono">{stock.boards} 板</td><td className="px-2 py-2 font-mono">{fmt(stock.price)}</td><td className="px-2 py-2 font-mono text-danger">+{fmt(stock.pct)}%</td><td className="px-2 py-2 font-mono">{amount(stock.amount)}</td></tr>)}</tbody></table></div>
+  </div>;
+}
+
+function TurnoverRows({ rows }: { rows: TurnoverStock[] }) {
+  return <div className="overflow-x-auto"><table className="w-full text-sm tabular-nums"><thead><tr className="border-b border-border/60 text-xs text-muted-foreground">{["排名", "名称", "现价（元）", "涨跌幅", "成交额（亿）"].map((label, index) => <th key={label} scope="col" className={cn("whitespace-nowrap px-2 py-2 font-normal", index < 2 ? "text-left" : "text-right")}>{label}</th>)}</tr></thead><tbody>{rows.map((stock, index) => <tr key={stock.code} className="border-b border-border/30 last:border-0"><td className="px-2 py-3 font-mono text-muted-foreground">{index + 1}</td><td className="whitespace-nowrap px-2 py-3"><Link to={`/finance/stocks/${stock.code}`} className="font-medium hover:text-primary">{stock.name}</Link></td><td className="px-2 py-3 text-right font-mono">{fmt(stock.price)}</td><td className={cn("whitespace-nowrap px-2 py-3 text-right font-mono", pctColor(stock.pct))}>{stock.pct == null ? "—" : `${stock.pct > 0 ? "+" : ""}${stock.pct.toFixed(2)}%`}</td><td className="px-2 py-3 text-right font-mono">{stock.amount == null ? "—" : fmt(stock.amount / 1e8)}</td></tr>)}</tbody></table></div>;
+}
+
+function SectorTable({ sectors }: { sectors: SectorFlow[] }) {
+  return <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-border/50 text-left text-xs text-muted-foreground"><th className="px-2 py-2">行业</th><th className="px-2 py-2">涨跌%</th><th className="px-2 py-2">今日净流入</th><th className="px-2 py-2">流入</th><th className="px-2 py-2">流出</th><th className="px-2 py-2">家数</th></tr></thead><tbody>{sectors.slice(0, 15).map((sector) => <tr key={sector.name} className="border-b border-border/30"><td className="px-2 py-2 font-medium">{sector.name}</td><td className={cn("px-2 py-2 font-mono", pctColor(sector.pct))}>{sector.pct > 0 ? "+" : ""}{fmt(sector.pct)}%</td><td className={cn("px-2 py-2 font-mono", pctColor(sector.net))}>{sector.net > 0 ? "+" : ""}{fmt(sector.net)} 亿</td><td className="px-2 py-2 font-mono text-muted-foreground">{fmt(sector.inflow)}</td><td className="px-2 py-2 font-mono text-muted-foreground">{fmt(sector.outflow)}</td><td className="px-2 py-2 font-mono text-muted-foreground">{sector.firms}</td></tr>)}</tbody></table></div>;
+}
 
 export function DailyReview() {
-  const navigate = useNavigate();
-  const [indices, setIndices] = useState<IndexQuote[]>([]);
-  const [idxErr, setIdxErr] = useState(false);
-  const [review, setReview] = useState("");
-  const [reviewLoading, setReviewLoading] = useState(false);
-  const [reviewErr, setReviewErr] = useState<string | null>(null);
-  const [needConfig, setNeedConfig] = useState(false);
-  const [overview, setOverview] = useState<MarketOverview | null>(null);
-  const [emotion, setEmotion] = useState<ShortTermEmotion | null>(null);
-  const [turnover, setTurnover] = useState<TurnoverTop | null>(null);
-  const [globalIdx, setGlobalIdx] = useState<GlobalIndex[]>([]);
-  // 关注股票（自选，存本地）
-  const [watchCodes, setWatchCodes] = useState<string[]>(loadWatch);
-  const [watchQuotes, setWatchQuotes] = useState<Record<string, Quote>>({});
-  const [searchCode, setSearchCode] = useState("");
-  const [watchLoading, setWatchLoading] = useState(false);
-
-  // 各数据块请求是否已结束：区分「加载中」与「数据源暂不可用」（非交易时段/被限流时后端返回空）
-  const [ovDone, setOvDone] = useState(false);
-  const [emoDone, setEmoDone] = useState(false);
-  const [toDone, setToDone] = useState(false);
-
-  const loadIndices = () => {
-    api.indices().then(setIndices).catch(() => setIdxErr(true));
-    api.globalIndices().then(setGlobalIdx).catch(() => {});
-    api.marketOverview().then(setOverview).catch(() => {}).finally(() => setOvDone(true));
-    api.emotion().then(setEmotion).catch(() => {}).finally(() => setEmoDone(true));
-    api.turnoverTop().then(setTurnover).catch(() => {}).finally(() => setToDone(true));
-  };
-
-  // 数据块占位：请求没回来 = 加载中；回来了但为空 = 数据源暂不可用（别让用户干等）
-  const pending = (done: boolean) => (
-    <p className="py-4 text-center text-sm text-muted-foreground/60">
-      {done ? "暂无数据：可能是非交易时段或数据源暂时不可用，可点「大盘指数」旁的刷新重试" : "加载中…"}
-    </p>
-  );
-
-  const refreshWatch = (codes: string[]) => {
-    if (!codes.length) { setWatchQuotes({}); return; }
-    setWatchLoading(true);
-    api.quote(codes.join(",")).then(setWatchQuotes).catch(() => {}).finally(() => setWatchLoading(false));
-  };
-
+  const [review, setReview] = useState<MarketReview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [modal, setModal] = useState<"emotion" | "turnover" | null>(null);
+  const load = (refresh = false) => { setLoading(true); setError(null); (refresh ? api.marketReview(true) : api.marketReview()).then(setReview).catch((reason) => setError(reason instanceof Error ? reason.message : "市场复盘暂不可用")).finally(() => setLoading(false)); };
+  useEffect(() => { load(); }, []);
   useEffect(() => {
-    loadIndices();
-    refreshWatch(loadWatch());
-  }, []);
+    if (!review?.refreshing) return;
+    const timer = window.setTimeout(load, 10000);
+    return () => window.clearTimeout(timer);
+  }, [review]);
 
-  const removeWatch = (c: string) => {
-    const next = watchCodes.filter((x) => x !== c);
-    setWatchCodes(next); saveWatch(next); refreshWatch(next);
-  };
+  const emotion = review?.shortTermEmotion;
+  const turnover = review?.turnoverTop || [];
+  const sectors = review?.sectors || [];
+  const breadth = review?.breadth;
+  const marketContext = useMemo(() => review ? [`交易日：${review.tradingDate}`, `指数：${review.indices.map((item) => `${item.name} ${item.price}（${item.changePct == null ? "涨跌缺失" : `${item.changePct > 0 ? "+" : ""}${item.changePct}%`}）`).join("；") || "数据缺口"}`, `宽度：上涨 ${review.breadth.up ?? "缺失"} 家、下跌 ${review.breadth.down ?? "缺失"} 家、涨停 ${review.breadth.limitUp ?? "缺失"}、跌停 ${review.breadth.limitDown ?? "缺失"}`, `沪深成交额：${amount(review.liquidity.todayAmountYuan)}，较上一交易日同期 ${amount(review.liquidity.changeAmountYuan)}（${review.liquidity.changePct == null ? "缺失" : `${review.liquidity.changePct}%`}）`, `短线情绪：${emotion ? `最高 ${emotion.max_boards} 板、连板 ${emotion.lianban_count} 家` : "数据缺口"}`, `板块资金：${sectors.slice(0, 8).map((sector) => `${sector.name} ${sector.net}`).join("；") || "数据缺口"}`].join("\n") : "市场复盘快照加载中；数据缺口：尚未返回快照", [review, emotion, sectors]);
+  const hasBreadth = breadth?.up != null && breadth?.down != null && breadth.up + breadth.down > 0;
+  const upWidth = hasBreadth ? breadth.up! / (breadth.up! + breadth.down!) * 100 : 0;
+  const downWidth = hasBreadth ? 100 - upWidth : 0;
+  const breadthStatus = review?.sources?.find((source) => source.name === "breadth");
+  const rotation = [{ title: "流入 Top", icon: TrendingUp, color: "text-danger", rows: sectors.slice(0, 6) }, { title: "流出 Top", icon: TrendingDown, color: "text-success", rows: [...sectors].slice(-6).reverse() }];
 
-  const today = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+  return <div>
+    <PageHeader title="每日复盘" subtitle={`${review?.tradingDate || "—"} · ${statusText(review)}`} actions={<AskAiButton context={marketContext} analysisScope="market" workspaceSource="review" workspaceDate={review?.tradingDate} label="问 AI" suggestions={["今天大盘怎么走", "指数表现有什么分化", "盘面有什么值得验证"]} />} />
+    <GlassCard glow className="mb-6"><div className="flex items-center gap-2"><span className="text-primary">✦</span><h2 className="text-sm font-semibold">AI 收盘简述</h2><span className="ml-auto text-xs text-muted-foreground">{review?.brief?.generatedAt ? new Date(review.brief.generatedAt).toLocaleString("zh-CN") : statusText(review)}</span></div>{review?.brief?.text ? <div className="prose prose-sm mt-3 max-w-none dark:prose-invert"><ReactMarkdown remarkPlugins={[remarkGfm]}>{review.brief.text}</ReactMarkdown></div> : <p className="mt-3 text-sm text-muted-foreground">{briefPlaceholder(review)}</p>}</GlassCard>
 
-  const dataSummary = indices.length
-    ? indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；")
-    : "（指数数据未取到）";
-  const sentiment = overview?.sentiment;
-  const sectors = overview?.sectors || [];
-  const globalSummary = globalIdx.length
-    ? globalIdx.map((item) => `${item.name} ${item.price ?? "—"}（${item.change_pct == null ? "涨跌缺失" : `${item.change_pct > 0 ? "+" : ""}${item.change_pct}%`}）`).join("；")
-    : "数据缺口：全球指数未取到";
-  const sentimentSummary = sentiment
-    ? `上涨 ${sentiment.up} 家、下跌 ${sentiment.down} 家、涨停 ${sentiment.zt} 家、跌停 ${sentiment.dt} 家；市场宽度 ${sentiment.breadth}；题材投机 ${sentiment.speculation}；活跃度 ${sentiment.active}`
-    : "数据缺口：市场宽度与情绪未取到";
-  const sectorSummary = sectors.length
-    ? sectors.slice(0, 10).map((item) => `${item.name} ${item.pct > 0 ? "+" : ""}${item.pct}%、净流入 ${item.net > 0 ? "+" : ""}${fmt(item.net)} 亿`).join("；")
-    : "数据缺口：板块涨跌与资金流未取到";
-  const emotionSummary = emotion
-    ? `涨停 ${emotion.zt_count} 家、跌停 ${emotion.dt_count} 家、最高 ${emotion.max_boards} 板、连板 ${emotion.lianban_count} 家、封板率 ${emotion.seal_rate ?? "缺失"}、炸板率 ${emotion.break_rate ?? "缺失"}`
-    : "数据缺口：短线情绪未取到";
-  const turnoverSummary = turnover?.stocks?.length
-    ? turnover.stocks.slice(0, 10).map((item) => `${item.name}（${item.code}）成交额 ${yi(item.amount)}、涨跌 ${item.pct == null ? "缺失" : `${item.pct > 0 ? "+" : ""}${item.pct}%`}`).join("；")
-    : "数据缺口：全市场成交额榜未取到";
-  const marketContext = [
-    `A股主要指数：${dataSummary}`,
-    `全球市场：${globalSummary}`,
-    `市场宽度：${sentimentSummary}`,
-    `板块资金：${sectorSummary}`,
-    `短线情绪：${emotionSummary}`,
-    `成交额榜：${turnoverSummary}`,
-  ].join("\n");
+    <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-semibold text-muted-foreground">大盘指数</h3><button onClick={() => load(true)} className="text-muted-foreground hover:text-primary" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button></div>
+    <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">{(review?.indices || [null, null, null, null]).map((index, position) => index ? <Link key={index.code} to={`/finance/indices/${index.code}`}><GlassCard className="h-full p-3 transition-colors hover:border-primary/40"><p className="truncate text-xs text-muted-foreground">{index.name}</p><p className={cn("mt-1 font-mono text-lg font-bold", pctColor(index.changePct))}>{fmt(index.price)}</p><p className={cn("text-xs", pctColor(index.changePct))}>{index.changePct == null ? "—" : `${index.changePct > 0 ? "+" : ""}${index.changePct}%`}</p><p className="mt-2 text-[10px] text-muted-foreground/60">{index.source} · {index.updatedAt || "更新时间缺失"}{index.stale ? " · 缓存" : ""}</p></GlassCard></Link> : <GlassCard key={position} className="p-3"><p className="text-xs text-muted-foreground">{loading ? "加载中…" : "行情缺失"}</p><p className="mt-1 font-mono text-lg text-muted-foreground/40">—</p></GlassCard>)}</div>
 
-  const runReview = async () => {
-    setReviewErr(null);
-    setNeedConfig(false);
-    if (!hasLlm()) { setNeedConfig(true); return; }
-    setReviewLoading(true);
-    setReview("");
-    const prompt = "请基于已提供和可查询的客观数据，完整复盘今天的 A 股市场；明确事实、推断、待验证条件与数据缺口。";
-    try {
-      await chatStream([{ role: "user", content: prompt }], marketContext, {
-        onDelta: (t) => setReview((r) => r + t),
-      }, undefined, "market");
-    } catch (e) {
-      setReviewErr(e instanceof ApiError ? e.message : "复盘失败");
-    } finally {
-      setReviewLoading(false);
-    }
-  };
+    <GlassCard className="mb-6">
+      <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">市场宽度</h3><span className="text-xs text-muted-foreground">{breadthStatus?.status === "stale" ? "最近真实缓存" : "上涨/下跌家数"}</span></div>
+      {hasBreadth ? <><div className="mt-4 flex justify-between gap-3 text-sm"><span className="text-danger">上涨 <b className="font-mono text-xl">{fmt(breadth!.up)}</b> 家</span><span className="text-success">下跌 <b className="font-mono text-xl">{fmt(breadth!.down)}</b> 家</span></div><div className="mt-2 flex h-3 overflow-hidden rounded-full" role="img" aria-label={`上涨${breadth!.up}家，下跌${breadth!.down}家`}><div className="bg-danger" style={{ width: `${upWidth}%` }} /><div className="bg-success" style={{ width: `${downWidth}%` }} /></div><div className="mt-2 flex justify-between text-xs text-muted-foreground"><span>上涨占比 {upWidth.toFixed(1)}%</span><span>下跌占比 {downWidth.toFixed(1)}%</span></div></> : <p className="mt-4 rounded-lg bg-muted/30 p-3 text-sm text-muted-foreground">{loading ? "涨跌家数加载中…" : "涨跌家数暂不可用，等待数据源恢复；不以零值代替。"}</p>}
+      {breadthStatus?.detail && <p className="mt-2 text-xs text-muted-foreground">{breadthStatus.detail}</p>}
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border/50 pt-3 text-sm"><span>今日沪深成交额 <b className="font-mono">{amount(review?.liquidity.todayAmountYuan ?? null)}</b></span><span className={cn("font-mono", pctColor(review?.liquidity.changePct ?? null))}>{review?.liquidity.direction ? <>{`较上一交易日同期${review.liquidity.direction === "expanded" ? "放量" : review.liquidity.direction === "contracted" ? "缩量" : "持平"}`} {amount(review.liquidity.changeAmountYuan == null ? null : Math.abs(review.liquidity.changeAmountYuan))}（{review.liquidity.changePct == null ? "—" : `${Math.abs(review.liquidity.changePct)}%`}）</> : "上一交易日同期对比暂缺"}</span></div>
+    </GlassCard>
 
-  const sentCells = sentiment ? [
-    { k: "上涨家数", v: sentiment.up, up: true },
-    { k: "下跌家数", v: sentiment.down, up: false },
-    { k: "平盘", v: sentiment.flat, up: null },
-    { k: "涨停", v: sentiment.zt, up: true },
-    { k: "真实涨停", v: sentiment.zt_real, up: true },
-    { k: "跌停", v: sentiment.dt, up: false },
-    { k: "真实跌停", v: sentiment.dt_real, up: false },
-    { k: "活跃度", v: sentiment.active, up: null },
-  ] : [];
-
-  return (
-    <div>
-      <PageHeader
-        title="每日复盘"
-        subtitle={`${today} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
-        actions={
-          <AskAiButton
-            context={marketContext}
-            analysisScope="market"
-            label="问 AI"
-            suggestions={["今天大盘怎么走", "哪些指数领涨领跌", "盘面有什么值得注意"]}
-          />
-        }
-      />
-
-      {/* 1. 大盘指数（实时） */}
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-muted-foreground">大盘指数</h3>
-        <button onClick={loadIndices} className="text-muted-foreground hover:text-primary" title="刷新"><RefreshCw className="h-3.5 w-3.5" /></button>
-      </div>
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {indices.length === 0
-          ? [1, 2, 3, 4].map((i) => (
-              <GlassCard key={i} className="p-3">
-                <p className="text-xs text-muted-foreground">{idxErr ? "行情未接通" : "加载中…"}</p>
-                <p className="mt-1 font-mono text-lg font-bold text-muted-foreground/40">—</p>
-              </GlassCard>
-            ))
-          : indices.map((i) => (
-              <Link key={i.code} to={`/finance/indices/${i.code}`} className="block min-w-0">
-              <GlassCard className="h-full p-3 transition-colors hover:border-primary/40">
-                <p className="truncate text-xs text-muted-foreground">{i.name}</p>
-                <p className={cn("mt-1 font-mono text-lg font-bold", pctColor(i.change_pct))}>{i.price}</p>
-                <p className={cn("text-xs", pctColor(i.change_pct))}>{i.change_pct > 0 ? "+" : ""}{i.change_pct}%</p>
-              </GlassCard>
-              </Link>
-            ))}
-      </div>
-
-      {/* 1b. 全球市场（隔夜外围脸色：A 股常看美股 / 港股） */}
-      {globalIdx.length > 0 && (
-        <>
-          <div className="mb-3 flex items-center gap-2">
-            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><Globe className="h-4 w-4" /> 全球市场</h3>
-            <span className="text-[11px] text-muted-foreground/50">隔夜外围 · A 股常看美股 / 港股脸色</span>
-          </div>
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
-            {globalIdx.map((g) => (
-              <GlassCard key={g.key} className="p-3">
-                <p className="truncate text-xs text-muted-foreground">{g.name} <span className="text-muted-foreground/40">{g.region}</span></p>
-                <p className={cn("mt-1 font-mono text-lg font-bold", g.change_pct == null ? "text-foreground" : pctColor(g.change_pct))}>{g.price ?? "—"}</p>
-                <p className={cn("text-xs", g.change_pct == null ? "text-muted-foreground" : pctColor(g.change_pct))}>
-                  {g.change_pct == null ? "—" : `${g.change_pct > 0 ? "+" : ""}${g.change_pct}%`}
-                </p>
-              </GlassCard>
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* 2. 关注股票（自选） */}
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-muted-foreground">关注股票</h3>
-        {watchCodes.length > 0 && (
-          <button onClick={() => refreshWatch(watchCodes)} className="text-muted-foreground hover:text-primary" title="刷新价格">
-            {watchLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-          </button>
-        )}
-      </div>
-      <GlassCard className="mb-6">
-        <StockSearchInput
-          value={searchCode}
-          onChange={setSearchCode}
-          onSelect={(result) => navigate(`/finance/stocks/${result.code}`)}
-          onSubmitCode={(value) => navigate(`/finance/stocks/${value}`)}
-          placeholder="搜索股票名称或代码，点击进入详情"
-        />
-        {watchCodes.length === 0 ? (
-          <p className="text-sm text-muted-foreground/60">加上你关注的股票，随时看它们的实时价格与涨跌。数据存本地，不上传。</p>
-        ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {watchCodes.map((c) => {
-              const q = watchQuotes[c];
-              return (
-                <div key={c} className="group relative rounded-lg bg-muted/25 p-3 transition-colors hover:bg-muted/40">
-                  <Link to={`/finance/stocks/${c}`} aria-label={`查看 ${q?.name || c} 详情`}
-                    className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50" />
-                  <button onClick={() => removeWatch(c)} title="移除"
-                    className="absolute right-1.5 top-1.5 z-10 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                  <p className="truncate text-xs text-muted-foreground">{q?.name || c}</p>
-                  <p className={cn("mt-1 font-mono text-lg font-bold", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>{q ? q.price : "—"}</p>
-                  <p className={cn("text-xs", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>
-                    {q ? `${q.change_pct > 0 ? "+" : ""}${q.change_pct}%` : c}
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </GlassCard>
-
-      {/* 3. AI 当日复盘 */}
-      <GlassCard glow className="mb-6">
-        <div className="flex items-center justify-between">
-          <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> AI 当日复盘</h3>
-          <button onClick={runReview} disabled={reviewLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
-            {reviewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {review ? "重新复盘" : "让 AI 复盘今天"}
-          </button>
-        </div>
-        {needConfig && (
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">
-            <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-            还没配置 GLM。<Link to="/settings" className="text-primary">查看 AI 配置状态</Link>，之后一键出复盘。
-          </div>
-        )}
-        {reviewErr && (
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4 shrink-0" /> {reviewErr}
-          </div>
-        )}
-        {review ? (
-          <>
-            <div className="prose prose-sm dark:prose-invert mt-4 max-w-none text-foreground"><ReactMarkdown remarkPlugins={[remarkGfm]}>{review}</ReactMarkdown></div>
-            {!reviewLoading && <div className="mt-3"><SaveNoteButton kind="复盘" title={`每日复盘 ${today}`} content={review} /></div>}
-          </>
-        ) : !needConfig && !reviewErr && !reviewLoading ? (
-          <p className="mt-3 text-sm text-muted-foreground">点上方按钮，系统把当天客观数据打包给你的 AI，由它生成复盘。<b className="text-foreground">分析是它给的，我们只负责喂数据。</b></p>
-        ) : null}
-      </GlassCard>
-
-      {/* 4. 市场情绪 */}
-      <div className="mb-3 flex items-center gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><Gauge className="h-4 w-4" /> 市场情绪</h3>
-        {sentiment?.date && <span className="text-[11px] text-muted-foreground/50">{sentiment.date}</span>}
-      </div>
-      <GlassCard className="mb-6">
-        {!sentiment?.breadth ? (
-          pending(ovDone)
-        ) : (
-          <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {[
-                { k: "大盘宽度", v: sentiment.breadth, hint: "冰点 / 偏弱 / 中性 / 偏强 / 普涨" },
-                { k: "题材投机", v: sentiment.speculation, hint: "冰点 / 普通 / 活跃 / 亢奋" },
-              ].map((m) => (
-                <div key={m.k} className="rounded-lg bg-muted/25 p-4">
-                  <p className="text-xs text-muted-foreground">{m.k}</p>
-                  <p className="mt-1 text-2xl font-bold text-primary">{m.v}</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground/60">{m.hint}</p>
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 grid grid-cols-4 gap-2">
-              {sentCells.map((c) => (
-                <div key={c.k} className="rounded-lg bg-muted/20 p-2 text-center">
-                  <p className="truncate text-[11px] text-muted-foreground">{c.k}</p>
-                  <p className={cn("mt-0.5 font-mono text-sm font-bold", c.up === null ? "text-foreground" : c.up ? "text-danger" : "text-success")}>{c.v}</p>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </GlassCard>
-
-      {/* 4b. 短线情绪（连板梯队 / 打板情绪，聚合口径零个股名） */}
-      <div className="mb-3 flex items-center gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><Flame className="h-4 w-4" /> 短线情绪</h3>
-        <span className="text-[11px] text-muted-foreground/50">连板股 · 打板情绪 · 客观公开榜单</span>
-        {emotion?.date && <span className="ml-auto text-[11px] text-muted-foreground/50">{emotion.date}</span>}
-      </div>
-      <GlassCard className="mb-6">
-        {!emotion || emotion.zt_count === undefined ? (
-          pending(emoDone)
-        ) : (
-          <>
-            {/* 关键计数 */}
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {[
-                { k: "涨停", v: `${emotion.zt_count}`, cls: "text-danger" },
-                { k: "跌停", v: `${emotion.dt_count}`, cls: "text-success" },
-                { k: "最高连板", v: `${emotion.max_boards} 板`, cls: "text-primary" },
-                { k: "连板（2板+）", v: `${emotion.lianban_count} 家`, cls: "text-primary" },
-              ].map((c) => (
-                <div key={c.k} className="rounded-lg bg-muted/25 p-3 text-center">
-                  <p className="text-[11px] text-muted-foreground">{c.k}</p>
-                  <p className={cn("mt-0.5 font-mono text-xl font-bold", c.cls)}>{c.v}</p>
-                </div>
-              ))}
-            </div>
-            {/* 打板情绪比率 */}
-            <div className="mt-2 grid grid-cols-3 gap-2">
-              {[
-                { k: "封板率", v: emotion.seal_rate, hint: "封住 / 尝试涨停", strong: true },
-                { k: "炸板率", v: emotion.break_rate, hint: "炸板 / 尝试涨停", strong: false },
-                { k: "晋级率", v: emotion.promotion_rate, hint: "昨涨停今又停", strong: true },
-              ].map((c) => (
-                <div key={c.k} className="rounded-lg bg-muted/20 p-2.5 text-center">
-                  <p className="text-[11px] text-muted-foreground">{c.k}</p>
-                  <p className={cn("mt-0.5 font-mono text-sm font-bold", c.strong ? "text-danger" : "text-success")}>
-                    {c.v == null ? "—" : `${(c.v * 100).toFixed(1)}%`}
-                  </p>
-                  <p className="mt-0.5 text-[10px] text-muted-foreground/50">{c.hint}</p>
-                </div>
-              ))}
-            </div>
-            {/* 连板股清单（2 板以上，客观公开榜单） */}
-            <div className="mt-3">
-              <p className="mb-1.5 text-[11px] text-muted-foreground">连板股（2 板以上连续涨停）· 客观公开榜单，非推荐 / 非预测</p>
-              {emotion.lianban_stocks.length === 0 ? (
-                <p className="text-xs text-muted-foreground/50">今日无 2 板以上个股</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                        {["名称", "连板", "现价", "涨停%", "成交额", "流通市值", "概念"].map((h) => (
-                          <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {emotion.lianban_stocks.map((s) => (
-                        <tr key={s.code} className="border-b border-border/30 transition-colors hover:bg-muted/20">
-                          <td><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></Link></td>
-                          <td className="whitespace-nowrap font-mono font-bold text-primary"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.boards} 板</Link></td>
-                          <td className="font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.price}</Link></td>
-                          <td className="font-mono text-danger"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">+{s.pct}%</Link></td>
-                          <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.amount)}</Link></td>
-                          <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.float_cap)}</Link></td>
-                          <td className="whitespace-nowrap text-xs text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.industry}</Link></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </GlassCard>
-
-      {/* 4c. 全市场成交额 TOP20（客观公开榜单） */}
-      <div className="mb-3 flex items-center gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><BarChart3 className="h-4 w-4" /> 全市场成交额 TOP20</h3>
-        <span className="text-[11px] text-muted-foreground/50">客观公开榜单，非推荐 / 非预测 / 不构成投资建议</span>
-        {turnover?.updated && <span className="ml-auto text-[11px] text-muted-foreground/50">{turnover.updated}</span>}
-      </div>
-      <GlassCard className="mb-6">
-        {!turnover || turnover.stocks.length === 0 ? (
-          pending(toDone)
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                  {["#", "名称", "现价", "涨跌%", "成交额", "总市值", "行业"].map((h) => (
-                    <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {turnover.stocks.map((s, i) => (
-                  <tr key={s.code} className="border-b border-border/30 transition-colors hover:bg-muted/20">
-                    <td className="font-mono text-xs text-muted-foreground/50"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{i + 1}</Link></td>
-                    <td><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2"><span className="font-medium">{s.name}</span> <span className="text-xs text-muted-foreground/50">{s.code}</span></Link></td>
-                    <td className="font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.price ?? "—"}</Link></td>
-                    <td className={cn("font-mono", s.pct == null ? "text-muted-foreground" : pctColor(s.pct))}>
-                      <Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.pct == null ? "—" : `${s.pct > 0 ? "+" : ""}${s.pct}%`}</Link>
-                    </td>
-                    <td className="whitespace-nowrap font-mono"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.amount)}</Link></td>
-                    <td className="whitespace-nowrap font-mono text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{yi(s.mcap)}</Link></td>
-                    <td className="whitespace-nowrap text-xs text-muted-foreground"><Link to={`/finance/stocks/${s.code}`} className="block px-2 py-2">{s.industry}</Link></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </GlassCard>
-
-      {/* 5. 板块资金趋势榜（行业） */}
-      <div className="mb-3 flex items-center gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><TrendingUp className="h-4 w-4" /> 板块资金趋势榜</h3>
-        <span className="text-[11px] text-muted-foreground/50">行业 · 按今日净流入排序</span>
-      </div>
-      <GlassCard className="mb-6">
-        {sectors.length === 0 ? (
-          pending(ovDone)
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                  {["行业", "涨跌%", "今日净流入", "流入", "流出", "家数"].map((h) => (
-                    <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sectors.slice(0, 15).map((s) => (
-                  <tr key={s.name} className="border-b border-border/30">
-                    <td className="px-2 py-2 font-medium">{s.name}</td>
-                    <td className={cn("px-2 py-2 font-mono", pctColor(s.pct))}>{s.pct > 0 ? "+" : ""}{s.pct}%</td>
-                    <td className={cn("px-2 py-2 font-mono", pctColor(s.net))}>{s.net > 0 ? "+" : ""}{fmt(s.net)} 亿</td>
-                    <td className="px-2 py-2 font-mono text-muted-foreground">{fmt(s.inflow)}</td>
-                    <td className="px-2 py-2 font-mono text-muted-foreground">{fmt(s.outflow)}</td>
-                    <td className="px-2 py-2 font-mono text-muted-foreground">{s.firms}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </GlassCard>
-
-      {/* 6. 资金轮动 */}
-      <div className="mb-3 flex items-center gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><ArrowDownUp className="h-4 w-4" /> 资金轮动</h3>
-        <span className="text-[11px] text-muted-foreground/50">板块级净流入 / 流出</span>
-      </div>
-      <div className="mb-2 grid gap-4 md:grid-cols-2">
-        {[
-          { title: "流入 Top", icon: TrendingUp, color: "text-danger", rows: sectors.slice(0, 6) },
-          { title: "流出 Top", icon: TrendingDown, color: "text-success", rows: [...sectors].slice(-6).reverse() },
-        ].map((col) => (
-          <GlassCard key={col.title}>
-            <h4 className={cn("mb-3 flex items-center gap-1.5 text-sm font-semibold", col.color)}><col.icon className="h-4 w-4" /> {col.title}</h4>
-            {col.rows.length === 0 ? (
-              pending(ovDone)
-            ) : (
-              <div className="space-y-1.5">
-                {col.rows.map((s, i) => (
-                  <div key={s.name} className="flex items-center gap-3 border-b border-border/30 pb-1.5 text-sm last:border-0">
-                    <span className="w-5 text-xs text-muted-foreground/50">{i + 1}</span>
-                    <span className="flex-1 truncate">{s.name}</span>
-                    <span className={cn("font-mono text-xs", pctColor(s.pct))}>{s.pct > 0 ? "+" : ""}{s.pct}%</span>
-                    <span className={cn("w-20 text-right font-mono text-xs", pctColor(s.net))}>{s.net > 0 ? "+" : ""}{fmt(s.net)} 亿</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </GlassCard>
-        ))}
-      </div>
-
-      <Disclaimer />
+    <div className="mb-6 grid grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+      <button type="button" disabled={!emotion?.date} onClick={() => emotion && setModal("emotion")} className="glass flex h-full w-full flex-col p-4 text-left transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+        <div className="flex flex-wrap items-center gap-2"><Flame className="h-4 w-4 text-primary" /><h3 className="text-sm font-semibold">涨停/跌停</h3><span className="ml-auto text-xs text-primary">查看完整短线情绪</span></div>
+        <div className="mt-5 grid grid-cols-2 gap-3"><div className="rounded-xl bg-danger/5 p-3"><p className="text-xs text-muted-foreground">涨停家数</p><p className="mt-1 font-mono text-3xl font-bold text-danger">{emotion?.zt_count ?? "—"}</p></div><div className="rounded-xl bg-success/5 p-3"><p className="text-xs text-muted-foreground">跌停家数</p><p className="mt-1 font-mono text-3xl font-bold text-success">{emotion?.dt_count ?? "—"}</p></div></div>
+        <p className="mt-4 text-sm">最高连板 <b className="font-mono">{emotion?.max_boards ?? "—"}</b> 板 · 连板 <b className="font-mono">{emotion?.lianban_count ?? "—"}</b> 家</p>
+        <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border/50 pt-3 text-xs text-muted-foreground">{[["封板率", emotion?.seal_rate], ["炸板率", emotion?.break_rate], ["晋级率", emotion?.promotion_rate]].map(([label, value]) => <div key={String(label)}>{label}<p className="mt-1 font-mono text-sm text-foreground">{rate(value as number | null | undefined)}</p></div>)}</div>
+        <p className="mt-3 text-[11px] text-muted-foreground">东财涨跌停池 · {emotion?.date || "数据暂缺"}</p>
+      </button>
+      <GlassCard className="h-full min-w-0 p-4"><div className="flex flex-wrap items-center gap-2"><BarChart3 className="h-4 w-4 text-primary" /><h3 className="text-sm font-semibold">成交额 Top5</h3><button type="button" disabled={turnover.length === 0} onClick={() => setModal("turnover")} className="ml-auto rounded px-2 py-1 text-xs text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">查看完整榜单</button></div><div className="mt-3">{turnover.length ? <TurnoverRows rows={turnover.slice(0, 5)} /> : <p className="py-4 text-sm text-muted-foreground">成交额榜数据缺失</p>}</div></GlassCard>
     </div>
-  );
+
+    <div className="mb-3 flex items-center gap-2"><TrendingUp className="h-4 w-4 text-primary" /><h3 className="text-sm font-semibold text-muted-foreground">板块资金趋势</h3></div><GlassCard className="mb-6">{sectors.length ? <SectorTable sectors={sectors} /> : <p className="py-4 text-center text-sm text-muted-foreground">板块资金数据缺失</p>}</GlassCard>
+    <div className="mb-3 flex items-center gap-2"><ArrowDownUp className="h-4 w-4 text-primary" /><h3 className="text-sm font-semibold text-muted-foreground">资金轮动</h3></div><div className="mb-2 grid gap-4 md:grid-cols-2">{rotation.map(({ title, icon: Icon, color, rows }) => <GlassCard key={title}><h4 className={cn("mb-3 flex items-center gap-1.5 text-sm font-semibold", color)}><Icon className="h-4 w-4" />{title}</h4>{rows.length ? <div className="space-y-1.5">{rows.map((sector, index) => <div key={sector.name} className="flex items-center gap-3 border-b border-border/30 pb-1.5 text-sm last:border-0"><span className="w-5 text-xs text-muted-foreground/50">{index + 1}</span><span className="flex-1 truncate">{sector.name}</span><span className={cn("font-mono text-xs", pctColor(sector.pct))}>{sector.pct > 0 ? "+" : ""}{fmt(sector.pct)}%</span><span className={cn("w-20 text-right font-mono text-xs", pctColor(sector.net))}>{sector.net > 0 ? "+" : ""}{fmt(sector.net)} 亿</span></div>)}</div> : <p className="py-4 text-sm text-muted-foreground">资金轮动数据缺失</p>}</GlassCard>)}</div>
+    <Disclaimer />
+    <MarketReviewModal open={modal === "emotion"} title="完整短线情绪" onClose={() => setModal(null)}>{emotion ? <EmotionDetails emotion={emotion} /> : <p>数据缺失</p>}</MarketReviewModal>
+    <MarketReviewModal open={modal === "turnover"} title="成交额 Top20" onClose={() => setModal(null)}>{turnover.length ? <TurnoverRows rows={turnover.slice(0, 20)} /> : <p>数据缺失</p>}</MarketReviewModal>
+    {error && <p className="mt-4 text-center text-sm text-warning">{error} · 可点击上方刷新重试</p>}
+  </div>;
 }

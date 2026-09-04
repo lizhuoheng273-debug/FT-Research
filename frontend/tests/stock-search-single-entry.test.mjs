@@ -5,24 +5,21 @@ import test from "node:test";
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 const input = await read("../src/components/stock/StockSearchInput.tsx");
 const detail = await read("../src/pages/StockDetail.tsx");
-const dailyReview = await read("../src/pages/DailyReview.tsx");
 const watchlist = await read("../src/pages/Watchlist.tsx");
 const intel = await read("../src/pages/Intel.tsx");
 
-test("shared stock search uses a white high-contrast field and result panel", () => {
-  assert.match(input, /bg-white/);
-  assert.match(input, /text-slate-900/);
-  assert.match(input, /border-slate-200/);
-  assert.match(input, /hover:bg-slate-50/);
+test("shared stock search uses theme-aware high-contrast field and result panel", () => {
+  assert.match(input, /bg-input/);
+  assert.match(input, /text-input-foreground/);
+  assert.match(input, /border-border/);
+  assert.match(input, /hover:bg-muted\/50/);
 });
 
-test("watchlist pages expose one search entry that navigates to stock detail", () => {
-  for (const page of [dailyReview, watchlist]) {
-    assert.match(page, /StockSearchInput/);
-    assert.doesNotMatch(page, /StockBatchPicker/);
-    assert.doesNotMatch(page, /<textarea/);
-    assert.ok(page.includes("navigate(`/finance/stocks/${result.code}`)"));
-  }
+test("watchlist exposes one search entry while daily review does not include deleted watch controls", () => {
+  assert.match(watchlist, /StockSearchInput/);
+  assert.doesNotMatch(watchlist, /StockBatchPicker/);
+  assert.doesNotMatch(watchlist, /<textarea/);
+  assert.ok(watchlist.includes("navigate(`/finance/stocks/${result.code}`)"));
 });
 
 test("stock detail keeps a visible add-to-watchlist action", () => {

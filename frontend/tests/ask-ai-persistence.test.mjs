@@ -24,7 +24,7 @@ test("Ask AI persists the conversation through the safe storage helper", () => {
 test("conversations are keyed per route, not shared across pages", () => {
   assert.match(buttonSource, /useLocation/);
   assert.match(buttonSource, /conversationKey:\s*pathname \+ \(scopeKey/);
-  assert.match(sessionSource, /CHAT_KEY_PREFIX\s*\+\s*conversationKey/);
+  assert.match(sessionSource, /conversations\.get\(conversationKey\)/);
 });
 
 test("persisted history is capped so localStorage cannot be blown out", () => {
@@ -48,19 +48,16 @@ test("emptying the conversation removes the key rather than storing an empty she
   assert.match(source, /if \(!msgs\.length\)\s*\{\s*\n?\s*storageRemove\(key\)/);
 });
 
-test("key and messages are stored in one atomic state, not a ref", () => {
-  // 分成 msgs + 归属 ref 是不够的：key 变化那一帧 ref 已指向新 key 而 msgs 仍是旧的
-  // （setState 下一帧才生效），守卫会误放行、覆盖目标 key 已存的对话。
-  assert.match(source, /useState<\{ key: string; msgs: StoredMsg\[\] \}>/);
-  assert.match(source, /if \(chat\.key !== chatKey\) return;/);
-  assert.doesNotMatch(source, /loadedKeyRef/);
+test("server conversation snapshots and async writes are scoped to the current route", () => {
+  assert.match(sessionSource, /useState\(\(\) => client\.snapshot\(id\)\)/);
+  assert.match(sessionSource, /epoch\.current === version && scopeRef\.current === scope/);
+  assert.match(sessionSource, /if \(!current\(\)\) return;/);
 });
 
-test("switching keys aborts an in-flight stream", () => {
-  // 否则迟到的 chunk 会被追加到目标页的对话上，且存的是用来源页上下文生成的回答。
-  const effect = source.match(/useEffect\(\(\) => \{[\s\S]*?setChat\(\{ key: chatKey[\s\S]*?\}, \[chatKey, legacyConversationKey\]\);/);
-  assert.ok(effect, "未找到 chatKey 切换的 effect");
-  assert.match(effect[0], /abortRef\.current\?\.abort\(\)/);
+test("switching keys detaches the view while leaving the background run alive", () => {
+  assert.match(sessionSource, /return \(\) => \{ active = false; detach\(\); \}/);
+  assert.match(sessionSource, /if \(active\) setState\(snapshot\)/);
+  assert.equal((sessionSource.match(/client\.attach\(/g) || []).length, 1);
 });
 
 test("callers can scope a conversation below the route level", () => {

@@ -16,6 +16,7 @@ import gstock
 BEIJING = timezone(timedelta(hours=8))
 _CACHE: dict = {}
 _TTL = 300  # 5 分钟；全站共享，省数据源压力
+_GLOBAL_INDEX_CACHE: dict[str, tuple[float, dict]] = {}
 
 
 def _cached(key: str, fn, valid=bool):
@@ -184,3 +185,31 @@ def get_turnover_top() -> dict:
 def get_global_indices() -> list[dict]:
     """全球指数快照（美股 / 港股，含缓存 5 分钟）。空结果不缓存。"""
     return _cached("global_indices", gstock.global_indices, valid=bool)
+
+
+def get_global_indices_snapshot(*, force: bool = False) -> list[dict]:
+    """全球指数展示快照：固定美股/港股槽位，单个区域失败不影响其他区域。"""
+    now = time.time()
+    specs = gstock.global_index_specs()
+    if not force and len(_GLOBAL_INDEX_CACHE) == len(specs) and all(now - ts < _TTL for ts, _ in _GLOBAL_INDEX_CACHE.values()):
+        return [dict(_GLOBAL_INDEX_CACHE[item["key"]][1], stale=False, status="fresh") for item in specs]
+
+    try:
+        current = {str(row.get("key")): row for row in gstock.global_indices() if row.get("key")}
+    except Exception:
+        current = {}
+    updated_at = datetime.now(BEIJING).isoformat(timespec="seconds")
+    result = []
+    for spec in specs:
+        key = spec["key"]
+        row = current.get(key)
+        if row:
+            payload = {**spec, **row, "updatedAt": updated_at, "source": "东方财富", "stale": False, "status": "fresh"}
+            _GLOBAL_INDEX_CACHE[key] = (now, payload)
+        elif key in _GLOBAL_INDEX_CACHE:
+            payload = {**_GLOBAL_INDEX_CACHE[key][1], "stale": True, "status": "stale"}
+        else:
+            payload = {**spec, "price": None, "change_pct": None, "updatedAt": None,
+                       "source": "东方财富", "stale": False, "status": "unavailable"}
+        result.append(payload)
+    return result
