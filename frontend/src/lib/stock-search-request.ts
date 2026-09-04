@@ -9,6 +9,7 @@ type StockSearchFn = (
 interface StockSearchRequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  retryDelayMs?: number;
 }
 
 export class StockSearchTimeoutError extends Error {
@@ -18,11 +19,16 @@ export class StockSearchTimeoutError extends Error {
   }
 }
 
+export function stockSearchRetryDelay(error: unknown, fallbackMs: number): number {
+  const retryAfterMs = (error as { retryAfterMs?: number })?.retryAfterMs;
+  return Number.isFinite(retryAfterMs) && Number(retryAfterMs) > 0 ? Number(retryAfterMs) : fallbackMs;
+}
+
 export async function runStockSearch(
   search: StockSearchFn,
   query: string,
   limit: number,
-  { signal, timeoutMs = 8_000 }: StockSearchRequestOptions = {},
+  { signal, timeoutMs = 12_000, retryDelayMs = 500 }: StockSearchRequestOptions = {},
 ): Promise<StockSearchItem[]> {
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort(signal?.reason);
@@ -35,7 +41,24 @@ export async function runStockSearch(
   }, timeoutMs);
 
   try {
-    return await search(query, limit, controller.signal);
+    while (true) {
+      try {
+        return await search(query, limit, controller.signal);
+      } catch (error) {
+        if ((error as { status?: number })?.status !== 503 || controller.signal.aborted) throw error;
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            globalThis.clearTimeout(timer);
+            reject(controller.signal.reason ?? new DOMException("Aborted", "AbortError"));
+          };
+          const timer = globalThis.setTimeout(() => {
+            controller.signal.removeEventListener("abort", onAbort);
+            resolve();
+          }, stockSearchRetryDelay(error, retryDelayMs));
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+    }
   } catch (error) {
     if (controller.signal.aborted && controller.signal.reason) {
       throw controller.signal.reason;

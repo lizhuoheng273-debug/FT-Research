@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { resetConversationIdentity } from "@/hooks/useAiChatSession";
 import {
   getAuthIdentity, heartbeat, login, logout, restoreIdentity, startGuest,
   subscribeIdentityInvalidation, type AuthIdentity,
@@ -20,19 +21,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
     void restoreIdentity().then((next) => { if (active) { setIdentity(next); setReady(true); } });
-    const unsubscribe = subscribeIdentityInvalidation(() => setIdentity(null));
+    const unsubscribe = subscribeIdentityInvalidation(() => { resetConversationIdentity(); setIdentity(null); });
     return () => { active = false; unsubscribe(); };
   }, []);
   useEffect(() => {
     if (identity?.kind !== "guest") return;
-    const timer = window.setInterval(() => void heartbeat().catch(() => setIdentity(null)), 15000);
+    const timer = window.setInterval(() => void heartbeat().catch(() => { resetConversationIdentity(); setIdentity(null); }), 15000);
     return () => window.clearInterval(timer);
   }, [identity?.id, identity?.kind]);
   const value = useMemo<AuthContextValue>(() => ({
     identity, ready,
-    signIn: async (password) => { setIdentity(await login(password)); },
-    signInGuest: async () => { const result = await startGuest(); setIdentity(result.identity); },
-    signOut: async () => { await logout(); setIdentity(null); },
+    signIn: async (password) => { const next = await login(password); resetConversationIdentity(); setIdentity(next); },
+    signInGuest: async () => { const result = await startGuest(); resetConversationIdentity(); setIdentity(result.identity); },
+    signOut: async () => { try { await logout(); } finally { resetConversationIdentity(); setIdentity(null); } },
   }), [identity, ready]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

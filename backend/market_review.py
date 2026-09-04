@@ -10,6 +10,7 @@ import json
 import hashlib
 import math
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +24,7 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 PROMPT_VERSION = "market-review-brief-v2"
 INDEX_CODES = ("000001", "399001", "399006", "000300")
 REVIEW_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "market-review"
+REVIEW_REFRESH_SECONDS = 5 * 60
 _breadth_lock = threading.Lock()
 REVIEW_FILE_LOCK = threading.RLock()
 
@@ -146,27 +148,74 @@ def extract_official_stock_amount(rows: Any) -> int | None:
     return int(round(sum(candidates)))
 
 
-def fetch_official_liquidity(trading_date: date, previous_date: date) -> dict[str, Any] | None:
-    """Fetch same-scope stock turnover from official SSE and SZSE statistics."""
+def fetch_official_stock_amount(trading_date: date) -> int | None:
+    """Fetch one day's stock-only turnover from the two official exchanges."""
     try:
         import akshare as ak
-
-        def ymd(value: date) -> str:
-            return value.strftime("%Y%m%d")
-
-        def total(value: date) -> int:
-            sse = extract_official_stock_amount(ak.stock_sse_deal_daily(date=ymd(value)))
-            szse = extract_official_stock_amount(ak.stock_szse_summary(date=ymd(value)))
-            if sse is None or szse is None:
-                raise RuntimeError("官方交易所统计缺少股票成交额")
-            return sse + szse
-
-        return {"todayAmountYuan": total(trading_date), "previousAmountYuan": total(previous_date)}
+        ymd = trading_date.strftime("%Y%m%d")
+        sse = extract_official_stock_amount(ak.stock_sse_deal_daily(date=ymd))
+        szse = extract_official_stock_amount(ak.stock_szse_summary(date=ymd))
+        return sse + szse if sse is not None and szse is not None else None
     except Exception:
         return None
 
 
-def _normalize_index(row: dict[str, Any]) -> dict[str, Any] | None:
+def fetch_latest_official_stock_amount(on_or_before: date, lookback_days: int = 15) -> int | None:
+    """Find the latest published exchange total, including across holidays."""
+    for offset in range(max(1, lookback_days)):
+        candidate = on_or_before - timedelta(days=offset)
+        if candidate.weekday() >= 5:
+            continue
+        amount = fetch_official_stock_amount(candidate)
+        if amount is not None:
+            return amount
+    return None
+
+
+def fetch_official_liquidity(trading_date: date, previous_date: date) -> dict[str, Any] | None:
+    """Fetch same-scope stock turnover from official SSE and SZSE statistics."""
+    today = fetch_official_stock_amount(trading_date)
+    previous = fetch_latest_official_stock_amount(previous_date)
+    return {"todayAmountYuan": today, "previousAmountYuan": previous} if today is not None and previous is not None else None
+
+
+def fetch_live_liquidity(indices: list[dict[str, Any]], trading_date: date, previous_date: date) -> dict[str, Any] | None:
+    """Compare current turnover with the previous session at the same minute."""
+    expected_date = trading_date.isoformat()
+    market_rows = {str(row.get("code")): row for row in indices}
+    if any(not str((market_rows.get(code) or {}).get("updatedAt") or "").startswith(expected_date)
+           for code in ("000001", "399001")):
+        return None
+    amounts = {str(row.get("code")): _as_number(row.get("amountYuan")) for row in indices}
+    shanghai, shenzhen = amounts.get("000001"), amounts.get("399001")
+    if shanghai is None or shenzhen is None:
+        return None
+    timestamps: list[datetime] = []
+    for code in ("000001", "399001"):
+        try:
+            timestamps.append(datetime.strptime(str(market_rows[code]["updatedAt"]), "%Y-%m-%d %H:%M:%S"))
+        except (KeyError, TypeError, ValueError):
+            return None
+    cutoff = min(timestamps).strftime("%H:%M")
+
+    def previous_amount(prefixed_code: str) -> float | None:
+        try:
+            histories = astock.index_intraday_days(prefixed_code)
+        except Exception:
+            return None
+        prior_days = [day for day in histories if str(day.get("date") or "") <= previous_date.isoformat()]
+        matching = max(prior_days, key=lambda day: str(day.get("date") or ""), default=None)
+        points = (matching or {}).get("points") or []
+        eligible = [point for point in points if str(point.get("time") or "") <= cutoff]
+        return _as_number(eligible[-1].get("amountYuan")) if eligible else None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        previous_parts = list(pool.map(previous_amount, ("sh000001", "sz399001")))
+    previous = sum(previous_parts) if all(value is not None for value in previous_parts) else None
+    return {"todayAmountYuan": shanghai + shenzhen, "previousAmountYuan": previous}
+
+
+def _normalize_index(row: dict[str, Any], expected_date: date | None = None) -> dict[str, Any] | None:
     code = str(row.get("code") or row.get("代码") or "")
     if code not in INDEX_CODES:
         return None
@@ -175,6 +224,9 @@ def _normalize_index(row: dict[str, Any]) -> dict[str, Any] | None:
     change = _as_number(row.get("change_amt", row.get("change", row.get("涨跌"))))
     if price is None:
         return None
+    updated_at = str(row.get("updatedAt") or row.get("更新时间") or "")
+    if expected_date and updated_at and not updated_at.startswith(expected_date.isoformat()):
+        return None
     return {
         "code": code,
         "name": str(row.get("name") or row.get("名称") or code),
@@ -182,13 +234,13 @@ def _normalize_index(row: dict[str, Any]) -> dict[str, Any] | None:
         "change": change,
         "changePct": change_pct,
         "source": str(row.get("source") or "腾讯行情"),
-        "updatedAt": str(row.get("updatedAt") or row.get("更新时间") or ""),
+        "updatedAt": updated_at,
         "stale": bool(row.get("stale", False)),
     }
 
 
-def _normalize_indices(rows: Any) -> list[dict[str, Any]]:
-    output = [_normalize_index(row) for row in _records(rows)]
+def _normalize_indices(rows: Any, expected_date: date | None = None) -> list[dict[str, Any]]:
+    output = [_normalize_index(row, expected_date) for row in _records(rows)]
     return [row for row in output if row]
 
 
@@ -239,9 +291,13 @@ def _valid_breadth(row: Any) -> bool:
     return all(v is not None and v >= 0 and v.is_integer() for v in counts) and sum(counts) > 0
 
 
-def _default_adapters(trading_date: date, previous_date: date) -> dict[str, Callable[[], Any]]:
+def _default_adapters(current: datetime, trading_date: date, previous_date: date) -> dict[str, Callable[[], Any]]:
+    index_rows: list[dict[str, Any]] = []
+
     def indices():
-        return astock.index_quote()
+        rows = astock.index_quote()
+        index_rows[:] = rows
+        return rows
 
     def breadth():
         row = market._sentiment()
@@ -259,7 +315,10 @@ def _default_adapters(trading_date: date, previous_date: date) -> dict[str, Call
         }
 
     def liquidity():
-        return fetch_official_liquidity(trading_date, previous_date)
+        if current.date() == trading_date and (current.hour, current.minute) >= (9, 15):
+            return fetch_live_liquidity(index_rows or indices(), trading_date, previous_date)
+        official = fetch_official_liquidity(trading_date, previous_date)
+        return official
 
     def emotion():
         return market.get_short_term_emotion()
@@ -284,6 +343,8 @@ class MarketReviewService:
         self.adapters = adapters
         self._memory: dict[str, tuple[datetime, dict[str, Any]]] = {}
         self._lock = threading.RLock()
+        self._refresh_guard = threading.Lock()
+        self._refresh_thread: threading.Thread | None = None
 
     def _path(self, trading_date: date) -> Path:
         return self.cache_dir / f"{trading_date.isoformat()}.json"
@@ -295,6 +356,37 @@ class MarketReviewService:
             return payload.get("review") if isinstance(payload, dict) else None
         except (OSError, ValueError):
             return None
+
+    def _load_latest(self) -> dict[str, Any] | None:
+        for path in sorted(self.cache_dir.glob("????-??-??.json"), reverse=True):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                review = payload.get("review") if isinstance(payload, dict) else None
+                if isinstance(review, dict) and self._required_complete(review):
+                    return review
+            except (OSError, ValueError):
+                continue
+        return None
+
+    def _refresh_in_background(self) -> None:
+        with self._refresh_guard:
+            if self._refresh_thread and self._refresh_thread.is_alive():
+                return
+            def run():
+                try:
+                    self.get_review(force=True)
+                except Exception:
+                    # The API has already served the last real snapshot; a
+                    # background outage must not surface as an unhandled thread.
+                    pass
+                finally:
+                    with self._refresh_guard:
+                        self._refresh_thread = None
+            self._refresh_thread = threading.Thread(target=run, name="ft-market-review-refresh", daemon=True)
+            self._refresh_thread.start()
+
+    def prewarm(self) -> None:
+        self._refresh_in_background()
 
     def _save(self, trading_date: date, review: dict[str, Any]) -> None:
         with REVIEW_FILE_LOCK:
@@ -315,7 +407,7 @@ class MarketReviewService:
         return len(review.get("indices") or []) >= 3 and breadth.get("up") is not None and breadth.get("down") is not None and liquidity.get("todayAmountYuan") is not None and liquidity.get("previousAmountYuan") is not None
 
     def _collect(self, current: datetime, trading_date: date, cached: dict[str, Any] | None) -> dict[str, Any]:
-        adapters = self.adapters or _default_adapters(trading_date, _previous_trading_date(trading_date))
+        adapters = self.adapters or _default_adapters(current, trading_date, _previous_trading_date(trading_date))
         source_rows: list[dict[str, Any]] = []
         stale = False
         values: dict[str, Any] = {}
@@ -323,6 +415,8 @@ class MarketReviewService:
         for name in ("indices", "breadth", "liquidity", "shortTermEmotion", "turnoverTop", "sectors"):
             try:
                 raw = adapters[name]()
+                if name == "indices":
+                    raw = _normalize_indices(raw, trading_date)
                 valid = raw is not None and raw != [] and raw != {}
                 if name == "breadth":
                     valid = _valid_breadth(raw)
@@ -344,7 +438,7 @@ class MarketReviewService:
         breadth = build_breadth(raw_breadth.get("up"), raw_breadth.get("down"), raw_breadth.get("limitUp"), raw_breadth.get("limitDown"))
         raw_liquidity = values["liquidity"] or {}
         liquidity = build_liquidity(raw_liquidity.get("todayAmountYuan"), raw_liquidity.get("previousAmountYuan"))
-        indices = _normalize_indices(values["indices"])
+        indices = _normalize_indices(values["indices"], trading_date)
         missing_or_stale = stale or any(row["status"] != "fresh" for row in source_rows)
         review = {
             "tradingDate": trading_date.isoformat(),
@@ -364,33 +458,53 @@ class MarketReviewService:
         review["partial"] = not self._required_complete(review) or missing_or_stale
         return review
 
-    def get_review(self, force: bool = False) -> dict[str, Any]:
-        # API requests and the post-close scheduler must share one collection.
-        acquired = self._lock.acquire(blocking=False)
-        if not acquired and not force:
-            day = _trading_date(_ensure_beijing(self.now_fn()))
-            hit = self._memory.get(day.isoformat())
-            cached = hit[1] if hit else self._load(day)
-            if cached:
-                return {**cached, "stale": True, "refreshing": True}
-        if not acquired:
-            self._lock.acquire()
-        try:
-            return self._get_review(force)
-        finally:
+    def get_review(self, force: bool = False, refresh: bool = False) -> dict[str, Any]:
+        if force:
+            with self._lock:
+                return self._get_review(True)
+
+        current = _ensure_beijing(self.now_fn())
+        day = _trading_date(current)
+        key = day.isoformat()
+        memory = self._memory.get(key)
+        cached = memory[1] if memory else self._load(day)
+        busy = not self._lock.acquire(blocking=False)
+        if not busy:
             self._lock.release()
+        if cached and self._required_complete(cached):
+            generated = cached.get("generatedAt")
+            try:
+                fresh = bool(generated) and (current - datetime.fromisoformat(generated)).total_seconds() < REVIEW_REFRESH_SECONDS
+            except (TypeError, ValueError):
+                fresh = False
+            if fresh and not busy and not refresh:
+                return cached
+            self._refresh_in_background()
+            return {**cached, "stale": bool(cached.get("stale")) or not fresh, "refreshing": True}
+
+        latest = self._load_latest()
+        if latest:
+            self._refresh_in_background()
+            return {**latest, "stale": True, "refreshing": True}
+
+        if cached:
+            self._refresh_in_background()
+            return {**cached, "stale": True, "refreshing": True}
+
+        with self._lock:
+            return self._get_review(False)
 
     def _get_review(self, force: bool = False) -> dict[str, Any]:
         current = _ensure_beijing(self.now_fn())
         trading_date = _trading_date(current)
         key = trading_date.isoformat()
         memory = self._memory.get(key)
-        if not force and memory and (current - memory[0]).total_seconds() < 60:
+        if not force and memory and (current - memory[0]).total_seconds() < REVIEW_REFRESH_SECONDS:
             return memory[1]
         cached = self._load(trading_date)
         if not force and cached and cached.get("generatedAt"):
             try:
-                if (current - datetime.fromisoformat(cached["generatedAt"])).total_seconds() < 60:
+                if (current - datetime.fromisoformat(cached["generatedAt"])).total_seconds() < REVIEW_REFRESH_SECONDS:
                     self._memory[key] = (current, cached)
                     return cached
             except ValueError:
@@ -405,14 +519,15 @@ class MarketReviewService:
 
     def set_brief(self, trading_date: str, brief: dict[str, Any]) -> None:
         """Merge a generated brief without recollecting objective market data."""
-        key = str(trading_date)
-        current = self._memory.get(key)
-        review = current[1] if current else self._load(date.fromisoformat(key))
-        if not review:
-            return
-        updated = {**review, "brief": brief}
-        self._save(date.fromisoformat(key), updated)
-        self._memory[key] = (current[0] if current else _ensure_beijing(self.now_fn()), updated)
+        with self._lock:
+            key = str(trading_date)
+            current = self._memory.get(key)
+            review = current[1] if current else self._load(date.fromisoformat(key))
+            if not review:
+                return
+            updated = {**review, "brief": brief}
+            self._save(date.fromisoformat(key), updated)
+            self._memory[key] = (current[0] if current else _ensure_beijing(self.now_fn()), updated)
 
 
 market_review_service = MarketReviewService()

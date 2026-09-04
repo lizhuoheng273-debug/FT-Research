@@ -4,7 +4,7 @@ import { authHeaders as sessionAuthHeaders } from "@/lib/authClient";
 // 后端未启动或数据源异常时抛 ApiError，页面据此优雅降级。
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly retryAfterMs?: number) {
     super(message);
   }
 }
@@ -91,7 +91,9 @@ async function request<T>(path: string, method: "GET" | "POST" | "PATCH" | "DELE
     if (resp.status === 401) {
       throw new ApiError("后端开启了访问鉴权（VR_API_KEY）：请在「接入 AI」页底部填写后端访问密钥", 401);
     }
-    throw new ApiError(payload?.detail || `HTTP ${resp.status}`, resp.status);
+    const retryAfterSeconds = Number(resp.headers.get("Retry-After"));
+    throw new ApiError(payload?.detail || `HTTP ${resp.status}`, resp.status,
+      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1_000 : undefined);
   }
   return (payload?.data ?? payload) as T;
 }
@@ -321,6 +323,9 @@ export interface FinancialCalendarResponse {
   timezone: string; stale: boolean; partial: boolean; refreshIntervalSeconds: number;
   sources: {id:string;name:string;url:string;ok:boolean;lastSuccessAt:string|null;error:string|null;count:number}[];
 }
+export interface FinancialCalendarRefreshResponse {
+  calendar: FinancialCalendarResponse; outcome: "updated" | "partial" | "cooldown"; retryAfter: number;
+}
 
 export interface FinancialNewsFollowingItem {
   id: string; code: string; name: string; title: string; summary?: string;
@@ -447,7 +452,7 @@ export const api = {
   marketOverview: () => get<MarketOverview>("/market/overview"),
   emotion: () => get<ShortTermEmotion>("/market/emotion"),
   turnoverTop: () => get<TurnoverTop>("/market/turnover-top"),
-  marketReview: () => get<MarketReview>("/market/review"),
+  marketReview: (refresh = false) => get<MarketReview>(`/market/review${refresh ? "?refresh=true" : ""}`),
   globalIndices: () => get<GlobalIndex[]>("/global/indices"),
   globalStock: (symbol: string) => get<GlobalStock>(`/global/stock?symbol=${encodeURIComponent(symbol)}`),
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
@@ -455,6 +460,7 @@ export const api = {
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
   financialNewsOverview: (signal?: AbortSignal) => request<FinancialNewsOverview>("/finance/news/overview", "GET", undefined, signal),
   financialNewsCalendar: (signal?: AbortSignal) => request<FinancialCalendarResponse>("/finance/news/calendar", "GET", undefined, signal),
+  financialNewsCalendarRefresh: (signal?: AbortSignal) => request<FinancialCalendarRefreshResponse>("/finance/news/calendar/refresh", "POST", undefined, signal),
   financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),
   financialNewsEvent: (eventId: string) => get<FinancialNewsItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
   financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),

@@ -34,7 +34,9 @@ def _gtimg_line(**overrides) -> str:
     parts = ["0"] * 55
     parts[1] = overrides.get("name", "贵州茅台")
     parts[3] = overrides.get("price", "1194.45")
+    parts[30] = overrides.get("updated_at", "20260904114700")
     parts[36] = overrides.get("volume", "1038874")
+    parts[37] = overrides.get("amount_wan", "56028829")
     parts[39] = overrides.get("pe_ttm", "18.05")
     parts[44] = overrides.get("mcap", "15000")
     parts[46] = overrides.get("pb", "6.41")
@@ -51,6 +53,8 @@ def test_parse_gtimg():
     assert q["pe_ttm"] == 18.05
     assert q["pb"] == 6.41
     assert q["mcap_yi"] == 15000
+    assert q["updated_at"] == "2026-09-04 11:47:00"
+    assert q["amount_yuan"] == 560_288_290_000
 
 
 def test_parse_gtimg_bad_line_ignored():

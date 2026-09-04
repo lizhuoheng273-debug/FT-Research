@@ -5,18 +5,24 @@ from ai_limits import Limits
 from session_store import SessionStore
 
 
-def test_disconnect_does_not_restart_model(tmp_path):
+def test_disconnect_does_not_restart_model(tmp_path, monkeypatch):
     release, first_saved = Event(), Event()
     calls = []
 
     def runner(run, control):
         calls.append(run["id"])
         yield {"type": "delta", "payload": {"text": "第一段"}}
-        first_saved.set()
         assert release.wait(2)
         yield {"type": "done", "payload": {}}
 
     store = SessionStore(tmp_path / "test.db")
+    append_event = store.append_event
+    def append_and_signal(run_id, event_type, payload):
+        result = append_event(run_id, event_type, payload)
+        if event_type == "delta":
+            first_saved.set()
+        return result
+    monkeypatch.setattr(store, "append_event", append_and_signal)
     principal = store.create_principal("owner")
     conversation = store.create_conversation(principal, "chat", {"type": "review"})
     jobs = RunManager(store, runner, Limits(store), clock=store.clock)
@@ -32,17 +38,23 @@ def test_disconnect_does_not_restart_model(tmp_path):
         jobs.shutdown()
 
 
-def test_explicit_cancel_keeps_partial_events(tmp_path):
+def test_explicit_cancel_keeps_partial_events(tmp_path, monkeypatch):
     started = Event()
 
     def runner(run, control):
-        started.set()
         yield {"type": "delta", "payload": {"text": "部分"}}
         while not control.cancelled:
             control.wait(0.01)
         yield {"type": "done", "payload": {}}
 
     store = SessionStore(tmp_path / "test.db")
+    append_event = store.append_event
+    def append_and_signal(run_id, event_type, payload):
+        result = append_event(run_id, event_type, payload)
+        if event_type == "delta":
+            started.set()
+        return result
+    monkeypatch.setattr(store, "append_event", append_and_signal)
     principal = store.create_principal("owner")
     conversation = store.create_conversation(principal, "chat", {})
     jobs = RunManager(store, runner, Limits(store), clock=store.clock)

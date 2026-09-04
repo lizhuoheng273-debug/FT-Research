@@ -66,7 +66,7 @@ test("stock conversations use a versioned key without migrating legacy framework
   const session = fs.readFileSync(sessionUrl, "utf8");
   assert.match(workspace, /buildFinanceAiKey/);
   assert.doesNotMatch(workspace, /legacyConversationKey:/);
-  assert.match(session, /legacyConversationKey/);
+  assert.match(session, /export function readLegacyChat/);
   assert.match(session, /storageRemove\(legacyKey\)/);
 });
 

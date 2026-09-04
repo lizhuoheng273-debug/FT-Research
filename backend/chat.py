@@ -15,7 +15,7 @@ import logging
 import os
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
 import requests
@@ -69,6 +69,10 @@ SYSTEM_PROMPT = """你是 FT-Research 里的投研助理。你可以调用工具
 估值贵贱看 query_valuation_percentile，资金动向看 query_fund_flow，风险排查看 query_announcements + query_lockup。
 
 {research_guidance}
+
+表达要求：默认用简洁中文，先给结论，再用小标题和短段落解释。每个相关维度通常一两句；
+只展开与问题有关的分析，不机械补齐整套框架。用户要求详细时再充分展开。
+已有上下文足够回答时直接作答；仅为关键数据缺口调用工具，不重复查询相同工具和参数。
 
 当前页面上下文：
 {context}"""
@@ -143,7 +147,9 @@ def _call_llm(cfg: dict, messages: list, use_tools: bool) -> dict:
         timeout=90,
     )
     if r.status_code != 200:
-        raise RuntimeError(f"模型接口 HTTP {r.status_code}: {r.text[:300]}")
+        status = r.status_code
+        r.close()
+        raise RuntimeError(f"模型接口 HTTP {status}")
     return r.json()
 
 
@@ -214,9 +220,16 @@ def _resolve_base(cfg: dict) -> str:
 def _call_llm_stream(cfg: dict, messages: list, use_tools: bool):
     _check_base_url(cfg.get("baseURL", ""))
     payload = {"model": cfg["model"], "messages": messages, "temperature": 0.3, "stream": True}
+    if cfg.get("reasoningEffort") in {"low", "high", "max"}:
+        payload["reasoning_effort"] = cfg["reasoningEffort"]
     if use_tools:
         payload["tools"] = TOOLS
         payload["tool_choice"] = "auto"
+    _stream_log.info(
+        "AI request shape: messages=%d input_chars=%d tools=%d",
+        len(messages), sum(len(str(m.get("content") or "")) for m in messages),
+        len(payload.get("tools") or []),
+    )
     started = time.monotonic()
     r = requests.post(
         f"{_resolve_base(cfg)}/chat/completions",
@@ -239,6 +252,7 @@ def _iter_sse_deltas(resp):
     started = time.monotonic()
     first_event = True
     first_content = True
+    seen_phases = set()
     for chunk in resp.iter_content(chunk_size=None):
         if not chunk:
             continue
@@ -264,7 +278,19 @@ def _iter_sse_deltas(resp):
                 if delta.get("content") and first_content:
                     _stream_log.info("AI first upstream text after headers: %.3fs", time.monotonic() - started)
                     first_content = False
+                phase = "output" if delta.get("content") else "reasoning" if delta.get("reasoning_content") else "planning" if delta.get("tool_calls") else "metadata"
+                if phase not in seen_phases:
+                    seen_phases.add(phase)
+                    _stream_log.info("AI upstream phase after headers: phase=%s elapsed=%.3fs", phase, time.monotonic() - started)
                 yield delta
+
+
+def _stream_round(resp):
+    try:
+        yield from _iter_sse_deltas(resp)
+    finally:
+        if resp is not None and hasattr(resp, "close"):
+            resp.close()
 
 
 def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None):
@@ -278,7 +304,16 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
         resp = _call_llm_stream(cfg, messages, use_tools=True)
         content_parts: list[str] = []
         tool_acc: dict[int, dict] = {}
-        for delta in _iter_sse_deltas(resp):
+        last_phase = None
+        for delta in _stream_round(resp):
+            phase = "output" if delta.get("content") else "reasoning" if delta.get("reasoning_content") else "planning" if delta.get("tool_calls") else None
+            if phase and phase != last_phase:
+                last_phase = phase
+                if phase != "output":
+                    yield {"type": "progress", "payload": {
+                        "phase": phase, "status": "running",
+                        "message": "模型正在推理…" if phase == "reasoning" else "模型正在准备数据查询…",
+                    }}
             if delta.get("content"):
                 content_parts.append(delta["content"])
                 yield {"type": "delta", "text": delta["content"]}
@@ -323,32 +358,42 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
                 args = {}
             calls.append((i, a["name"], args, time.monotonic()))
             yield {"type": "progress", "payload": {
-                "phase": "tool", "status": "running", "tool": a["name"],
+                "phase": "tool", "status": "running", "tool": a["name"], "callId": f"{rnd}:{i}",
                 "elapsedMs": 0, "message": f"正在调用：{a['name']}…",
             }}
 
         max_workers = min(4, len(calls))
+        def timed_tool(name, args):
+            started = time.monotonic()
+            result = execute_scoped_tool(name, args, allowed_tool_names, 20.0)
+            return result, int((time.monotonic() - started) * 1000)
+
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ft-ai-tool") as executor:
-            futures = {
-                i: executor.submit(execute_scoped_tool, name, args, allowed_tool_names, 20.0)
-                for i, name, args, _started in calls
-            }
+            submitted = {}
+            futures = {}
+            for i, name, args, _started in calls:
+                key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+                if key not in submitted:
+                    submitted[key] = executor.submit(timed_tool, name, args)
+                futures[i] = submitted[key]
             results = {}
-            for i, name, args, started in calls:
-                result = futures[i].result()
-                results[i] = result
-                gap = str(result.get("data_gap", "")) if isinstance(result, dict) else ""
-                if isinstance(result, dict) and result.get("status") == "unavailable":
-                    status = "timeout" if ("超时" in gap or "timeout" in gap.lower() or "20" in gap) else "unavailable"
-                else:
-                    status = "completed"
-                message = f"{name} 超时，继续分析" if status == "timeout" else f"{name} 不可用，继续分析" if status == "unavailable" else f"{name} 调用完成"
-                yield {"type": "progress", "payload": {
-                    "phase": "tool", "status": status, "tool": name,
-                    "elapsedMs": int((time.monotonic() - started) * 1000),
-                    "message": message,
-                }}
-                trace.append({"tool": name, "args": args})
+            for future in as_completed(set(futures.values())):
+                result, elapsed = future.result()
+                for i, name, args, _started in calls:
+                    if futures[i] is not future:
+                        continue
+                    results[i] = result
+                    gap = str(result.get("data_gap", "")) if isinstance(result, dict) else ""
+                    if isinstance(result, dict) and result.get("status") == "unavailable":
+                        status = "timeout" if ("超时" in gap or "timeout" in gap.lower() or "20" in gap) else "unavailable"
+                    else:
+                        status = "completed"
+                    message = f"{name} 超时，继续分析" if status == "timeout" else f"{name} 不可用，继续分析" if status == "unavailable" else f"{name} 调用完成"
+                    yield {"type": "progress", "payload": {
+                        "phase": "tool", "status": status, "tool": name, "callId": f"{rnd}:{i}",
+                        "elapsedMs": elapsed, "message": message,
+                    }}
+                    trace.append({"tool": name, "args": args})
 
         for i, name, args, _started in calls:
             result = results[i]
@@ -361,7 +406,7 @@ def run_chat_stream(cfg: dict, user_messages: list, context: str = "", analysis_
     yield {"type": "progress", "payload": {"phase": "model", "status": "running", "message": "数据已整理，正在生成最终回答…"}}
     resp = _call_llm_stream(cfg, messages, use_tools=False)
     try:
-        for delta in _iter_sse_deltas(resp):
+        for delta in _stream_round(resp):
             if delta.get("content"):
                 yield {"type": "delta", "text": delta["content"]}
     finally:

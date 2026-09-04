@@ -27,7 +27,7 @@ test("the shared AI panel has no blogger method selector", () => {
 });
 
 test("unified conversation sends the explicit research scope to the server", () => {
-  assert.match(session, /context: \{ text: context, analysisScope \}/);
+  assert.match(session, /context: savedContext \|\| \{ text: context, analysisScope \}/);
 });
 
 test("the four research page types provide their explicit default scope", () => {

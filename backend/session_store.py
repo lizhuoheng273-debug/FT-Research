@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -39,13 +40,18 @@ class SessionStore:
         self._init_lock = threading.Lock()
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         conn = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _initialize(self) -> None:
         with self._init_lock, self._connect() as conn:
@@ -224,14 +230,19 @@ class SessionStore:
         elif source_family == "finance":
             where += " AND (json_extract(c.source_json, '$.type') IS NULL OR (json_extract(c.source_json, '$.type') NOT LIKE 'ai-%' AND json_extract(c.source_json, '$.type') NOT LIKE '/ai/%'))"
         if cursor:
-            where += " AND c.updated_at < ?"
-            params.append(float(cursor))
+            stamp, separator, row_id = str(cursor).partition("|")
+            if separator:
+                where += " AND (c.updated_at < ? OR (c.updated_at = ? AND c.id < ?))"
+                params.extend([float(stamp), float(stamp), row_id])
+            else:
+                where += " AND c.updated_at < ?"
+                params.append(float(stamp))
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT c.* FROM conversation c WHERE {where} ORDER BY c.updated_at DESC LIMIT ?", params + [limit + 1]
+                f"SELECT c.* FROM conversation c WHERE {where} ORDER BY c.updated_at DESC,c.id DESC LIMIT ?", params + [limit + 1]
             ).fetchall()
             items = [self._conversation_dict(conn, row) for row in rows[:limit]]
-            next_cursor = str(rows[limit - 1]["updated_at"]) if len(rows) > limit else None
+            next_cursor = f"{rows[limit - 1]['updated_at']}|{rows[limit - 1]['id']}" if len(rows) > limit else None
         return {"items": items, "nextCursor": next_cursor}
 
     def update_conversation_title(self, principal: Principal, conversation_id: str, title: str) -> dict:
@@ -339,13 +350,41 @@ class SessionStore:
 
     def finalize_messages(self, run_id: str, question: str, answer: str, status: str = "complete") -> None:
         with self._connect() as conn:
-            row = conn.execute("SELECT conversation_id FROM run WHERE id=?", (run_id,)).fetchone()
-            if not row:
-                return
-            now = float(self.clock())
-            conn.execute("UPDATE message SET status=? WHERE run_id=? AND role='user'", (status, run_id))
+            conn.execute("BEGIN IMMEDIATE")
+            self._finalize_messages(conn, run_id, answer, status)
+
+    def _finalize_messages(self, conn, run_id, answer, status):
+        row = conn.execute("SELECT conversation_id,updated_at FROM run WHERE id=?", (run_id,)).fetchone()
+        if not row:
+            return
+        now = row["updated_at"]
+        conn.execute("UPDATE message SET status=? WHERE run_id=? AND role='user'", (status, run_id))
+        if not conn.execute("SELECT 1 FROM message WHERE run_id=? AND role='assistant'", (run_id,)).fetchone():
             conn.execute("INSERT INTO message(id,conversation_id,run_id,role,content,status,created_at) VALUES(?,?,?,?,?,?,?)", (str(uuid.uuid4()), row["conversation_id"], run_id, "assistant", answer, status, now))
-            conn.execute("UPDATE conversation SET updated_at=? WHERE id=?", (now, row["conversation_id"]))
+        conn.execute("UPDATE conversation SET updated_at=? WHERE id=?", (now, row["conversation_id"]))
+
+    def finish_run(self, run_id: str, status: str, payload: dict | None = None) -> bool:
+        """Commit terminal event, status and replayable messages atomically."""
+        if status not in RUN_TERMINAL:
+            raise ValueError("invalid terminal status")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            run = conn.execute("SELECT * FROM run WHERE id=?", (run_id,)).fetchone()
+            if not run:
+                return False
+            changed = run["status"] not in RUN_TERMINAL
+            if changed:
+                event_type = {"completed": "done", "failed": "error"}.get(status, status)
+                seq = conn.execute("SELECT COALESCE(MAX(seq),0)+1 FROM run_event WHERE run_id=?", (run_id,)).fetchone()[0]
+                now = self.clock()
+                conn.execute("INSERT INTO run_event(run_id,seq,type,payload_json,created_at) VALUES(?,?,?,?,?)", (run_id, seq, event_type, self._json(payload or {}), now))
+                conn.execute("UPDATE run SET status=?,updated_at=? WHERE id=?", (status, now, run_id))
+            else:
+                status = run["status"]
+            parts = conn.execute("SELECT payload_json FROM run_event WHERE run_id=? AND type='delta' ORDER BY seq", (run_id,)).fetchall()
+            answer = "".join(str(json.loads(r["payload_json"]).get("text", "")) for r in parts)
+            self._finalize_messages(conn, run_id, answer, "complete" if status == "completed" else status)
+            return changed
 
     def history_for_model(self, principal: Principal, conversation_id: str, limit: int = 20) -> list[dict]:
         with self._connect() as conn:
@@ -360,7 +399,22 @@ class SessionStore:
         with self._connect() as conn:
             self._conversation_row(conn, principal, conversation_id)
             rows = conn.execute("SELECT id,run_id,role,content,status,tool_json,created_at FROM message WHERE conversation_id=? ORDER BY created_at", (conversation_id,)).fetchall()
-        return [{"id": r["id"], "runId": r["run_id"], "role": r["role"], "content": r["content"], "status": r["status"], "tools": json.loads(r["tool_json"]) if r["tool_json"] else None, "createdAt": r["created_at"]} for r in rows if r["status"] != "pending"]
+        return [self._message_dict(r) for r in rows]
+
+    @staticmethod
+    def _message_dict(r):
+        return {"id": r["id"], "runId": r["run_id"], "role": r["role"], "content": r["content"], "status": r["status"], "tools": json.loads(r["tool_json"]) if r["tool_json"] else None, "createdAt": r["created_at"]}
+
+    def conversation_detail(self, principal: Principal, conversation_id: str) -> dict:
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            conversation = self._conversation_dict(conn, self._conversation_row(conn, principal, conversation_id))
+            rows = conn.execute("SELECT * FROM message WHERE conversation_id=? ORDER BY created_at,rowid", (conversation_id,)).fetchall()
+            active = conn.execute("SELECT id FROM run WHERE conversation_id=? AND status IN ('queued','running')", (conversation_id,)).fetchone()
+            previous = conn.execute("SELECT context_json FROM run WHERE conversation_id=? ORDER BY created_at DESC LIMIT 1", (conversation_id,)).fetchone()
+            if previous:
+                conversation["contextSnapshot"] = json.loads(previous["context_json"])
+            return {"conversation": conversation, "messages": [self._message_dict(r) for r in rows], "activeRunId": active["id"] if active else None}
 
     def delete_conversation(self, principal: Principal, conversation_id: str) -> bool:
         with self._connect() as conn:
@@ -373,8 +427,13 @@ class SessionStore:
 
     def recover_interrupted(self) -> int:
         with self._connect() as conn:
-            count = conn.execute("UPDATE run SET status='interrupted',updated_at=? WHERE status IN ('queued','running')", (self.clock(),)).rowcount
-        return int(count)
+            rows = conn.execute("SELECT r.id,r.status FROM run r WHERE r.status IN ('queued','running') OR NOT EXISTS (SELECT 1 FROM message m WHERE m.run_id=r.id AND m.role='assistant')").fetchall()
+        count = 0
+        for row in rows:
+            active = row["status"] in RUN_ACTIVE
+            self.finish_run(row["id"], "interrupted" if active else row["status"], {"message": "服务中断，已保留收到的内容"})
+            count += int(active)
+        return count
 
     def purge_guest(self, principal_id: str) -> bool:
         with self._connect() as conn:

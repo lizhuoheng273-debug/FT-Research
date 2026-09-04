@@ -64,3 +64,29 @@ test('turnover preview has five entries, labelled numeric columns and no links n
   for (const heading of ['名称','现价','涨跌幅','成交额']) assert.ok(all.some(n=>n.type==='th'&&text(n).includes(heading)));
   for (const button of all.filter(n=>n.type==='button')) assert.ok(!nodes(button.props.children).some(n=>n.type==='Link'));
 });
+
+test('intraday review explains that the AI close brief appears after market close', async () => {
+  const {DailyReview} = await load('../src/pages/DailyReview.tsx','',{
+    tradingDate:'2026-09-04',final:false,indices:[],breadth:{},liquidity:{},sectors:[],turnoverTop:[],shortTermEmotion:null,
+    brief:{status:'missing',text:'',generatedAt:null},sources:[],
+  });
+
+  const content = text(DailyReview());
+  assert.ok(content.includes('当前尚未收盘，AI 收盘简述将在收盘后生成。'));
+});
+
+test('turnover change is labelled as a same-time previous-session comparison', async () => {
+  const {DailyReview} = await load('../src/pages/DailyReview.tsx','',{
+    tradingDate:'2026-09-04',final:false,indices:[],breadth:{up:1,down:1},
+    liquidity:{todayAmountYuan:1234171931604,previousAmountYuan:1098668918331.46,changeAmountYuan:135503013272.54,changePct:12.33,direction:'expanded'},
+    sectors:[],turnoverTop:[],shortTermEmotion:null,brief:{status:'missing',text:'',generatedAt:null},sources:[],
+  });
+
+  const tree = DailyReview();
+  const content = text(tree);
+  assert.ok(content.includes('较上一交易日同期放量'));
+  assert.ok(content.includes('1,355.03 亿'));
+  assert.ok(content.includes('12.33%'));
+  const header = nodes(tree).find(node => node.type === 'PageHeader');
+  assert.ok(header.props.actions.props.context.includes('较上一交易日同期'));
+});

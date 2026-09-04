@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -71,6 +71,25 @@ def test_review_falls_back_to_real_cached_snapshot_as_stale(tmp_path):
     assert any(source["status"] == "stale" for source in stale["sources"])
 
 
+def test_previous_day_index_quotes_cannot_replace_same_day_cached_indices(tmp_path):
+    adapters = _complete_adapters()
+    service = market_review.MarketReviewService(
+        cache_dir=tmp_path,
+        now_fn=lambda: datetime(2026, 9, 4, 11, 0, tzinfo=market_review.BEIJING),
+        adapters=adapters,
+    )
+    original = service.get_review(force=True)
+    adapters["indices"] = lambda: [
+        {**row, "updatedAt": "2026-09-03 15:00:00"}
+        for row in _complete_adapters()["indices"]()
+    ]
+
+    refreshed = service.get_review(force=True)
+
+    assert refreshed["indices"] == original["indices"]
+    assert next(row for row in refreshed["sources"] if row["name"] == "indices")["status"] == "stale"
+
+
 def test_null_breadth_cannot_overwrite_successful_counts(tmp_path):
     adapters = _complete_adapters()
     service = market_review.MarketReviewService(cache_dir=tmp_path, adapters=adapters)
@@ -98,6 +117,65 @@ def test_review_serves_last_snapshot_while_background_collection_is_busy(tmp_pat
             future = pool.submit(service.get_review)
             result = future.result(timeout=0.2)
     assert result["breadth"] == first["breadth"]
+    assert result["refreshing"] is True
+
+
+def test_expired_review_returns_cached_snapshot_without_waiting_for_refresh(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    now = [datetime(2026, 9, 2, 16, 0, tzinfo=market_review.BEIJING)]
+    adapters = _complete_adapters()
+    service = market_review.MarketReviewService(cache_dir=tmp_path, now_fn=lambda: now[0], adapters=adapters)
+    original = service.get_review(force=True)
+    now[0] += timedelta(minutes=6)
+    release = threading.Event()
+    original_indices = adapters["indices"]
+    def slow_indices():
+        release.wait(2)
+        return original_indices()
+    adapters["indices"] = slow_indices
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(service.get_review)
+        result = future.result(timeout=0.2)
+    release.set()
+
+    assert result["generatedAt"] == original["generatedAt"]
+    assert result["refreshing"] is True
+    assert result["stale"] is True
+
+
+def test_new_trading_day_returns_latest_snapshot_while_current_day_warms(tmp_path):
+    now = [datetime(2026, 9, 2, 16, 0, tzinfo=market_review.BEIJING)]
+    service = market_review.MarketReviewService(cache_dir=tmp_path, now_fn=lambda: now[0], adapters=_complete_adapters())
+    original = service.get_review(force=True)
+    now[0] = datetime(2026, 9, 3, 9, 0, tzinfo=market_review.BEIJING)
+
+    result = service.get_review()
+
+    assert result["tradingDate"] == original["tradingDate"]
+    assert result["refreshing"] is True
+    assert result["stale"] is True
+
+
+def test_requested_refresh_returns_current_snapshot_and_updates_in_background(tmp_path):
+    import threading
+
+    adapters = _complete_adapters()
+    service = market_review.MarketReviewService(cache_dir=tmp_path, adapters=adapters)
+    original = service.get_review(force=True)
+    release = threading.Event()
+    original_indices = adapters["indices"]
+    def slow_indices():
+        release.wait(1)
+        return original_indices()
+    adapters["indices"] = slow_indices
+
+    result = service.get_review(refresh=True)
+    release.set()
+
+    assert result["generatedAt"] == original["generatedAt"]
     assert result["refreshing"] is True
 
 
@@ -141,6 +219,182 @@ def test_official_amount_parser_excludes_non_stock_rows():
     ]
 
     assert market_review.extract_official_stock_amount(rows) == 120_000_000_000
+
+
+def test_intraday_liquidity_compares_previous_trading_day_at_the_same_time(monkeypatch):
+    rows = [
+        {"code": "000001", "amountYuan": 560_288_286_118, "updatedAt": "2026-09-04 12:05:00"},
+        {"code": "399001", "amountYuan": 673_883_645_486, "updatedAt": "2026-09-04 12:05:00"},
+        {"code": "399006", "amountYuan": 310_000_000_000, "updatedAt": "2026-09-04 12:05:00"},
+    ]
+    histories = {
+        "sh000001": [
+            {"date": "2026-09-04", "points": [{"time": "11:30", "amountYuan": 560_288_286_118}]},
+            {"date": "2026-09-03", "points": [{"time": "11:29", "amountYuan": 514_000_000_000}, {"time": "11:30", "amountYuan": 515_810_581_316.60}]},
+        ],
+        "sz399001": [
+            {"date": "2026-09-04", "points": [{"time": "11:30", "amountYuan": 673_883_645_486}]},
+            {"date": "2026-09-03", "points": [{"time": "11:30", "amountYuan": 582_858_337_014.86}]},
+        ],
+    }
+    monkeypatch.setattr(market_review.astock, "index_intraday_days", lambda code: histories[code], raising=False)
+
+    result = market_review.fetch_live_liquidity(rows, datetime(2026, 9, 4).date(), datetime(2026, 9, 3).date())
+
+    assert result == {"todayAmountYuan": 1_234_171_931_604, "previousAmountYuan": 1_098_668_918_331.46}
+
+
+def test_tencent_intraday_parser_keeps_dates_times_and_yuan_amounts():
+    payload = {
+        "code": 0,
+        "data": {
+            "sh000001": {
+                "data": [
+                    {"date": "20260904", "data": ["0930 3955.55 4776944 6930221455.20", "1130 3955.85 324693271 560288286118"]},
+                    {"date": "20260903", "data": ["1130 3958.19 320081276 515810581316.60"]},
+                ]
+            }
+        },
+    }
+
+    assert market_review.astock._parse_index_intraday_days(payload, "sh000001") == [
+        {"date": "2026-09-04", "points": [
+            {"time": "09:30", "amountYuan": 6_930_221_455.20},
+            {"time": "11:30", "amountYuan": 560_288_286_118.0},
+        ]},
+        {"date": "2026-09-03", "points": [{"time": "11:30", "amountYuan": 515_810_581_316.60}]},
+    ]
+
+
+def test_intraday_liquidity_keeps_current_total_when_same_time_history_is_missing(monkeypatch):
+    rows = [
+        {"code": "000001", "amountYuan": 560_000_000_000, "updatedAt": "2026-09-04 11:47:00"},
+        {"code": "399001", "amountYuan": 670_000_000_000, "updatedAt": "2026-09-04 11:47:00"},
+    ]
+    monkeypatch.setattr(market_review.astock, "index_intraday_days", lambda _code: [], raising=False)
+
+    assert market_review.fetch_live_liquidity(rows, datetime(2026, 9, 4).date(), datetime(2026, 9, 3).date()) == {
+        "todayAmountYuan": 1_230_000_000_000,
+        "previousAmountYuan": None,
+    }
+
+
+def test_intraday_liquidity_uses_latest_session_before_an_exchange_holiday(monkeypatch):
+    rows = [
+        {"code": "000001", "amountYuan": 560_000_000_000, "updatedAt": "2026-10-09 11:30:00"},
+        {"code": "399001", "amountYuan": 670_000_000_000, "updatedAt": "2026-10-09 11:30:00"},
+    ]
+    histories = {
+        "sh000001": [{"date": "2026-09-30", "points": [{"time": "11:30", "amountYuan": 500_000_000_000}]}],
+        "sz399001": [{"date": "2026-09-30", "points": [{"time": "11:30", "amountYuan": 600_000_000_000}]}],
+    }
+    monkeypatch.setattr(market_review.astock, "index_intraday_days", lambda code: histories[code])
+
+    assert market_review.fetch_live_liquidity(rows, datetime(2026, 10, 9).date(), datetime(2026, 10, 8).date()) == {
+        "todayAmountYuan": 1_230_000_000_000,
+        "previousAmountYuan": 1_100_000_000_000,
+    }
+
+
+def test_postclose_current_day_prefers_same_source_full_day_comparison(monkeypatch):
+    current = datetime(2026, 9, 4, 16, 0, tzinfo=market_review.BEIJING)
+    rows = [
+        {"code": "000001", "name": "上证指数", "price": 3900, "change_pct": 0.1, "updatedAt": "2026-09-04 15:00:00", "amountYuan": 600_000_000_000},
+        {"code": "399001", "name": "深证成指", "price": 12000, "change_pct": 0.1, "updatedAt": "2026-09-04 15:00:00", "amountYuan": 700_000_000_000},
+    ]
+    histories = {
+        "sh000001": [{"date": "2026-09-03", "points": [{"time": "15:00", "amountYuan": 550_000_000_000}]}],
+        "sz399001": [{"date": "2026-09-03", "points": [{"time": "15:00", "amountYuan": 650_000_000_000}]}],
+    }
+    monkeypatch.setattr(market_review.astock, "index_quote", lambda: rows)
+    monkeypatch.setattr(market_review.astock, "index_intraday_days", lambda code: histories[code], raising=False)
+    monkeypatch.setattr(market_review, "fetch_official_liquidity", lambda *_args: {"todayAmountYuan": 1, "previousAmountYuan": 1})
+    adapters = market_review._default_adapters(current, current.date(), datetime(2026, 9, 3).date())
+    adapters["indices"]()
+
+    assert adapters["liquidity"]() == {"todayAmountYuan": 1_300_000_000_000, "previousAmountYuan": 1_200_000_000_000}
+
+
+def test_intraday_liquidity_rejects_previous_day_tencent_values(monkeypatch):
+    rows = [
+        {"code": "000001", "amountYuan": 560_000_000_000, "updatedAt": "2026-09-03 15:00:00"},
+        {"code": "399001", "amountYuan": 670_000_000_000, "updatedAt": "2026-09-03 15:00:00"},
+    ]
+    monkeypatch.setattr(market_review, "fetch_official_stock_amount", lambda _day: 900_000_000_000)
+
+    assert market_review.fetch_live_liquidity(rows, datetime(2026, 9, 4).date(), datetime(2026, 9, 3).date()) is None
+
+
+def test_premarket_adapter_does_not_fall_back_to_same_day_live_turnover(monkeypatch):
+    current = datetime(2026, 9, 4, 9, 0, tzinfo=market_review.BEIJING)
+    rows = [
+        {"code": "000001", "name": "上证指数", "price": 3900, "change_pct": 0.1, "updatedAt": "2026-09-04 09:00:00", "amountYuan": 1},
+        {"code": "399001", "name": "深证成指", "price": 12000, "change_pct": 0.1, "updatedAt": "2026-09-04 09:00:00", "amountYuan": 1},
+    ]
+    monkeypatch.setattr(market_review.astock, "index_quote", lambda: rows)
+    monkeypatch.setattr(market_review, "fetch_official_liquidity", lambda *_args: None)
+    adapters = market_review._default_adapters(current, current.date(), datetime(2026, 9, 3).date())
+    adapters["indices"]()
+
+    assert adapters["liquidity"]() is None
+
+
+def test_previous_official_total_searches_back_across_exchange_holidays(monkeypatch):
+    amounts = {datetime(2026, 9, 30).date(): 880_000_000_000}
+    monkeypatch.setattr(market_review, "fetch_official_stock_amount", lambda day: amounts.get(day))
+
+    result = market_review.fetch_latest_official_stock_amount(datetime(2026, 10, 6).date())
+
+    assert result == 880_000_000_000
+
+
+def test_latest_fallback_skips_newer_incomplete_snapshot(tmp_path):
+    from datetime import date
+    service = market_review.MarketReviewService(
+        cache_dir=tmp_path,
+        now_fn=lambda: datetime(2026, 9, 2, 16, 0, tzinfo=market_review.BEIJING),
+        adapters=_complete_adapters(),
+    )
+    complete = service.get_review(force=True)
+    incomplete = {**complete, "tradingDate": "2026-09-03", "liquidity": market_review.build_liquidity(None, None), "partial": True}
+    service._save(date(2026, 9, 3), incomplete)
+
+    assert service._load_latest()["tradingDate"] == complete["tradingDate"]
+
+
+def test_brief_write_cannot_restore_market_data_replaced_by_refresh(tmp_path):
+    import threading
+    from datetime import date
+
+    adapters = _complete_adapters()
+    service = market_review.MarketReviewService(cache_dir=tmp_path, adapters=adapters)
+    original = service.get_review(force=True)
+    adapters["indices"] = lambda: [{**row, "price": 2.0} for row in _complete_adapters()["indices"]()]
+    saved = threading.Event()
+    setter_entered_save = threading.Event()
+    release = threading.Event()
+    original_save = service._save
+    def paused_save(day, review):
+        if threading.current_thread().name == "brief-setter":
+            setter_entered_save.set()
+            return original_save(day, review)
+        original_save(day, review)
+        saved.set()
+        release.wait(1)
+    service._save = paused_save
+    refresher = threading.Thread(target=lambda: service.get_review(force=True))
+    refresher.start()
+    assert saved.wait(0.2)
+    setter = threading.Thread(name="brief-setter", target=lambda: service.set_brief(original["tradingDate"], {"text": "new", "generatedAt": "2026-09-02T21:00:00+08:00"}))
+    setter.start()
+    setter_entered_save.wait(0.1)
+    release.set()
+    refresher.join(1)
+    setter.join(1)
+
+    persisted = service._load(date.fromisoformat(original["tradingDate"]))
+    assert persisted["indices"][0]["price"] == 2.0
+    assert persisted["brief"]["text"] == "new"
 
 
 def test_review_endpoint_contract_is_unwrapped(monkeypatch):

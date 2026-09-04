@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -26,6 +26,7 @@ class TurnBody(BaseModel):
     clientRequestId: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=4000)
     context: dict[str, Any] = Field(default_factory=dict)
+    reasoningEffort: Literal["low", "high", "max"] = "max"
 
 
 class ImportBody(BaseModel):
@@ -48,21 +49,17 @@ def _manager(request: Request):
 
 
 def _detail(store, principal, conversation_id: str) -> dict:
-    conversation = store.get_conversation(principal, conversation_id)
-    messages = store.get_messages(principal, conversation_id)
-    active = None
-    with store._connect() as conn:
-        row = conn.execute("SELECT id FROM run WHERE conversation_id=? AND principal_id=? AND status IN ('queued','running')", (conversation_id, principal.id)).fetchone()
-        if row:
-            active = row["id"]
-    return {"conversation": conversation, "messages": messages, "activeRunId": active}
+    return store.conversation_detail(principal, conversation_id)
 
 
 def install_conversation_routes(app):
     @app.get("/api/conversations")
     def list_conversations(request: Request, q: str = Query("", max_length=100), limit: int = Query(30, ge=1, le=100), cursor: str | None = None, sourceFamily: str | None = Query(None, pattern="^(ai|finance)$")):
         principal = require_principal(request)
-        return _store(request).list_conversations(principal, q, limit, cursor, sourceFamily)
+        try:
+            return _store(request).list_conversations(principal, q, limit, cursor, sourceFamily)
+        except ValueError as exc:
+            raise HTTPException(422, "无效的分页游标") from exc
 
     @app.post("/api/conversations")
     def create_conversation(body: ConversationBody, request: Request):
@@ -109,7 +106,8 @@ def install_conversation_routes(app):
                 raise HTTPException(413, "上下文过长")
             _store(request).auto_name_conversation(principal, conversation_id, body.question)
             ip = request.client.host if request.client else "unknown"
-            result = _manager(request).submit(principal, conversation_id, body.clientRequestId, body.question, body.context, ip)
+            context = {**body.context, "_reasoningEffort": body.reasoningEffort}
+            result = _manager(request).submit(principal, conversation_id, body.clientRequestId, body.question, context, ip)
             return {"runId": result["id"], "status": result["status"]}
         except NotFound as exc:
             raise HTTPException(404, "对话不存在") from exc
@@ -133,6 +131,7 @@ def install_conversation_routes(app):
         def generate():
             cursor = after
             deadline = time.monotonic() + 480
+            heartbeat = time.monotonic()
             while time.monotonic() < deadline:
                 try:
                     # Auth is rechecked on every poll so a guest logout closes access.
@@ -145,8 +144,14 @@ def install_conversation_routes(app):
                     yield json.dumps(event, ensure_ascii=False) + "\n"
                 current = store.run_for_principal(principal, run_id)
                 if current["status"] in {"completed", "stopped", "failed", "interrupted"}:
+                    # Completion may commit after the event query above.
+                    for event in store.events_after(principal, run_id, cursor):
+                        yield json.dumps(event, ensure_ascii=False) + "\n"
                     return
-                time.sleep(0.1)
+                if time.monotonic() - heartbeat >= 5:
+                    yield "\n"
+                    heartbeat = time.monotonic()
+                time.sleep(0.05)
 
         return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store"})
 

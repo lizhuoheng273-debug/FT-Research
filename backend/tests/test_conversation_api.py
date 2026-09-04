@@ -59,6 +59,26 @@ def test_guest_cannot_import_history(services):
     result = client.post("/api/conversations/import", headers=headers["a"], json={"sourceKey": "legacy", "messages": [{"role": "user", "content": "x"}]})
     assert result.status_code == 403
 
+def test_reasoning_choice_is_validated_and_frozen_in_run(services):
+    client, headers = services
+    cid = client.post('/api/conversations', headers=headers['a'], json={}).json()['id']
+    endpoint = f'/api/conversations/{cid}/turns'
+    body = {'clientRequestId':'effort-1','question':'test','context':{'text':'context','_reasoningEffort':'max'},'reasoningEffort':'low'}
+    response = client.post(endpoint, headers=headers['a'], json=body)
+    assert response.status_code == 202
+    detail = client.get(f'/api/conversations/{cid}', headers=headers['a']).json()
+    assert detail['conversation']['contextSnapshot']['_reasoningEffort'] == 'low'
+    assert client.post(endpoint, headers=headers['a'], json={**body,'reasoningEffort':'high'}).status_code == 409
+    assert client.post(endpoint, headers=headers['a'], json={**body,'reasoningEffort':'disabled'}).status_code == 422
+
+def test_omitted_reasoning_choice_preserves_deep_mode(services):
+    client, headers = services
+    cid = client.post('/api/conversations', headers=headers['a'], json={}).json()['id']
+    response = client.post(f'/api/conversations/{cid}/turns', headers=headers['a'], json={'clientRequestId':'effort-default','question':'test','context':{}})
+    assert response.status_code == 202
+    detail = client.get(f'/api/conversations/{cid}', headers=headers['a']).json()
+    assert detail['conversation']['contextSnapshot']['_reasoningEffort'] == 'max'
+
 
 def test_first_turn_updates_conversation_title_from_source(services):
     client, headers = services

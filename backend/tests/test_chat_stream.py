@@ -69,3 +69,45 @@ def test_tool_round_limit_still_streams_the_final_answer(monkeypatch):
     monkeypatch.setattr(chat, "_call_llm", lambda *a, **kw: {"choices": [{"message": {"content": "non-stream fallback"}}]})
     events = list(chat.run_chat_stream(_cfg(), [{"role": "user", "content": "测试"}]))
     assert [e["text"] for e in events if e["type"] == "delta"] == ["回答"]
+
+
+def test_fast_tool_reports_before_slow_tool(monkeypatch):
+    _two_tool_round_then_answer(monkeypatch)
+    release = threading.Event()
+    def tool(name,*args):
+        if name == 'query_quote':
+            assert release.wait(1)
+        return {}
+    monkeypatch.setattr(chat,'execute_scoped_tool',tool)
+    stream = chat.run_chat_stream(_cfg(),[{'role':'user','content':'test'}])
+    try:
+        completed = next(e for e in stream if e.get('payload',{}).get('status')=='completed')
+        assert completed['payload']['tool']=='query_news'
+    finally:
+        release.set()
+        list(stream)
+
+
+def test_duplicate_tools_execute_once_but_return_both_call_results(monkeypatch):
+    rounds = iter([
+        [{"tool_calls": [
+            {"index": i, "id": f"call-{i}", "function": {"name": "query_quote", "arguments": '{"code":"600519"}'}}
+            for i in range(2)
+        ]}],
+        [{"content": "answer"}],
+    ])
+    sent_messages = []
+    calls = []
+    def llm(_cfg, messages, **kwargs):
+        sent_messages.append(list(messages))
+    monkeypatch.setattr(chat, "_call_llm_stream", llm)
+    monkeypatch.setattr(chat, "_iter_sse_deltas", lambda _response: iter(next(rounds)))
+    def tool(name, args, *unused):
+        calls.append((name, args))
+        return {"price": 123}
+    monkeypatch.setattr(chat, "execute_scoped_tool", tool)
+    events = list(chat.run_chat_stream(_cfg(), [{"role": "user", "content": "test"}]))
+    assert len(calls) == 1
+    assert [m["tool_call_id"] for m in sent_messages[-1] if m["role"] == "tool"] == ["call-0", "call-1"]
+    completed = [e["payload"]["callId"] for e in events if e.get("payload", {}).get("phase") == "tool" and e["payload"]["status"] == "completed"]
+    assert sorted(completed) == ["1:0", "1:1"]

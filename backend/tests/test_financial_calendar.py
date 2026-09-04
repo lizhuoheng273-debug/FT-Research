@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 import pytest
 
 import financial_calendar as cal
@@ -45,8 +46,11 @@ def test_date_only_event_remains_until_its_local_day_ends(tmp_path):
 
 
 def test_truncated_ics_does_not_overwrite_successful_cache(tmp_path):
-    svc=cal.FinancialCalendar(tmp_path,now_fn=lambda:NOW,fetchers={"bls":lambda:cal.parse_bls(ICS)})
+    clock=[NOW]
+    future_ics = ICS.replace("20260904T083000", "20260911T083000")
+    svc=cal.FinancialCalendar(tmp_path,now_fn=lambda:clock[0],fetchers={"bls":lambda:cal.parse_bls(future_ics)})
     assert len(svc.refresh()["items"]) == 1
+    clock[0]=datetime(2026,9,4,20,0,tzinfo=timezone.utc)
     svc.fetchers={"bls":lambda:cal.parse_bls('BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Consumer Price Index')}
     result=svc.refresh()
     assert len(result["items"]) == 1
@@ -132,3 +136,83 @@ def test_calendar_endpoint_only_reads_cache(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json()["data"]["items"] == []
     assert response.json()["data"]["partial"] is True
+
+
+def test_calendar_refresh_endpoint_fetches_once_then_applies_shared_cooldown(monkeypatch):
+    import app
+    from fastapi.testclient import TestClient
+
+    calls = []
+    clock = [100.0]
+    refreshed = {"items": [{"id": "latest"}], "partial": False, "stale": False}
+    monkeypatch.setattr(app.financial_news_service.calendar, "refresh", lambda **_kwargs: calls.append("refresh") or refreshed)
+    monkeypatch.setattr(app.financial_news_service.calendar, "overview", lambda: refreshed)
+    monkeypatch.setattr(app, "_calendar_refresh_clock", lambda: clock[0])
+    monkeypatch.setattr(app, "_calendar_refresh_last_attempt", None)
+
+    client = TestClient(app.app)
+    first = client.post("/api/finance/news/calendar/refresh")
+    second = client.post("/api/finance/news/calendar/refresh")
+
+    assert first.status_code == 200
+    assert first.json()["data"]["outcome"] == "updated"
+    assert first.json()["data"]["calendar"]["items"][0]["id"] == "latest"
+    assert second.status_code == 200
+    assert second.json()["data"]["outcome"] == "cooldown"
+    assert second.json()["data"]["retryAfter"] == 60
+    assert calls == ["refresh"]
+
+
+def test_manual_calendar_refresh_waits_for_an_active_scheduler_refresh(tmp_path):
+    import threading
+    svc = cal.FinancialCalendar(tmp_path, now_fn=lambda: NOW, fetchers={"nvidia": lambda: []})
+    finished = threading.Event()
+    svc.lock.acquire()
+    worker = threading.Thread(target=lambda: (svc.refresh(blocking=True), finished.set()))
+    worker.start()
+    assert not finished.wait(0.05)
+    svc.lock.release()
+    assert finished.wait(1)
+    worker.join(1)
+
+
+def test_bls_is_checked_once_per_official_week_while_other_sources_keep_refreshing(tmp_path):
+    clock = [datetime(2026, 9, 4, 20, 0, tzinfo=timezone.utc)]  # Friday 16:00 New York.
+    calls = {"bls": 0, "fed": 0}
+    def fetch_bls():
+        calls["bls"] += 1
+        return []
+    def fetch_fed():
+        calls["fed"] += 1
+        return []
+    svc = cal.FinancialCalendar(tmp_path, now_fn=lambda: clock[0], fetchers={"bls": fetch_bls, "fed": fetch_fed})
+    svc.refresh()
+    clock[0] += timedelta(hours=1)
+    svc.refresh()
+    assert calls == {"bls": 1, "fed": 2}
+    clock[0] += timedelta(days=7)
+    svc.refresh()
+    assert calls == {"bls": 2, "fed": 3}
+
+
+def test_bls_waits_until_friday_1540_new_york_after_a_prior_week_attempt(tmp_path):
+    clock = [datetime(2026, 9, 11, 19, 39, tzinfo=timezone.utc)]  # Friday 15:39 EDT.
+    calls = []
+    svc = cal.FinancialCalendar(tmp_path, now_fn=lambda: clock[0], fetchers={"bls": lambda: calls.append(clock[0]) or []})
+    svc.path.write_text(json.dumps({"sources": {"bls": {"ok": False, "items": [], "attemptedAt": "2026-09-04T19:40:00+00:00"}}}), encoding="utf-8")
+    svc.refresh()
+    assert calls == []
+    clock[0] += timedelta(minutes=1)
+    svc.refresh()
+    assert calls == [clock[0]]
+
+
+def test_successful_bls_cache_stays_fresh_for_eight_days(tmp_path):
+    clock = [datetime(2026, 9, 4, 20, 0, tzinfo=timezone.utc)]
+    row = cal.calendar_event("jobs", "美国非农就业报告", "经济数据", "2026-09-13", "08:30:00", "America/New_York", cal.BLS_URL)
+    svc = cal.FinancialCalendar(tmp_path, now_fn=lambda: clock[0], fetchers={"bls": lambda: [row]})
+    assert svc.refresh()["stale"] is False
+    clock[0] += timedelta(days=7, hours=23)
+    assert svc.overview()["stale"] is False
+    clock[0] += timedelta(hours=2)
+    assert svc.overview()["stale"] is True

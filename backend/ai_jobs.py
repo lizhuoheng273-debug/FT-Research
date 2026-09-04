@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ai_limits import LimitExceeded
 from session_store import RUN_TERMINAL, NotFound
+from stream_runtime import buffered_events
 
 log = logging.getLogger(__name__)
 
@@ -47,12 +48,10 @@ class RunManager:
         try:
             self.limits.reserve_question(principal)
         except LimitExceeded:
-            self.store.transition_run(run["id"], "queued", "failed")
-            self.store.append_event(run["id"], "error", {"code": "question_limit", "message": "本次游客体验的提问额度已用尽"})
+            self.store.finish_run(run["id"], "failed", {"code": "question_limit", "message": "本次游客体验的提问额度已用尽"})
             raise
         if not self.slots.acquire(blocking=False):
-            self.store.transition_run(run["id"], "queued", "failed")
-            self.store.append_event(run["id"], "error", {"code": "queue_full", "message": "任务队列已满"})
+            self.store.finish_run(run["id"], "failed", {"code": "queue_full", "message": "任务队列已满"})
             raise LimitExceeded("任务队列已满")
         control = RunControl(lambda: self.limits.reserve(principal, ip, run["id"]))
         with self.lock:
@@ -61,49 +60,47 @@ class RunManager:
         return run
 
     def _execute(self, principal, run_id: str, control: RunControl) -> None:
-        answer: list[str] = []
-        saw_done = False
+        stream = None
         try:
             run = self.store.run_for_principal(principal, run_id)
             self.limits.reserve(principal, "worker", run_id)
             if not self.store.transition_run(run_id, "queued", "running"):
                 return
-            for event in self.runner(run, control):
+            stream = buffered_events(self.runner(run, control), control, run["deadline"], self.clock)
+            for event in stream:
                 if control.cancelled:
                     break
+                if self.clock() >= run["deadline"]:
+                    control.cancel()
+                    self.store.finish_run(run_id, "failed", {"code": "deadline", "message": "本次分析已达时限，已保留部分回答"})
+                    return
                 event_type = str(event.get("type", "error"))
                 payload = dict(event.get("payload") or {})
                 if "text" in event and "text" not in payload:
                     payload["text"] = event["text"]
-                if event_type == "delta":
-                    answer.append(str(payload.get("text", "")))
-                if event_type == "done":
-                    saw_done = True
+                if event_type in {"done", "error", "stopped", "interrupted"}:
+                    status = {"done": "completed", "error": "failed"}.get(event_type, event_type)
+                    self.store.finish_run(run_id, status, payload)
+                    return
                 self.store.append_event(run_id, event_type, payload)
-                if saw_done:
-                    break
-            if control.cancelled:
-                self.store.append_event(run_id, "stopped", {"message": "已停止"})
-                self.store.transition_run(run_id, "running", "stopped")
-                self.store.finalize_messages(run_id, run.get("question", ""), "".join(answer), "stopped")
-            elif saw_done:
-                self.store.transition_run(run_id, "running", "completed")
-                self.store.finalize_messages(run_id, run.get("question", ""), "".join(answer), "complete")
-            else:
-                self.store.append_event(run_id, "error", {"code": "eof", "message": "模型流未收到完整结束事件"})
-                self.store.transition_run(run_id, "running", "failed")
-                self.store.finalize_messages(run_id, run.get("question", ""), "".join(answer), "failed")
+            self.store.finish_run(run_id, "stopped" if control.cancelled else "failed",
+                                  {"message": "已停止" if control.cancelled else "模型流意外中断，已保留部分回答"})
         except LimitExceeded as exc:
-            self.store.append_event(run_id, "error", {"code": "limit", "message": str(exc)})
-            self.store.transition_run(run_id, "queued", "failed") or self.store.transition_run(run_id, "running", "failed")
-        except Exception as exc:  # noqa: BLE001
+            self.store.finish_run(run_id, "failed", {"code": "limit", "message": str(exc)})
+        except TimeoutError:
+            control.cancel()
+            self.store.finish_run(run_id, "failed", {"code": "deadline", "message": "分析已达总时限，已保留部分回答"})
+        except Exception as exc:
             log.warning("AI run %s failed (%s)", run_id, type(exc).__name__)
-            self.store.append_event(run_id, "error", {"code": "runner_error", "message": "模型服务暂时不可用"})
-            self.store.transition_run(run_id, "queued", "failed") or self.store.transition_run(run_id, "running", "failed")
+            self.store.finish_run(run_id, "failed", {"code": "runner_error", "message": "模型服务连接中断，已保留部分回答"})
         finally:
-            with self.lock:
-                self.controls.pop(run_id, None)
-            self.slots.release()
+            try:
+                if stream is not None and hasattr(stream, "close"):
+                    stream.close()
+            finally:
+                with self.lock:
+                    self.controls.pop(run_id, None)
+                self.slots.release()
 
     def cancel(self, principal, run_id: str) -> bool:
         run = self.store.run_for_principal(principal, run_id)
@@ -113,8 +110,7 @@ class RunManager:
             control = self.controls.get(run_id)
             if control:
                 control.cancel()
-        self.store.append_event(run_id, "stopped", {"message": "已停止"})
-        return self.store.transition_run(run_id, run["status"], "stopped") or self.store.run_for_principal(principal, run_id)["status"] == "stopped"
+        return self.store.finish_run(run_id, "stopped", {"message": "已停止，已保留部分回答"}) or self.store.run_for_principal(principal, run_id)["status"] == "stopped"
 
     def purge_guest(self, principal_id: str) -> None:
         try:

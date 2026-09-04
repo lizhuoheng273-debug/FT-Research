@@ -24,6 +24,13 @@ function statusText(review: MarketReview | null) {
   return review.final ? "收盘快照" : "盘中快照";
 }
 
+function briefPlaceholder(review: MarketReview | null) {
+  if (!review) return "盘后简述加载中…";
+  if (!review.final) return "当前尚未收盘，AI 收盘简述将在收盘后生成。";
+  if (review.brief?.status === "unavailable") return "盘后简述生成失败，页面仍展示客观市场数据。";
+  return "收盘数据已就绪，AI 简述生成中…";
+}
+
 function EmotionDetails({ emotion }: { emotion: ShortTermEmotion }) {
   const rates: Array<[string, number | null]> = [["封板率", emotion.seal_rate], ["炸板率", emotion.break_rate], ["晋级率", emotion.promotion_rate]];
   return <div className="space-y-5">
@@ -47,7 +54,7 @@ export function DailyReview() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<"emotion" | "turnover" | null>(null);
-  const load = () => { setLoading(true); setError(null); api.marketReview().then(setReview).catch((reason) => setError(reason instanceof Error ? reason.message : "市场复盘暂不可用")).finally(() => setLoading(false)); };
+  const load = (refresh = false) => { setLoading(true); setError(null); (refresh ? api.marketReview(true) : api.marketReview()).then(setReview).catch((reason) => setError(reason instanceof Error ? reason.message : "市场复盘暂不可用")).finally(() => setLoading(false)); };
   useEffect(() => { load(); }, []);
   useEffect(() => {
     if (!review?.refreshing) return;
@@ -59,7 +66,7 @@ export function DailyReview() {
   const turnover = review?.turnoverTop || [];
   const sectors = review?.sectors || [];
   const breadth = review?.breadth;
-  const marketContext = useMemo(() => review ? [`交易日：${review.tradingDate}`, `指数：${review.indices.map((item) => `${item.name} ${item.price}（${item.changePct == null ? "涨跌缺失" : `${item.changePct > 0 ? "+" : ""}${item.changePct}%`}）`).join("；") || "数据缺口"}`, `宽度：上涨 ${review.breadth.up ?? "缺失"} 家、下跌 ${review.breadth.down ?? "缺失"} 家、涨停 ${review.breadth.limitUp ?? "缺失"}、跌停 ${review.breadth.limitDown ?? "缺失"}`, `沪深成交额：${amount(review.liquidity.todayAmountYuan)}，较上一交易日 ${amount(review.liquidity.changeAmountYuan)}（${review.liquidity.changePct == null ? "缺失" : `${review.liquidity.changePct}%`}）`, `短线情绪：${emotion ? `最高 ${emotion.max_boards} 板、连板 ${emotion.lianban_count} 家` : "数据缺口"}`, `板块资金：${sectors.slice(0, 8).map((sector) => `${sector.name} ${sector.net}`).join("；") || "数据缺口"}`].join("\n") : "市场复盘快照加载中；数据缺口：尚未返回快照", [review, emotion, sectors]);
+  const marketContext = useMemo(() => review ? [`交易日：${review.tradingDate}`, `指数：${review.indices.map((item) => `${item.name} ${item.price}（${item.changePct == null ? "涨跌缺失" : `${item.changePct > 0 ? "+" : ""}${item.changePct}%`}）`).join("；") || "数据缺口"}`, `宽度：上涨 ${review.breadth.up ?? "缺失"} 家、下跌 ${review.breadth.down ?? "缺失"} 家、涨停 ${review.breadth.limitUp ?? "缺失"}、跌停 ${review.breadth.limitDown ?? "缺失"}`, `沪深成交额：${amount(review.liquidity.todayAmountYuan)}，较上一交易日同期 ${amount(review.liquidity.changeAmountYuan)}（${review.liquidity.changePct == null ? "缺失" : `${review.liquidity.changePct}%`}）`, `短线情绪：${emotion ? `最高 ${emotion.max_boards} 板、连板 ${emotion.lianban_count} 家` : "数据缺口"}`, `板块资金：${sectors.slice(0, 8).map((sector) => `${sector.name} ${sector.net}`).join("；") || "数据缺口"}`].join("\n") : "市场复盘快照加载中；数据缺口：尚未返回快照", [review, emotion, sectors]);
   const hasBreadth = breadth?.up != null && breadth?.down != null && breadth.up + breadth.down > 0;
   const upWidth = hasBreadth ? breadth.up! / (breadth.up! + breadth.down!) * 100 : 0;
   const downWidth = hasBreadth ? 100 - upWidth : 0;
@@ -68,16 +75,16 @@ export function DailyReview() {
 
   return <div>
     <PageHeader title="每日复盘" subtitle={`${review?.tradingDate || "—"} · ${statusText(review)}`} actions={<AskAiButton context={marketContext} analysisScope="market" workspaceSource="review" workspaceDate={review?.tradingDate} label="问 AI" suggestions={["今天大盘怎么走", "指数表现有什么分化", "盘面有什么值得验证"]} />} />
-    <GlassCard glow className="mb-6"><div className="flex items-center gap-2"><span className="text-primary">✦</span><h2 className="text-sm font-semibold">AI 收盘简述</h2><span className="ml-auto text-xs text-muted-foreground">{review?.brief?.generatedAt ? new Date(review.brief.generatedAt).toLocaleString("zh-CN") : statusText(review)}</span></div>{review?.brief?.text ? <div className="prose prose-sm mt-3 max-w-none dark:prose-invert"><ReactMarkdown remarkPlugins={[remarkGfm]}>{review.brief.text}</ReactMarkdown></div> : <p className="mt-3 text-sm text-muted-foreground">{review?.brief?.status === "unavailable" ? "盘后简述生成失败，页面仍展示客观市场数据。" : review?.brief?.status === "missing" ? "数据不足以生成盘后简述，缺口会在下方标注。" : "盘后简述尚未生成。"}</p>}</GlassCard>
+    <GlassCard glow className="mb-6"><div className="flex items-center gap-2"><span className="text-primary">✦</span><h2 className="text-sm font-semibold">AI 收盘简述</h2><span className="ml-auto text-xs text-muted-foreground">{review?.brief?.generatedAt ? new Date(review.brief.generatedAt).toLocaleString("zh-CN") : statusText(review)}</span></div>{review?.brief?.text ? <div className="prose prose-sm mt-3 max-w-none dark:prose-invert"><ReactMarkdown remarkPlugins={[remarkGfm]}>{review.brief.text}</ReactMarkdown></div> : <p className="mt-3 text-sm text-muted-foreground">{briefPlaceholder(review)}</p>}</GlassCard>
 
-    <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-semibold text-muted-foreground">大盘指数</h3><button onClick={load} className="text-muted-foreground hover:text-primary" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button></div>
+    <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-semibold text-muted-foreground">大盘指数</h3><button onClick={() => load(true)} className="text-muted-foreground hover:text-primary" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button></div>
     <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">{(review?.indices || [null, null, null, null]).map((index, position) => index ? <Link key={index.code} to={`/finance/indices/${index.code}`}><GlassCard className="h-full p-3 transition-colors hover:border-primary/40"><p className="truncate text-xs text-muted-foreground">{index.name}</p><p className={cn("mt-1 font-mono text-lg font-bold", pctColor(index.changePct))}>{fmt(index.price)}</p><p className={cn("text-xs", pctColor(index.changePct))}>{index.changePct == null ? "—" : `${index.changePct > 0 ? "+" : ""}${index.changePct}%`}</p><p className="mt-2 text-[10px] text-muted-foreground/60">{index.source} · {index.updatedAt || "更新时间缺失"}{index.stale ? " · 缓存" : ""}</p></GlassCard></Link> : <GlassCard key={position} className="p-3"><p className="text-xs text-muted-foreground">{loading ? "加载中…" : "行情缺失"}</p><p className="mt-1 font-mono text-lg text-muted-foreground/40">—</p></GlassCard>)}</div>
 
     <GlassCard className="mb-6">
       <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">市场宽度</h3><span className="text-xs text-muted-foreground">{breadthStatus?.status === "stale" ? "最近真实缓存" : "上涨/下跌家数"}</span></div>
       {hasBreadth ? <><div className="mt-4 flex justify-between gap-3 text-sm"><span className="text-danger">上涨 <b className="font-mono text-xl">{fmt(breadth!.up)}</b> 家</span><span className="text-success">下跌 <b className="font-mono text-xl">{fmt(breadth!.down)}</b> 家</span></div><div className="mt-2 flex h-3 overflow-hidden rounded-full" role="img" aria-label={`上涨${breadth!.up}家，下跌${breadth!.down}家`}><div className="bg-danger" style={{ width: `${upWidth}%` }} /><div className="bg-success" style={{ width: `${downWidth}%` }} /></div><div className="mt-2 flex justify-between text-xs text-muted-foreground"><span>上涨占比 {upWidth.toFixed(1)}%</span><span>下跌占比 {downWidth.toFixed(1)}%</span></div></> : <p className="mt-4 rounded-lg bg-muted/30 p-3 text-sm text-muted-foreground">{loading ? "涨跌家数加载中…" : "涨跌家数暂不可用，等待数据源恢复；不以零值代替。"}</p>}
       {breadthStatus?.detail && <p className="mt-2 text-xs text-muted-foreground">{breadthStatus.detail}</p>}
-      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border/50 pt-3 text-sm"><span>今日沪深成交额 <b className="font-mono">{amount(review?.liquidity.todayAmountYuan ?? null)}</b></span><span className={cn("font-mono", pctColor(review?.liquidity.changePct ?? null))}>{review?.liquidity.direction === "expanded" ? "放量" : review?.liquidity.direction === "contracted" ? "缩量" : review?.liquidity.direction === "unchanged" ? "持平" : "缺失"} {amount(review?.liquidity.changeAmountYuan == null ? null : Math.abs(review.liquidity.changeAmountYuan))}（{review?.liquidity.changePct == null ? "—" : `${Math.abs(review.liquidity.changePct)}%`}）</span></div>
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border/50 pt-3 text-sm"><span>今日沪深成交额 <b className="font-mono">{amount(review?.liquidity.todayAmountYuan ?? null)}</b></span><span className={cn("font-mono", pctColor(review?.liquidity.changePct ?? null))}>{review?.liquidity.direction ? <>{`较上一交易日同期${review.liquidity.direction === "expanded" ? "放量" : review.liquidity.direction === "contracted" ? "缩量" : "持平"}`} {amount(review.liquidity.changeAmountYuan == null ? null : Math.abs(review.liquidity.changeAmountYuan))}（{review.liquidity.changePct == null ? "—" : `${Math.abs(review.liquidity.changePct)}%`}）</> : "上一交易日同期对比暂缺"}</span></div>
     </GlassCard>
 
     <div className="mb-6 grid grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">

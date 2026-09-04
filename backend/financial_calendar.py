@@ -7,7 +7,7 @@ import json
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree as ET
@@ -17,6 +17,7 @@ import requests
 from bs4 import BeautifulSoup
 
 BEIJING = ZoneInfo("Asia/Shanghai")
+NEW_YORK = ZoneInfo("America/New_York")
 FED_HOME = "https://www.federalreserve.gov/newsevents/calendar.htm"
 NVIDIA_FEED = "https://investor.nvidia.com/rss/Event.aspx?LanguageId=1"
 BEA_URL = "https://www.bea.gov/news/schedule"
@@ -25,6 +26,24 @@ BLS_URL = "https://www.bls.gov/schedule/news_release/bls.ics"
 SOURCES = {"fed": ("美联储", FED_HOME), "ecb": ("欧洲央行", ECB_URL), "bea": ("美国经济分析局", BEA_URL),
            "nvidia": ("英伟达投资者关系", NVIDIA_FEED), "bls": ("美国劳工统计局", BLS_URL)}
 REFRESH_SECONDS = 3600
+BLS_CACHE_SECONDS = 8 * 24 * 3600
+BLS_WEEKLY_REFRESH_TIME = datetime_time(15, 40)
+
+
+def bls_refresh_due(entry, now):
+    """BLS publishes its tentative calendar Friday afternoon in New York."""
+    local_now = now.astimezone(NEW_YORK)
+    days_since_friday = (local_now.weekday() - 4) % 7
+    anchor = datetime.combine(local_now.date() - timedelta(days=days_since_friday), BLS_WEEKLY_REFRESH_TIME, tzinfo=NEW_YORK)
+    if local_now < anchor:
+        anchor -= timedelta(days=7)
+    attempted = entry.get("attemptedAt") or entry.get("lastSuccessAt")
+    if not attempted:
+        return True
+    try:
+        return datetime.fromisoformat(attempted).astimezone(NEW_YORK) < anchor
+    except (TypeError, ValueError):
+        return True
 
 
 def safe_url(value):
@@ -237,7 +256,8 @@ class FinancialCalendar:
         for source in self.fetchers:
             entry = data.get("sources", {}).get(source, {})
             fetched = entry.get("lastSuccessAt")
-            expired = not fetched or (now - datetime.fromisoformat(fetched)).total_seconds() > REFRESH_SECONDS * 2
+            max_age = BLS_CACHE_SECONDS if source == "bls" else REFRESH_SECONDS * 2
+            expired = not fetched or (now - datetime.fromisoformat(fetched)).total_seconds() > max_age
             stale = not entry.get("ok") or expired
             name, url = SOURCES.get(source, (source, ""))
             statuses.append({"id": source, "name": name, "url": url, "ok": bool(entry.get("ok")) and not expired,
@@ -256,8 +276,8 @@ class FinancialCalendar:
                 "generatedAt": data.get("generatedAt"), "stale": any(r["stale"] for r in items),
                 "partial": any(not s["ok"] for s in statuses), "sources": statuses, "refreshIntervalSeconds": REFRESH_SECONDS}
 
-    def refresh(self):
-        if not self.lock.acquire(blocking=False):
+    def refresh(self, *, blocking=False):
+        if not self.lock.acquire(blocking=blocking):
             return self.overview()
         try:
             data = self._read()
@@ -269,12 +289,14 @@ class FinancialCalendar:
                     rows = fetcher()
                     if not isinstance(rows, list):
                         raise ValueError("日历数据格式异常")
-                    return key, {"ok": True, "items": rows, "lastSuccessAt": now, "error": None}
+                    return key, {"ok": True, "items": rows, "lastSuccessAt": now, "attemptedAt": now, "error": None}
                 except Exception as exc:
                     error = f"HTTP {exc.response.status_code}" if isinstance(exc, requests.HTTPError) and exc.response is not None else "来源暂不可用或结构已变化"
                     return key, {**sources.get(key, {}), "ok": False, "error": error, "attemptedAt": now}
+            due = [(key, fetcher) for key, fetcher in self.fetchers.items() if key != "bls" or bls_refresh_due(sources.get(key, {}), self.now_fn())]
             with ThreadPoolExecutor(max_workers=5) as pool:
-                updated = dict(pool.map(one, self.fetchers.items()))
+                refreshed = dict(pool.map(one, due))
+            updated = {key: refreshed.get(key, sources.get(key, {})) for key in self.fetchers}
             payload = {"generatedAt": now, "sources": updated}
             temp = self.path.with_suffix(".tmp")
             temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

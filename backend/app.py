@@ -65,6 +65,10 @@ __version__ = read_version()
 # Legacy injection support stays in FinancialNewsService for explicit callers.
 financial_news_service = FinancialNewsService()
 financial_news_scheduler = FinancialNewsScheduler(financial_news_service)
+_calendar_refresh_lock = threading.Lock()
+_calendar_refresh_clock = time.monotonic
+_calendar_refresh_last_attempt: float | None = None
+_CALENDAR_REFRESH_COOLDOWN_SECONDS = 60
 market_review_service = market_review.market_review_service
 market_review_brief_service = MarketReviewBriefService()
 market_review_scheduler = PostCloseReviewScheduler(market_review_service, market_review_brief_service)
@@ -73,6 +77,8 @@ market_review_scheduler = PostCloseReviewScheduler(market_review_service, market
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     if "pytest" not in sys.modules:
+        astock.prewarm_a_stock_universe()
+        market_review_service.prewarm()
         financial_news_scheduler.start()
         market_review_scheduler.start()
         rss_catalog.start_scheduler(1800)
@@ -105,7 +111,10 @@ def _background_runner(run, control):
     if not cfg.get("apiKey"):
         yield {"type": "error", "payload": {"code": "model_unconfigured", "message": "后台模型尚未配置"}}
         return
-    context = json.dumps(run.get("context") or {}, ensure_ascii=False)
+    context_data = dict(run.get("context") or {})
+    effort = context_data.pop("_reasoningEffort", "max")
+    cfg = {**cfg, "reasoningEffort": effort if effort in {"low", "high", "max"} else "max"}
+    context = json.dumps(context_data, ensure_ascii=False)
     history = session_store.history_for_model(principal, run["conversation_id"], 20)
     history.append({"role": "user", "content": run["question"]})
     requested_scope = (run.get("context") or {}).get("analysisScope", "general")
@@ -655,6 +664,21 @@ def financial_news_calendar():
     return {"data": financial_news_service.calendar.overview()}
 
 
+@app.post("/api/finance/news/calendar/refresh")
+def financial_news_calendar_refresh():
+    """Immediately refresh public official calendars with a shared cooldown."""
+    global _calendar_refresh_last_attempt
+    with _calendar_refresh_lock:
+        now = _calendar_refresh_clock()
+        if _calendar_refresh_last_attempt is not None:
+            remaining = _CALENDAR_REFRESH_COOLDOWN_SECONDS - (now - _calendar_refresh_last_attempt)
+            if remaining > 0:
+                return {"data": {"calendar": financial_news_service.calendar.overview(), "outcome": "cooldown", "retryAfter": max(1, int(remaining + 0.999))}}
+        data = financial_news_service.calendar.refresh(blocking=True)
+        _calendar_refresh_last_attempt = _calendar_refresh_clock()
+        return {"data": {"calendar": data, "outcome": "partial" if data.get("partial") else "updated", "retryAfter": 0}}
+
+
 @app.post("/api/finance/news/following")
 def financial_news_following(request: FinancialNewsFollowingReq):
     return {"data": financial_news_service.following(request.codes, page=request.page, page_size=request.pageSize)}
@@ -688,10 +712,10 @@ def market_overview():
 
 
 @app.get("/api/market/review")
-def market_review_endpoint():
+def market_review_endpoint(refresh: bool = False):
     """统一每日市场复盘快照；组件缺失通过 partial/stale 字段表达。"""
     try:
-        return market_review_service.get_review()
+        return market_review_service.get_review(refresh=True) if refresh else market_review_service.get_review()
     except Exception as e:  # noqa: BLE001 - the service normally degrades per component
         raise HTTPException(502, f"市场复盘快照异常：{e}") from e
 
@@ -787,6 +811,8 @@ def stock_search(q: str = Query("", max_length=40), limit: int = Query(20, ge=1,
         seen: set[str] = set()
         unique = [row for row in rows if row.get("code") and not (row["code"] in seen or seen.add(row["code"]))]
         return {"data": unique[:limit]}
+    except astock.StockUniverseWarming as e:
+        raise HTTPException(503, str(e), headers={"Retry-After": "1"}) from e
     except astock.DependencyMissing as e:
         raise HTTPException(501, str(e)) from e
     except Exception as e:  # noqa: BLE001

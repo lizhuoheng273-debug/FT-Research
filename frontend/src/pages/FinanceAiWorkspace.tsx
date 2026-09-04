@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Bot, RefreshCw, Trash2 } from "lucide-react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AiConversation } from "@/components/ai/AiConversation";
@@ -44,7 +44,7 @@ function formatQuote(quote: Quote | undefined, code: string): string {
 function buildContext(source: FinanceAiSource, payload: unknown, code: string, panel: string, eventId: string): string {
   if (source === "review") {
     const review = payload as MarketReview | null;
-    return review ? [`来源：每日复盘快照`, `交易日：${review.tradingDate}`, `指数：${review.indices.slice(0, 4).map((item) => `${item.name} ${item.price}（${item.changePct ?? "缺失"}%）`).join("；")}`, `宽度：上涨 ${review.breadth.up ?? "缺失"}、下跌 ${review.breadth.down ?? "缺失"}、涨停 ${review.breadth.limitUp ?? "缺失"}、跌停 ${review.breadth.limitDown ?? "缺失"}`, `成交额：${review.liquidity.todayAmountYuan ?? "缺失"}；变化 ${review.liquidity.changePct ?? "缺失"}%`, `板块：${review.sectors.slice(0, 8).map((item) => `${item.name} ${item.net}`).join("；")}`].join("\n") : "每日复盘快照暂不可用。";
+    return review ? [`来源：每日复盘快照`, `交易日：${review.tradingDate}`, `指数：${(review.indices || []).slice(0, 4).map((item) => `${item.name} ${item.price}（${item.changePct ?? "缺失"}%）`).join("；")}`, `宽度：上涨 ${review.breadth?.up ?? "缺失"}、下跌 ${review.breadth?.down ?? "缺失"}、涨停 ${review.breadth?.limitUp ?? "缺失"}、跌停 ${review.breadth?.limitDown ?? "缺失"}`, `成交额：${review.liquidity?.todayAmountYuan ?? "缺失"}；变化 ${review.liquidity?.changePct ?? "缺失"}%`, `板块：${(review.sectors || []).slice(0, 8).map((item) => `${item.name} ${item.net}`).join("；")}`].join("\n") : "每日复盘快照暂不可用。";
   }
   if (source === "news" ) {
     const data = payload as { overview?: FinancialNewsOverview; calendar?: FinancialCalendarResponse } | null;
@@ -80,12 +80,16 @@ export function FinanceAiWorkspace() {
   const eventId = params.get("eventId") || "";
   const conversationId = params.get("conversationId") || undefined;
   const date = params.get("date") || "";
-  const [payload, setPayload] = useState<unknown>(null);
+  const requestKey = JSON.stringify([source, code, panel, eventId, date]);
+  const requestVersion = useRef(0);
+  const [loaded, setLoaded] = useState<{ key: string; data: unknown } | null>(null);
+  const payload = loaded?.key === requestKey ? loaded.data : null;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
 
   const load = () => {
+    const version = ++requestVersion.current;
     setLoading(true); setError(null);
     let request: Promise<unknown>;
     if (source === "review") request = api.marketReview();
@@ -99,19 +103,21 @@ export function FinanceAiWorkspace() {
     else if (source === "index") request = api.marketChart("index", code, "daily");
     else if (source === "stock" || source === "stock-panel") request = api.quote(code);
     else { const codes = loadWatch(); request = codes.length ? api.quote(codes.join(",")) : Promise.resolve({}); }
-    request.then(setPayload).catch((reason) => setError(reason instanceof Error ? reason.message : "上下文暂不可用")).finally(() => setLoading(false));
+    request.then(data => { if (version === requestVersion.current) setLoaded({ key: requestKey, data }); })
+      .catch(reason => { if (version === requestVersion.current) setError(reason instanceof Error ? reason.message : "上下文暂不可用"); })
+      .finally(() => { if (version === requestVersion.current) setLoading(false); });
   };
-  useEffect(() => { load(); }, [source, code, panel, eventId, date]);
+  useEffect(() => { load(); return () => { requestVersion.current++; }; }, [requestKey]);
   useEffect(() => { api.aiStatus().then(setAiStatus).catch(() => setAiStatus(null)); }, []);
 
   const context = useMemo(() => buildContext(source, payload, code, panel, eventId), [source, payload, code, panel, eventId]);
-  const reviewDate = source === "review" ? ((payload as MarketReview | null)?.tradingDate || date || "latest") : date;
+  const reviewDate = date || (source === "review" ? "latest" : "");
   const conversationKey = buildFinanceAiKey(source, { code, panel, eventId, date: reviewDate });
-  const session = useAiChatSession({ conversationKey, conversationId, context, analysisScope: scopeFor(source), source: { type: source, code, panel, eventId, date: reviewDate } });
+  const session = useAiChatSession({ conversationKey, conversationId, context, contextReady: !loading && !error && loaded?.key === requestKey, analysisScope: scopeFor(source), source: { type: source, code, panel, eventId, date: reviewDate } });
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const title = source === "review" ? "每日复盘 AI" : source === "news" ? "金融资讯 AI" : source === "news-story" ? "资讯事件 AI" : source === "watchlist" ? "自选股 AI" : source === "index" ? "指数研究 AI" : source === "stock-panel" ? `${code} · ${panel} AI` : `${code} · 个股 AI`;
   const returnTo = () => { if (stateFrom) navigate(stateFrom, { replace: true }); else navigate(source === "stock" || source === "stock-panel" ? `/finance/stocks/${code}` : "/finance/news", { replace: true }); };
-  const startNew = () => { const next = new URLSearchParams(params); next.delete("conversationId"); navigate(`${location.pathname}${next.toString() ? `?${next}` : ""}`); };
+  const startNew = () => { session.clearChat(); const next = new URLSearchParams(params); next.delete("conversationId"); navigate(`${location.pathname}${next.toString() ? `?${next}` : ""}`); };
 
   return <div className="flex h-[calc(100dvh-1.5rem)] flex-col overflow-hidden">
     <GlassCard glow className="mb-3 shrink-0 p-4"><div className="grid grid-cols-[auto_1fr_auto] items-center gap-3"><button type="button" onClick={returnTo} className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 px-3 py-2 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /><span className="hidden sm:inline">返回</span></button><div className="min-w-0 text-center"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">Finance AI Workspace</p><h1 className="truncate text-lg font-bold sm:text-xl">{title}</h1><p className="text-xs text-muted-foreground">来源 {source}{code ? ` · ${code}` : ""}{loading ? " · 读取上下文…" : error ? " · 数据缺失" : ""}</p></div><div className="flex items-center justify-end gap-2"><div className="hidden text-right sm:block"><p className="text-xs font-medium">{aiStatus?.model || "AI 模型"}</p><p className={cn("text-[10px]", aiStatus?.configured ? "text-success" : "text-warning")}>{aiStatus ? (aiStatus.configured ? "已连接" : "尚未配置") : "读取状态…"}</p></div>{session.messages.length > 0 && <button type="button" onClick={startNew} aria-label="清空对话" title="清空对话" className="rounded-lg border border-border/70 p-2 text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>}<button type="button" onClick={load} disabled={loading} aria-label="刷新上下文" title="刷新上下文" className="rounded-lg border border-border/70 p-2 text-muted-foreground hover:text-primary disabled:opacity-50"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button></div></div></GlassCard>
