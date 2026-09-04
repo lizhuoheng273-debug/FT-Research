@@ -21,6 +21,8 @@ INDEX_CODES = {
     "399001": ("深证成指", "sz399001"),
     "399006": ("创业板指", "sz399006"),
     "000300": ("沪深300", "sh000300"),
+    "000680": ("科创综指", "sh000680"),
+    "000688": ("科创50", "sh000688"),
 }
 
 STALE_MAX_AGE = 86_400
@@ -37,7 +39,7 @@ def normalize_asset_code(asset: str, code: str) -> str:
     if not re.fullmatch(r"\d{6}", normalized):
         raise ValueError("代码必须是 6 位数字")
     if asset == "index" and normalized not in INDEX_CODES:
-        raise ValueError("第一阶段仅支持上证指数、深证成指、创业板指和沪深300")
+        raise ValueError("仅支持每日复盘中展示的大盘指数")
     return normalized
 
 

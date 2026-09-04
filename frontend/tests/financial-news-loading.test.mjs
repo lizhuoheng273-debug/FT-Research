@@ -74,25 +74,28 @@ test('late responses after unmount cannot update the prior page',async()=>{
   await flush();app.unmount();resolve({globalHighlights:[{id:'late'}]});await flush();
   assert.equal(app.component('GlobalHotList').items.length,0);
 });
-test('refresh button forces a calendar refresh and exposes visible progress',async()=>{
-  let finish, calls=0;
+test('refresh button refreshes news and calendar and exposes visible progress',async()=>{
+  let finishNews, finishCalendar, newsCalls=0, calendarCalls=0;
   const app=mount({
     financialNewsOverview:()=>Promise.resolve({globalHighlights:[]}),
     financialNewsCalendar:()=>Promise.resolve({items:[]}),
-    financialNewsCalendarRefresh:()=>{calls++;return new Promise(resolve=>{finish=resolve;});},
+    financialNewsRefresh:()=>{newsCalls++;return new Promise(resolve=>{finishNews=resolve;});},
+    financialNewsCalendarRefresh:()=>{calendarCalls++;return new Promise(resolve=>{finishCalendar=resolve;});},
   });
   await flush();
   let button=findButton(app.component('PageHeader').actions,'刷新页面');
   assert.equal(button.title,'刷新页面');
   button.onClick();
-  button=findButton(app.component('PageHeader').actions,'正在刷新最新日程');
+  button=findButton(app.component('PageHeader').actions,'正在刷新财经热点与日程');
   assert.equal(button['aria-busy'],true);
-  assert.equal(calls,1);
-  finish({outcome:'updated',calendar:{items:[{id:'latest'}],partial:false,stale:false}});
+  assert.equal(newsCalls,1);
+  assert.equal(calendarCalls,1);
+  finishNews({refreshing:true,outcome:'started'});
+  finishCalendar({outcome:'updated',calendar:{items:[{id:'latest'}],partial:false,stale:false}});
   await flush();
   const actions=app.component('PageHeader').actions;
-  assert.equal(findButton(actions,'正在刷新最新日程'),undefined);
-  assert.match(nodeText(actions),/最新日程已更新/);
+  assert.equal(findButton(actions,'正在刷新财经热点与日程'),undefined);
+  assert.match(nodeText(actions),/已开始后台刷新/);
   assert.doesNotMatch(findRole(actions,'status').className,/\bhidden\b/);
   app.unmount();
 });

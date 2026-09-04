@@ -11,7 +11,7 @@ _AUTH = {
     ("GET", "/api/ai/status"), ("GET", "/api/ai/news"), ("GET", "/api/ai/news/hot-topics"),
     ("GET", "/api/ai/news/snapshot"), ("GET", "/api/ai/news/changes"), ("GET", "/api/ai/dailies/latest"),
     ("GET", "/api/ai/rss/sources"), ("POST", "/api/ai/rss/resolve"),
-    ("POST", "/api/finance/news/calendar/refresh"),
+    ("POST", "/api/finance/news/calendar/refresh"), ("POST", "/api/finance/news/refresh"),
 }
 _OWNER_EXACT = {
     ("POST", "/api/ai/rss/refresh"), ("POST", "/api/reflect"),

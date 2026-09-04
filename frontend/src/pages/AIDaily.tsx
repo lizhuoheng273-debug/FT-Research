@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -15,6 +15,8 @@ interface PeriodReport { kind: "weekly" | "monthly"; period: string; title?: str
 
 const validKind = (value: string | null): ReportKind => value === "weekly" || value === "monthly" ? value : "daily";
 const storyId = (story: PeriodStory) => story.storyId || story.links?.aihot?.split("/").pop() || "";
+const reportArchives = new Map<ReportKind, ArchiveItem[]>();
+const reportCache = new Map<string, { report: DailyReport | PeriodReport; stale: boolean; fetchedAt?: string }>();
 
 function dailyMonth(period: string) {
   const [year, month] = period.split("-");
@@ -42,7 +44,7 @@ function ArchiveRail({ kind, items, period, onSelect, onKindSelect }: { kind: Re
 
 function PeriodReport({ report }: { report: PeriodReport }) {
   const navigate = useNavigate();
-  return <div className="space-y-4"><GlassCard glow><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">AI HOT {report.kind === "weekly" ? "WEEKLY" : "MONTHLY"}</p><h2 className="mt-1 text-xl font-bold">{report.title || (report.kind === "weekly" ? "AI 周报" : "AI 月报")}</h2><p className="mt-1 text-sm text-muted-foreground">{report.period}</p></div>{report.source?.url && <a href={report.source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">打开 AI HOT 原文报告 <ExternalLink className="h-3.5 w-3.5" /></a>}</div>{report.lead && <div className="mt-5 border-t border-border/50 pt-4"><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">本期主线</p><p className="leading-relaxed">{report.lead}</p></div>}{report.stats && <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">{Object.entries(report.stats).map(([key, value]) => <div key={key} className="rounded-lg bg-muted/30 p-3"><p className="text-xl font-bold text-primary">{value}</p><p className="text-xs text-muted-foreground">{key}</p></div>)}</div>}</GlassCard>{(report.themes || []).map((theme) => <GlassCard key={theme.title}><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">主题</p><h3 className="text-lg font-semibold">{theme.title}</h3>{theme.summary && <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{theme.summary}</p>}<div className="mt-4 space-y-3">{(theme.stories || []).map((story, index) => <article key={`${story.title}-${index}`} className="rounded-lg border border-border/50 p-3"><div className="flex items-start justify-between gap-3"><div><h4 className="font-medium">{story.title || "未命名事件"}</h4><p className="mt-1 text-sm leading-relaxed text-muted-foreground">{story.summary || "暂无摘要"}</p></div>{story.links?.original && <a href={story.links.original} target="_blank" rel="noreferrer" className="shrink-0 text-xs text-primary hover:underline">原文</a>}</div><p className="mt-2 text-xs text-muted-foreground/70"><span className="sr-only">媒体：</span>{story.source || "AI HOT"}{story.publishedAt ? ` · ${story.publishedAt}` : ""}</p><button onClick={() => storyId(story) && navigate(`/ai/news/story/${storyId(story)}`, { state: { fallback: { title: story.title, summary: story.summary, source: story.source, publishedAt: story.publishedAt, links: story.links } } })} className="mt-2 text-xs text-primary hover:underline">查看事件详情</button></article>)}</div></GlassCard>)}</div>;
+  return <div className="space-y-4"><GlassCard glow><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">AI HOT {report.kind === "weekly" ? "WEEKLY" : "MONTHLY"}</p><h2 className="mt-1 text-xl font-bold">{report.title || (report.kind === "weekly" ? "AI 周报" : "AI 月报")}</h2><p className="mt-1 text-sm text-muted-foreground">{report.period}</p></div>{report.source?.url && <a href={report.source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">打开 AI HOT 原文报告 <ExternalLink className="h-3.5 w-3.5" /></a>}</div>{report.lead && <div className="mt-5 border-t border-border/50 pt-4"><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">本期主线</p><p className="leading-relaxed">{report.lead}</p></div>}{report.stats && <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">{Object.entries(report.stats).map(([key, value]) => <div key={key} className="rounded-lg bg-muted/30 p-3"><p className="text-xl font-bold text-primary">{value}</p><p className="text-xs text-muted-foreground">{key}</p></div>)}</div>}</GlassCard>{(report.themes || []).map((theme) => <GlassCard key={theme.title}><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">主题</p><h3 className="text-lg font-semibold">{theme.title}</h3>{theme.summary && <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{theme.summary}</p>}<div className="mt-4 space-y-3">{(theme.stories || []).map((story, index) => { const summary = story.summary?.trim(); return <article key={`${story.title}-${index}`} className="rounded-lg border border-border/50 p-3"><div className="flex items-start justify-between gap-3"><div><h4 className="font-medium">{story.title || "未命名事件"}</h4>{summary && <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{summary}</p>}</div>{story.links?.original && <a href={story.links.original} target="_blank" rel="noreferrer" className="shrink-0 text-xs text-primary hover:underline">原文</a>}</div><p className="mt-2 text-xs text-muted-foreground/70"><span className="sr-only">媒体：</span>{story.source || "AI HOT"}{story.publishedAt ? ` · ${story.publishedAt}` : ""}</p><button onClick={() => storyId(story) && navigate(`/ai/news/story/${storyId(story)}`, { state: { fallback: { title: story.title, summary: story.summary, source: story.source, publishedAt: story.publishedAt, links: story.links } } })} className="mt-2 text-xs text-primary hover:underline">查看事件详情</button></article>; })}</div></GlassCard>)}</div>;
 }
 
 export function AIDaily() {
@@ -57,32 +59,76 @@ export function AIDaily() {
   const [stale, setStale] = useState(false);
   const [fetchedAt, setFetchedAt] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef<{ id: number; controller: AbortController } | null>(null);
+  const skipNextUrlLoad = useRef<string | null>(null);
 
-  const load = async (targetKind: ReportKind, targetPeriod?: string) => {
+  const load = async (targetKind: ReportKind, targetPeriod = "", force = false) => {
+    requestRef.current?.controller.abort();
+    const requestId = (requestRef.current?.id || 0) + 1;
+    const controller = new AbortController();
+    requestRef.current = { id: requestId, controller };
+    const isCurrent = () => requestRef.current?.id === requestId;
     setLoading(true); setError(null);
     try {
       const headers = authHeaders();
-      const indexResponse = await fetch(apiUrl(`/ai/reports/index?kind=${targetKind}`), { headers });
-      const indexBody = await indexResponse.json();
-      if (!indexResponse.ok) throw new Error(indexBody.detail || "报告索引暂不可用");
-      const entries = (indexBody.items || []) as ArchiveItem[];
+      let entries = force ? undefined : reportArchives.get(targetKind);
+      if (!entries) {
+        const refreshQuery = force && targetKind !== "daily" ? "&refresh=true" : "";
+        const indexResponse = await fetch(apiUrl(`/ai/reports/index?kind=${targetKind}${refreshQuery}`), { headers, signal: controller.signal });
+        const indexBody = await indexResponse.json();
+        if (!indexResponse.ok) throw new Error(indexBody.detail || "报告索引暂不可用");
+        entries = (indexBody.items || []) as ArchiveItem[];
+        reportArchives.set(targetKind, entries);
+      }
+      if (!isCurrent()) return;
       setArchive(entries);
       const selected = targetPeriod || entries[0]?.period || "";
       setPeriod(selected);
+      const cacheKey = `${targetKind}:${selected}`;
+      const cached = force ? undefined : reportCache.get(cacheKey);
+      if (cached) {
+        setReport(cached.report);
+        setStale(cached.stale);
+        setFetchedAt(cached.fetchedAt);
+        if (selected && (selected !== targetPeriod || targetKind !== kind)) {
+          skipNextUrlLoad.current = cacheKey;
+          setSearchParams({ kind: targetKind, period: selected }, { replace: true });
+        }
+        return;
+      }
       let response: Response;
-      if (targetKind === "daily") response = await fetch(apiUrl(selected ? `/ai/reports/daily/${selected}` : "/ai/reports/daily/latest"), { headers });
-      else response = await fetch(apiUrl(selected ? `/ai/reports/${targetKind}/${selected}` : `/ai/reports/${targetKind}/latest`), { headers });
+      const refreshQuery = force && targetKind !== "daily" ? "?refresh=true" : "";
+      if (targetKind === "daily") response = await fetch(apiUrl(selected ? `/ai/reports/daily/${selected}` : "/ai/reports/daily/latest"), { headers, signal: controller.signal });
+      else response = await fetch(apiUrl(`${selected ? `/ai/reports/${targetKind}/${selected}` : `/ai/reports/${targetKind}/latest`}${refreshQuery}`), { headers, signal: controller.signal });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || "报告暂不可用");
-      setReport((body.report || body) as DailyReport | PeriodReport);
-      setStale(Boolean(body.stale));
-      setFetchedAt(body.fetchedAt || body.report?.fetchedAt || body.report?.generatedAt);
-      if (selected && (selected !== requestedPeriod || targetKind !== kind)) setSearchParams({ kind: targetKind, period: selected }, { replace: true });
-    } catch (e) { setReport(null); setFetchedAt(undefined); setError(e instanceof Error ? e.message : "报告暂不可用"); }
-    finally { setLoading(false); }
+      const nextReport = (body.report || body) as DailyReport | PeriodReport;
+      const nextStale = Boolean(body.stale);
+      const nextFetchedAt = body.fetchedAt || body.report?.fetchedAt || body.report?.generatedAt;
+      reportCache.set(cacheKey, { report: nextReport, stale: nextStale, fetchedAt: nextFetchedAt });
+      if (!isCurrent()) return;
+      setReport(nextReport);
+      setStale(nextStale);
+      setFetchedAt(nextFetchedAt);
+      if (selected && (selected !== targetPeriod || targetKind !== kind)) {
+        skipNextUrlLoad.current = cacheKey;
+        setSearchParams({ kind: targetKind, period: selected }, { replace: true });
+      }
+    } catch (e) {
+      if (!isCurrent() || (e instanceof DOMException && e.name === "AbortError")) return;
+      setReport(null); setFetchedAt(undefined); setError(e instanceof Error ? e.message : "报告暂不可用");
+    } finally { if (isCurrent()) setLoading(false); }
   };
 
-  useEffect(() => { void load(kind, requestedPeriod); }, [kind, requestedPeriod]);
+  useEffect(() => {
+    const selectionKey = `${kind}:${requestedPeriod}`;
+    if (skipNextUrlLoad.current === selectionKey) {
+      skipNextUrlLoad.current = null;
+      return;
+    }
+    void load(kind, requestedPeriod);
+    return () => requestRef.current?.controller.abort();
+  }, [kind, requestedPeriod]);
   const dailyReport = report?.kind === "daily" ? report : null;
   const periodReport = report?.kind !== "daily" ? report : null;
   const topics = dailyReport?.hotTopics || [];

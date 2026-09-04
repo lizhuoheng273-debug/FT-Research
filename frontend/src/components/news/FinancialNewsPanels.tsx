@@ -1,6 +1,6 @@
 import { CalendarDays, ExternalLink } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
-import type { FinancialCalendarResponse, FinancialNewsItem } from "@/lib/api";
+import type { FinancialCalendarResponse, FinancialNewsAiReview, FinancialNewsItem } from "@/lib/api";
 
 function safeHref(url?: string | null) {
   return url && /^https?:\/\//i.test(url) ? url : undefined;
@@ -13,9 +13,9 @@ function LoadingRows() {
   return <div role="status" aria-label="正在读取资讯" className="space-y-4 py-5">{[1,2,3].map(i => <div key={i} className="h-8 animate-pulse rounded-lg bg-muted/50 motion-reduce:animate-none" />)}</div>;
 }
 
-export function GlobalHotList({ items, loading, error }: {items: FinancialNewsItem[]; loading: boolean; error?: string | null}) {
+export function GlobalHotList({ items, loading, error, generatedAt, aiReview }: {items: FinancialNewsItem[]; loading: boolean; error?: string | null; generatedAt?: string | null; aiReview?: FinancialNewsAiReview}) {
   return <GlassCard glow>
-    <div className="mb-3 flex items-center justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">GLOBAL FINANCE / HOT TOPICS</p><h2 className="mt-1 text-lg font-semibold">全球财经热点榜</h2></div><span className="shrink-0 font-mono text-xs">Top 5</span></div>
+    <div className="mb-3 flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">GLOBAL FINANCE / HOT TOPICS</p><h2 className="mt-1 text-lg font-semibold">全球财经热点榜</h2><div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>数据更新：{generatedAt ? timestamp(generatedAt,true) : "等待首次更新"}</span><span>AI 最近复核：{aiReview?.lastAiReviewAt ? timestamp(aiReview.lastAiReviewAt,true) : "尚未运行"}</span>{aiReview?.nextReviewAt && <span>下次例行检查：{timestamp(aiReview.nextReviewAt,true)}</span>}</div></div><span className="shrink-0 font-mono text-xs">Top 5</span></div>
     {error && <p role="alert" className="py-2 text-sm text-warning">{error}{items.length ? "，保留上次结果。" : ""}</p>}
     {loading && !items.length ? <LoadingRows /> : !items.length ? <p className="py-8 text-center text-sm">暂无符合多来源确认条件的财经热点，不以单一报道凑数。</p> :
       <ol className="divide-y divide-border/40">{items.slice(0,5).map((item,index) => <li key={item.id} className="grid grid-cols-[1.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-1 py-3.5 sm:grid-cols-[1.5rem_minmax(0,1fr)_auto]">

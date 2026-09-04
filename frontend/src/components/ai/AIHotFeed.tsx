@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, ExternalLink, Sparkles } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { buildFeaturedEventCard } from "@/lib/featuredEventCard";
 
 export interface HotFeedItem {
   id: string;
@@ -24,6 +25,7 @@ export interface HotFeedTopic {
   latestAt?: string;
   score?: number;
   reason?: string;
+  summary?: string;
   links?: { aihot?: string; original?: string; story?: string };
 }
 
@@ -52,6 +54,33 @@ export function AIHotFeed({ topics, items, loading = false, onOpenStory, showEve
       {topics.length > 5 && <button onClick={() => setExpanded((value) => !value)} className="mt-3 flex w-full items-center justify-center gap-1 rounded-lg border border-border/60 py-2 text-xs text-muted-foreground hover:text-primary">{expanded ? "收起至前 5 条" : "展开全部 10 条"}<ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} /></button>}
     </GlassCard>
     {showEvents && <><div className="mb-3 flex items-baseline justify-between"><h2 className="text-lg font-semibold">精选事件</h2><span className="text-xs text-muted-foreground">共 {topics.length} 条</span></div>
-    <div className="space-y-3">{topics.slice(0, 10).map((topic) => { const item = itemById.get(topic.id); const score = item?.score ?? topic.score; return <div key={topic.id} role="link" tabIndex={0} onClick={() => onOpenStory(topic, item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpenStory(topic, item); }} className="cursor-pointer"><GlassCard className="transition-colors hover:border-primary/40"><div className="flex gap-3"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 font-mono text-sm font-bold text-primary">{topic.rank}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-semibold">{topic.title}</h3><span className="font-mono text-xs text-primary">{score != null ? `热度 ${score}` : "热点"}</span></div><p className="mt-1 text-sm leading-relaxed text-muted-foreground">{item?.summary || "点击查看事件详情与报道时间线"}</p><div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground/70"><span>{topic.source || item?.source || "AI HOT"}</span><span>{item?.publishedAt || topic.latestAt || ""}</span>{(item?.reason || topic.reason) && <span className="text-primary/80"><Sparkles className="mr-1 inline h-3 w-3" />{item?.reason || topic.reason}</span>}{item?.links?.original && <a href={item.links.original} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="hover:text-primary"><ExternalLink className="mr-1 inline h-3 w-3" />原文</a>}{topic.links?.aihot && <a href={topic.links.aihot} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="hover:text-primary">AI HOT</a>}</div></div></div></GlassCard></div>; })}</div></>}
+    <div className="space-y-3">{topics.slice(0, 10).map((topic) => {
+      const item = itemById.get(topic.id);
+      const card = buildFeaturedEventCard(topic, item);
+      return <div
+        key={topic.id}
+        role="link"
+        tabIndex={0}
+        aria-label={topic.title}
+        onClick={() => onOpenStory(topic, item)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpenStory(topic, item);
+          }
+        }}
+        className="group cursor-pointer rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      >
+        <GlassCard className="border-border/50 transition-colors duration-150 group-hover:border-border">
+          <div className="flex items-start gap-3">
+            <span className="w-6 shrink-0 text-center font-mono text-sm font-bold text-primary">{card.rankLabel}</span>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-[15px] font-semibold leading-snug text-foreground">{card.title}</h3>
+              <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">{card.summary}</p>
+            </div>
+          </div>
+        </GlassCard>
+      </div>;
+    })}</div></>}
   </>;
 }

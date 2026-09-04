@@ -41,25 +41,30 @@ export function FinancialNews() {
   const [refreshMessage,setRefreshMessage]=useState("");
   const overview=useSnapshot(api.financialNewsOverview,180000,revision);
   const calendar=useSnapshot(api.financialNewsCalendar,60000,revision);
+  useEffect(()=>{
+    if(!overview.data?.refreshing)return;
+    const timer=window.setTimeout(()=>setRevision(value=>value+1),3000);
+    return()=>window.clearTimeout(timer);
+  },[overview.data?.refreshing,overview.data?.generatedAt]);
   const items=overview.data?.globalHighlights || [];
   const aiContext=useMemo(()=>JSON.stringify({source:"金融市场资讯",globalHighlights:items.slice(0,5),upcomingEvents:calendar.data?.items || [],calendarPartial:calendar.data?.partial},null,2),[items,calendar.data]);
   const refresh=async()=>{
     if(refreshing)return;
-    setRefreshing(true);setRefreshMessage("正在刷新最新日程…");
+    setRefreshing(true);setRefreshMessage("正在刷新财经热点与日程…");
     const controller=new AbortController();
-    const deadline=window.setTimeout(()=>controller.abort(),30000);
+    const deadline=window.setTimeout(()=>controller.abort(),60000);
     try{
-      const result=await api.financialNewsCalendarRefresh(controller.signal);
-      setRefreshMessage(result.outcome==="updated"?"最新日程已更新":result.outcome==="partial"?"已检查，部分来源暂不可用":"刚刚已刷新，请稍后再试");
+      const [news,result]=await Promise.all([api.financialNewsRefresh(controller.signal),api.financialNewsCalendarRefresh(controller.signal)]);
+      setRefreshMessage(news.refreshing?"已开始后台刷新，完成后页面会自动更新":result.outcome==="partial"?"资讯已更新，部分日程来源暂不可用":"资讯与日程已更新");
       setRevision(value=>value+1);
     }catch(error){
       setRefreshMessage(controller.signal.aborted?"刷新超时，请稍后重试":error instanceof Error?error.message:"刷新失败，请稍后重试");
     }finally{window.clearTimeout(deadline);setRefreshing(false);}
   };
   return <div>
-    <PageHeader title="金融市场资讯" actions={<div className="flex items-center gap-2"><AskAiButton context={aiContext} workspaceSource="news" label="问 AI" suggestions={["这五条财经热点中最值得关注的是什么", "未来两周有哪些重要日程", "区分已发生事实与未来计划"]}/>{refreshMessage&&<span role="status" aria-live="polite" className="max-w-48 text-right text-xs text-muted-foreground">{refreshMessage}</span>}<button type="button" aria-label={refreshing?"正在刷新最新日程":"刷新页面"} title="刷新页面" aria-busy={refreshing} disabled={refreshing} onClick={()=>void refresh()} className="rounded-lg border border-border p-2 hover:text-primary disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${refreshing?"animate-spin":""}`}/></button></div>}/>
+    <PageHeader title="金融市场资讯" actions={<div className="flex items-center gap-2"><AskAiButton context={aiContext} workspaceSource="news" label="问 AI" suggestions={["这五条财经热点中最值得关注的是什么", "未来两周有哪些重要日程", "区分已发生事实与未来计划"]}/>{refreshMessage&&<span role="status" aria-live="polite" className="max-w-48 text-right text-xs text-muted-foreground">{refreshMessage}</span>}<button type="button" aria-label={refreshing?"正在刷新财经热点与日程":"刷新页面"} title="刷新页面" aria-busy={refreshing} disabled={refreshing} onClick={()=>void refresh()} className="rounded-lg border border-border p-2 hover:text-primary disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${refreshing?"animate-spin":""}`}/></button></div>}/>
     {overview.data?.stale && <p className="mb-3 text-sm text-warning">部分来源暂不可用，当前包含最近成功缓存。</p>}
-    <GlobalHotList items={items} loading={overview.loading} error={overview.error}/>
+    <GlobalHotList items={items} loading={overview.loading} error={overview.error} generatedAt={overview.data?.generatedAt} aiReview={overview.data?.aiReview}/>
     <div className="mt-5"><UpcomingEvents data={calendar.data} loading={calendar.loading} error={calendar.error}/></div>
     <Disclaimer/>
   </div>;

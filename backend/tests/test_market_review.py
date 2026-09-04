@@ -24,8 +24,55 @@ def _complete_adapters():
 def test_breadth_exposes_no_flat_and_ratios_sum_to_100():
     result = market_review.build_breadth(600, 400, 30, 8)
 
-    assert set(result) == {"up", "down", "upRatio", "downRatio", "limitUp", "limitDown"}
+    assert set(result) == {"up", "down", "upRatio", "downRatio", "limitUp", "limitDown", "distribution"}
     assert result["upRatio"] + result["downRatio"] == 100
+    assert result["distribution"] is None
+
+
+def test_change_distribution_assigns_boundary_values_once():
+    result = market_review.build_change_distribution([
+        -10.01, -10, -7.01, -7, -5, -3, -0.01, 0,
+        0.01, 3, 3.01, 5, 7, 10, 10.01,
+    ])
+
+    assert result == {
+        "downOver10": 1,
+        "down7To10": 2,
+        "down5To7": 1,
+        "down3To5": 1,
+        "down0To3": 2,
+        "flat": 1,
+        "up0To3": 2,
+        "up3To5": 2,
+        "up5To7": 1,
+        "up7To10": 1,
+        "upOver10": 1,
+    }
+
+
+def test_fresh_fallback_counts_keep_the_last_real_distribution(tmp_path):
+    adapters = _complete_adapters()
+    service = market_review.MarketReviewService(
+        cache_dir=tmp_path,
+        now_fn=lambda: datetime(2026, 9, 2, 16, 0, tzinfo=market_review.BEIJING),
+        adapters=adapters,
+    )
+    cached = service.get_review(force=True)
+    cached_distribution = market_review.build_change_distribution([-2, 0, 1, 4])
+    cached["breadth"]["distribution"] = cached_distribution
+    service._save(datetime(2026, 9, 2).date(), cached)
+
+    adapters["breadth"] = lambda: {
+        "up": 1300, "down": 700, "limitUp": 50, "limitDown": 8,
+        "distribution": None, "source": "备用宽度源",
+    }
+    result = service.get_review(force=True)
+
+    assert result["breadth"]["up"] == 1300
+    assert result["breadth"]["distribution"] == cached_distribution
+    status = next(row for row in result["sources"] if row["name"] == "breadth")
+    assert status["status"] == "stale"
+    assert "涨跌分布使用最近真实缓存" in status["detail"]
 
 
 def test_liquidity_uses_same_yuan_unit_and_direction():
@@ -202,7 +249,151 @@ def test_breadth_fallback_counts_complete_pages_and_ignores_suspended(monkeypatc
     result = market_review.fetch_em_breadth()
     assert result["up"] == 2
     assert result["down"] == 1
+    assert result["distribution"] == {
+        "downOver10": 0, "down7To10": 0, "down5To7": 0, "down3To5": 0, "down0To3": 1,
+        "flat": 1,
+        "up0To3": 2, "up3To5": 0, "up5To7": 0, "up7To10": 0, "upOver10": 0,
+    }
     assert result["limitUp"] is None  # Do not infer a price-limit count from a generic % threshold.
+
+
+def test_breadth_summary_uses_one_request_per_source_and_sums_all_three_a_share_markets(monkeypatch):
+    calls = []
+
+    def get(url, params, **kwargs):
+        calls.append((url, params, kwargs))
+        if "push2delay" in url:
+            import time
+            time.sleep(0.05)
+        rows = [
+            {"f12": "000002", "f14": "上证A股", "f104": 1000, "f105": 500, "f106": 20},
+            {"f12": "399107", "f14": "深证A股", "f104": 1200, "f105": 600, "f106": 30},
+            {"f12": "899050", "f14": "北证50", "f104": 100, "f105": 80, "f106": 5},
+        ]
+        return type("Response", (), {"json": lambda self: {"data": {"diff": rows}}})()
+
+    monkeypatch.setattr(market_review.astock, "em_get", get)
+
+    result = market_review.fetch_em_breadth_summary()
+
+    assert result == {
+        "up": 2300,
+        "down": 1180,
+        "flat": 55,
+        "limitUp": None,
+        "limitDown": None,
+        "distribution": None,
+        "source": "东方财富沪深京A股汇总",
+    }
+    assert 1 <= len(calls) <= 2
+    assert all(call[1]["secids"] == "1.000002,0.399107,0.899050" for call in calls)
+
+
+def test_breadth_summary_does_not_wait_for_unreachable_realtime_host(monkeypatch):
+    import time
+
+    rows = [
+        {"f12": "000002", "f104": 1000, "f105": 500, "f106": 20},
+        {"f12": "399107", "f104": 1200, "f105": 600, "f106": 30},
+        {"f12": "899050", "f104": 100, "f105": 80, "f106": 5},
+    ]
+
+    def get(url, **kwargs):
+        if "push2delay" not in url:
+            time.sleep(0.4)
+            raise TimeoutError("realtime host unavailable")
+        time.sleep(0.02)
+        return type("Response", (), {"json": lambda self: {"data": {"diff": rows}}})()
+
+    monkeypatch.setattr(market_review.astock, "em_get", get)
+
+    started = time.perf_counter()
+    result = market_review.fetch_em_breadth_summary()
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.15
+    assert result["up"] == 2300
+    assert result["source"] == "东方财富沪深京A股汇总（延迟行情）"
+
+
+def test_default_breadth_returns_summary_without_waiting_for_full_distribution(monkeypatch):
+    import time
+
+    distribution = {
+        "downOver10": 0, "down7To10": 0, "down5To7": 0, "down3To5": 0, "down0To3": 1,
+        "flat": 1,
+        "up0To3": 2, "up3To5": 0, "up5To7": 0, "up7To10": 0, "upOver10": 0,
+    }
+    monkeypatch.setattr(market_review, "fetch_em_breadth_summary", lambda: {
+        "up": 2300, "down": 1180, "flat": 55, "limitUp": None, "limitDown": None,
+        "distribution": None, "source": "东方财富沪深京A股汇总",
+    })
+    monkeypatch.setattr(market_review.market, "_cached", lambda _key, fn: fn())
+    monkeypatch.setattr(market_review, "_breadth_distribution_cache", None, raising=False)
+    monkeypatch.setattr(market_review, "_breadth_distribution_thread", None, raising=False)
+
+    def slow_full_market():
+        time.sleep(0.4)
+        return {"up": 2, "down": 1, "distribution": distribution, "source": "东方财富全量沪深京A股"}
+
+    monkeypatch.setattr(market_review, "fetch_em_breadth", slow_full_market)
+    current = datetime(2026, 9, 4, 11, 0, tzinfo=market_review.BEIJING)
+    adapters = market_review._default_adapters(current, current.date(), datetime(2026, 9, 3).date())
+
+    started = time.perf_counter()
+    first = adapters["breadth"]()
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.15
+    assert first["up"] == 2300
+    assert first["down"] == 1180
+    assert first["distribution"] is None
+
+    deadline = time.perf_counter() + 1
+    second = first
+    while time.perf_counter() < deadline and second["distribution"] is None:
+        time.sleep(0.02)
+        second = adapters["breadth"]()
+    assert second["distribution"] == distribution
+
+
+def test_breadth_adapter_rereads_lightweight_counts_when_review_is_forced(monkeypatch):
+    summaries = iter([
+        {"up": 2100, "down": 1300, "distribution": None, "source": "第一次汇总"},
+        {"up": 2200, "down": 1200, "distribution": None, "source": "第二次汇总"},
+    ])
+    monkeypatch.setattr(market_review, "fetch_em_breadth_summary", lambda: next(summaries))
+    monkeypatch.setattr(market_review, "_cached_em_breadth_distribution", lambda: None)
+    market_review.market._CACHE.pop("review_breadth_summary_v1", None)
+    current = datetime(2026, 9, 4, 11, 0, tzinfo=market_review.BEIJING)
+    adapters = market_review._default_adapters(current, current.date(), datetime(2026, 9, 3).date())
+
+    first = adapters["breadth"]()
+    second = adapters["breadth"]()
+
+    assert first["up"] == 2100
+    assert second["up"] == 2200
+
+
+def test_index_quotes_and_review_keep_both_science_board_indices(monkeypatch):
+    names = {
+        "sh000001": "上证指数", "sz399001": "深证成指", "sz399006": "创业板指",
+        "sh000300": "沪深300", "sh000680": "科创综指", "sh000688": "科创50",
+    }
+
+    def quote_line(code, name):
+        values = ["0"] * 53
+        values[1], values[3], values[4] = name, "100", "99"
+        values[30], values[31], values[32], values[37] = "20260904120500", "1", "1.01", "123"
+        return f'v_{code}="{"~".join(values)}";'
+
+    monkeypatch.setattr(market_review.astock, "_fetch_gtimg", lambda codes: "".join(quote_line(code, names[code]) for code in codes))
+
+    quotes = market_review.astock.index_quote()
+    normalized = market_review._normalize_indices(quotes, datetime(2026, 9, 4).date())
+
+    assert [row["code"] for row in normalized] == ["000001", "399001", "399006", "000300", "000680", "000688"]
+    assert [row["name"] for row in normalized[-2:]] == ["科创综指", "科创50"]
 
 
 def test_breadth_fallback_rejects_incomplete_or_repeated_pages(monkeypatch):

@@ -19,7 +19,7 @@ test("daily review consumes one snapshot and renders the required section order"
   for (const marker of ["api.marketReview()", "AI 收盘简述", "大盘指数", "市场宽度", "涨停/跌停", "成交额 Top20", "板块资金趋势", "资金轮动"]) {
     assert.match(daily, new RegExp(marker));
   }
-  for (const deleted of ["关注股票", "AI 当日复盘", "平盘", "globalIndices", "globalIdx", "api.marketOverview", "api.emotion", "api.turnoverTop"]) {
+  for (const deleted of ["关注股票", "AI 当日复盘", "globalIndices", "globalIdx", "api.marketOverview", "api.emotion", "api.turnoverTop"]) {
     assert.doesNotMatch(daily, new RegExp(deleted));
   }
   const order = ["AI 收盘简述", "大盘指数", "市场宽度", "涨停/跌停", "成交额 Top5", "板块资金趋势", "资金轮动"];

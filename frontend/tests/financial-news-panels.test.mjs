@@ -38,6 +38,17 @@ test('hot list renders five news titles linking out, not summaries or a second c
   assert.ok(!text(tree).includes('不应展示的灰色摘要'));
   assert.match(text(tree),/3\s+个独立来源/);
 });
+test('hot list shows data and AI review freshness without implying every refresh invokes AI',async()=>{
+  const {GlobalHotList}=await load();
+  const tree=GlobalHotList({
+    items:[],loading:false,generatedAt:'2026-09-04T05:32:00Z',
+    aiReview:{lastAiReviewAt:'2026-09-04T05:30:00Z',nextReviewAt:'2026-09-04T06:00:00Z',reason:'cached'},
+  });
+  const content=text(tree);
+  assert.match(content,/\u6570\u636e\u66f4\u65b0/);
+  assert.match(content,/AI \u6700\u8fd1\u590d\u6838/);
+  assert.match(content,/\u4e0b\u6b21\u4f8b\u884c\u68c0\u67e5/);
+});
 test('upcoming events expose Beijing times and date-only uncertainty with original links',async()=>{
   const {UpcomingEvents}=await load();
   const tree=UpcomingEvents({loading:false,data:{items:[

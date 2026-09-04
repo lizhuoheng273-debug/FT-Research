@@ -28,12 +28,14 @@ class AihotReportClient:
         root = "weekly" if kind == "weekly" else "monthly"
         return f"{self.base_url}/{root}" + (f"/{period}" if period else "")
 
-    def fetch_period(self, kind: str, period: str | None = None) -> dict[str, Any]:
+    def fetch_period(self, kind: str, period: str | None = None, *, force: bool = False) -> dict[str, Any]:
         if kind not in {"weekly", "monthly"}:
             raise ValueError("周期类型必须是 weekly 或 monthly")
         url = self._url(kind, period)
         resolved_period = period or (datetime.now(timezone.utc).strftime("%Y-%m") if kind == "monthly" else datetime.now(timezone.utc).strftime("%G-W%V"))
         cached = self.archive.load_period(kind, resolved_period)
+        if cached and not force:
+            return cached
         try:
             candidates = [url]
             if period is None:
@@ -56,8 +58,10 @@ class AihotReportClient:
                 return {**cached, "stale": True}
             raise
 
-    def list_periods(self, kind: str) -> list[dict[str, Any]]:
+    def list_periods(self, kind: str, *, force: bool = False) -> list[dict[str, Any]]:
         cached = self.archive.list_periods(kind)
+        if cached and not force:
+            return cached
         known = {item["period"] for item in cached}
         try:
             response = self._session.get(self._url(kind), timeout=self.timeout, headers={"Accept": "text/html"})

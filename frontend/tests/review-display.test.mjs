@@ -4,13 +4,13 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import ts from 'typescript';
 
-async function load(path, expose, review = null) {
+async function load(path, expose, review = null, refCurrent = null) {
   const source = await readFile(new URL(path, import.meta.url), 'utf8');
   const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const exports = {};
   let firstState = true;
   vm.runInNewContext(js + '\n' + expose, { exports, require(name) {
-    if (name === 'react') return {useState(initial) {const value = firstState ? review : initial; firstState = false; return [value, () => {}];},useEffect() {},useMemo: f => f()};
+    if (name === 'react') return {useState(initial) {const value = firstState ? review : initial; firstState = false; return [value, () => {}];},useEffect() {},useMemo: f => f(),useRef: () => ({current: refCurrent})};
     if (name === 'react/jsx-runtime') return {jsx: (type,props) => ({type,props}),jsxs: (type,props) => ({type,props})};
     if (name === '@/lib/utils') return {cn: (...parts) => parts.filter(Boolean).join(' ')};
     return new Proxy({}, {get: (_,key) => key});
@@ -89,4 +89,52 @@ test('turnover change is labelled as a same-time previous-session comparison', a
   assert.ok(content.includes('12.33%'));
   const header = nodes(tree).find(node => node.type === 'PageHeader');
   assert.ok(header.props.actions.props.context.includes('较上一交易日同期'));
+});
+
+test('change distribution renders all eleven non-overlapping market bins', async () => {
+  const {ChangeDistribution} = await load('../src/pages/DailyReview.tsx','exports.ChangeDistribution = ChangeDistribution;');
+  const tree = ChangeDistribution({distribution:{
+    downOver10:1,down7To10:16,down5To7:38,down3To5:136,down0To3:1124,flat:98,
+    up0To3:3460,up3To5:458,up5To7:114,up7To10:63,upOver10:40,
+  }});
+  const content = text(tree);
+
+  for (const label of ['跌>10%','跌7~10%','跌5~7%','跌3~5%','跌0~3%','平盘','涨0~3%','涨3~5%','涨5~7%','涨7~10%','涨>10%']) {
+    assert.ok(content.includes(label));
+  }
+  for (const count of ['1','16','38','136','1,124','98','3,460','458','114','63','40']) {
+    assert.ok(content.includes(count));
+  }
+  assert.equal(nodes(tree).filter(node => node.props?.['data-distribution-bar']).length, 11);
+  const chart = nodes(tree).find(node => node.props?.role === 'img');
+  assert.ok(chart.props['aria-label'].includes('跌>10% 1家'));
+  assert.ok(chart.props['aria-label'].includes('涨0~3% 3,460家'));
+});
+
+test('index carousel exposes six indices and supports arrows plus shift-wheel scrolling', async () => {
+  const calls = [];
+  const scroller = {scrollBy(options) { calls.push(options); }};
+  const {IndexCarousel} = await load('../src/pages/DailyReview.tsx','exports.IndexCarousel = IndexCarousel;',null,scroller);
+  const indices = ['000001','399001','399006','000300','000680','000688'].map((code,index) => ({
+    code,name:`指数${index + 1}`,price:100 + index,change:1,changePct:1,source:'腾讯行情',updatedAt:'2026-09-04 12:05:00',stale:false,
+  }));
+  const tree = IndexCarousel({indices,loading:false});
+  const all = nodes(tree);
+
+  assert.equal(all.filter(node => node.type === 'Link').length, 6);
+  all.find(node => node.props?.['aria-label'] === '向右查看更多指数').props.onClick();
+  let prevented = false;
+  all.find(node => node.props?.role === 'region').props.onWheel({shiftKey:true,deltaY:90,preventDefault(){prevented = true;}});
+  all.find(node => node.props?.role === 'region').props.onWheel({shiftKey:true,deltaX:5,deltaY:0,deltaMode:1,preventDefault(){}});
+  assert.equal(prevented, true);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].left, 480);
+  assert.equal(calls[0].behavior, 'smooth');
+  assert.equal(calls[1].left, 90);
+  assert.equal(calls[1].behavior, 'auto');
+  assert.equal(calls[2].left, 80);
+  assert.equal(calls[2].behavior, 'auto');
+  const track = all.find(node => node.props?.role === 'region');
+  assert.ok(track.props.className.includes('snap-proximity'));
+  assert.ok(!track.props.className.includes('snap-mandatory'));
 });

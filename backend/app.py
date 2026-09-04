@@ -352,13 +352,13 @@ def ai_daily(date: str):
 
 
 @app.get("/api/ai/reports/index")
-def ai_reports_index(kind: str = Query("daily")):
+def ai_reports_index(kind: str = Query("daily"), refresh: bool = Query(False), force: bool = Query(False)):
     if kind not in {"daily", "weekly", "monthly"}:
         raise HTTPException(400, "kind 必须是 daily、weekly 或 monthly")
     if kind == "daily":
         items = report_archive.list_periods(kind)
     else:
-        items = aihot_reports.list_periods(kind)
+        items = aihot_reports.list_periods(kind, force=refresh or force)
     return {"kind": kind, "items": items}
 
 
@@ -379,21 +379,21 @@ def ai_report_daily(date: str):
 
 
 @app.get("/api/ai/reports/{kind}/latest")
-def ai_report_period_latest(kind: str):
+def ai_report_period_latest(kind: str, refresh: bool = Query(False), force: bool = Query(False)):
     if kind not in {"weekly", "monthly"}:
         raise HTTPException(400, "kind 必须是 weekly 或 monthly")
     try:
-        return aihot_reports.fetch_period(kind)
+        return aihot_reports.fetch_period(kind, force=refresh or force)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"AI HOT {kind} 暂时不可用：{exc}") from exc
 
 
 @app.get("/api/ai/reports/{kind}/{period}")
-def ai_report_period(kind: str, period: str):
+def ai_report_period(kind: str, period: str, refresh: bool = Query(False), force: bool = Query(False)):
     if kind not in {"weekly", "monthly"}:
         raise HTTPException(400, "kind 必须是 weekly 或 monthly")
     try:
-        return aihot_reports.fetch_period(kind, period)
+        return aihot_reports.fetch_period(kind, period, force=refresh or force)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"AI HOT {kind} 暂时不可用：{exc}") from exc
 
@@ -638,6 +638,15 @@ def radar_refresh():
 def financial_news_overview():
     """紧要快讯、热门事件与来源状态；只读取后台缓存。"""
     return {"data": financial_news_service.overview()}
+
+
+@app.post("/api/finance/news/refresh")
+def financial_news_refresh():
+    """Refresh public financial feeds; AI review remains event-driven and rate-limited."""
+    try:
+        return {"data": financial_news_service.request_refresh()}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"金融资讯刷新失败：{exc}") from exc
 
 
 @app.get("/api/finance/news/feed")

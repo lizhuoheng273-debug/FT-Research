@@ -34,3 +34,24 @@ test("period reports render lead stats themes media and original links", () => {
   assert.match(daily, /apiUrl\(/);
   assert.match(daily, /ai\/reports\/\$\{targetKind\}/);
 });
+
+test("featured event cards expose only title and a real summary", () => {
+  assert.doesNotMatch(sharedFeed, /热度 \$\{/);
+  assert.doesNotMatch(sharedFeed, /AI HOT<\/a>/);
+  assert.doesNotMatch(sharedFeed, /Sparkles/);
+  assert.doesNotMatch(sharedFeed, /点击查看事件详情与报道时间线/);
+  assert.match(sharedFeed, /buildFeaturedEventCard/);
+});
+
+test("featured event cards use a neutral report surface with only a hotspot-sized orange rank", () => {
+  assert.doesNotMatch(sharedFeed, /from-primary\/\[0\.07\]/);
+  assert.doesNotMatch(sharedFeed, /text-2xl font-bold leading-none text-primary/);
+  assert.match(sharedFeed, /w-6 shrink-0 text-center font-mono text-sm font-bold text-primary/);
+  assert.match(sharedFeed, /hover:border-border/);
+});
+
+test("period stories omit the summary region when summary is absent", () => {
+  assert.doesNotMatch(daily, /story\.summary \|\| "暂无摘要"/);
+  assert.match(daily, /summary &&/);
+  assert.match(daily, /story\.summary\?\.trim\(\)/);
+});

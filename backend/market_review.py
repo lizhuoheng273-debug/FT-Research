@@ -10,7 +10,8 @@ import json
 import hashlib
 import math
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -22,10 +23,13 @@ import market
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 PROMPT_VERSION = "market-review-brief-v2"
-INDEX_CODES = ("000001", "399001", "399006", "000300")
+INDEX_CODES = ("000001", "399001", "399006", "000300", "000680", "000688")
 REVIEW_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "market-review"
 REVIEW_REFRESH_SECONDS = 5 * 60
+BREADTH_DISTRIBUTION_REFRESH_SECONDS = 15 * 60
 _breadth_lock = threading.Lock()
+_breadth_distribution_cache: tuple[float, dict[str, Any]] | None = None
+_breadth_distribution_thread: threading.Thread | None = None
 REVIEW_FILE_LOCK = threading.RLock()
 
 
@@ -68,7 +72,45 @@ def _previous_trading_date(current: date) -> date:
     return previous
 
 
-def build_breadth(up: int | None, down: int | None, limit_up: int | None, limit_down: int | None) -> dict[str, Any]:
+def build_change_distribution(changes: list[Any]) -> dict[str, int]:
+    """Assign each valid percentage change to exactly one display bucket."""
+    buckets = {
+        "downOver10": 0, "down7To10": 0, "down5To7": 0, "down3To5": 0, "down0To3": 0,
+        "flat": 0,
+        "up0To3": 0, "up3To5": 0, "up5To7": 0, "up7To10": 0, "upOver10": 0,
+    }
+    for raw in changes:
+        value = _as_number(raw)
+        if value is None:
+            continue
+        if value < -10:
+            key = "downOver10"
+        elif value < -7:
+            key = "down7To10"
+        elif value < -5:
+            key = "down5To7"
+        elif value < -3:
+            key = "down3To5"
+        elif value < 0:
+            key = "down0To3"
+        elif value == 0:
+            key = "flat"
+        elif value <= 3:
+            key = "up0To3"
+        elif value <= 5:
+            key = "up3To5"
+        elif value <= 7:
+            key = "up5To7"
+        elif value <= 10:
+            key = "up7To10"
+        else:
+            key = "upOver10"
+        buckets[key] += 1
+    return buckets
+
+
+def build_breadth(up: int | None, down: int | None, limit_up: int | None, limit_down: int | None,
+                  distribution: dict[str, int] | None = None) -> dict[str, Any]:
     """Normalize market breadth without exposing flat-count data."""
     total = (up or 0) + (down or 0) if up is not None and down is not None else 0
     up_ratio = round(up / total * 100, 2) if total and up is not None else None
@@ -80,6 +122,7 @@ def build_breadth(up: int | None, down: int | None, limit_up: int | None, limit_
         "downRatio": down_ratio,
         "limitUp": limit_up,
         "limitDown": limit_down,
+        "distribution": distribution,
     }
 
 
@@ -244,31 +287,113 @@ def _normalize_indices(rows: Any, expected_date: date | None = None) -> list[dic
     return [row for row in output if row]
 
 
+def fetch_em_breadth_summary() -> dict[str, Any] | None:
+    """Fetch沪深京 A-share advance/decline totals in a single lightweight request."""
+    expected_codes = {"000002", "399107", "899050"}
+
+    def fetch_host(host: str) -> dict[str, Any] | None:
+        try:
+            params = {
+                "secids": "1.000002,0.399107,0.899050",
+                "fields": "f12,f14,f104,f105,f106",
+                "fltt": 2,
+                "invt": 2,
+            }
+            payload = astock.em_get(
+                f"https://{host}/api/qt/ulist.np/get",
+                params=params,
+                headers={"User-Agent": astock.UA},
+                timeout=3,
+            ).json().get("data") or {}
+            rows = {str(row.get("f12") or ""): row for row in (payload.get("diff") or [])}
+            if not expected_codes.issubset(rows):
+                raise ValueError("市场汇总口径不完整")
+            values = {
+                key: [_as_number(rows[code].get(field)) for code in expected_codes]
+                for key, field in (("up", "f104"), ("down", "f105"), ("flat", "f106"))
+            }
+            if any(value is None or value < 0 or not value.is_integer()
+                   for counts in values.values() for value in counts):
+                raise ValueError("市场汇总家数无效")
+            return {
+                "up": int(sum(values["up"])),
+                "down": int(sum(values["down"])),
+                "flat": int(sum(values["flat"])),
+                "limitUp": None,
+                "limitDown": None,
+                "distribution": None,
+                "source": "东方财富沪深京A股汇总" + ("（延迟行情）" if "delay" in host else ""),
+            }
+        except Exception:
+            return None
+
+    hosts = ("push2.eastmoney.com", "push2delay.eastmoney.com")
+    pool = ThreadPoolExecutor(max_workers=2)
+    futures = {pool.submit(fetch_host, host): host for host in hosts}
+    try:
+        for future in as_completed(futures):
+            value = future.result()
+            if not _valid_breadth(value):
+                continue
+            if futures[future] == hosts[0]:
+                return value
+            realtime = next(item for item, host in futures.items() if host == hosts[0])
+            try:
+                preferred = realtime.result(timeout=0.1)
+            except Exception:
+                preferred = None
+            return preferred if _valid_breadth(preferred) else value
+        return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def fetch_em_breadth() -> dict[str, Any] | None:
     """Count a complete沪深京 A-share universe; never treat a partial page as market breadth."""
     for host in ("push2.eastmoney.com", "push2delay.eastmoney.com"):
         try:
-            rows: dict[str, dict] = {}
-            total = None
-            for page in range(1, 101):
+            def fetch_page(page: int) -> tuple[int, list[dict[str, Any]]]:
                 params = {"pn": page, "pz": 100, "po": 1, "np": 1, "fltt": 2, "invt": 2,
                           "fid": "f12", "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
                           "fields": "f2,f3,f12,f13"}
                 payload = astock.em_get(f"https://{host}/api/qt/clist/get", params=params,
                                        headers={"User-Agent": astock.UA}, timeout=12).json().get("data") or {}
                 count = int(payload.get("total") or 0)
-                if count <= 0 or (total is not None and count != total):
+                if count <= 0:
                     raise ValueError("行情分页总数不完整")
-                total = count
+                return count, payload.get("diff") or []
+
+            rows: dict[str, dict] = {}
+
+            def add_rows(page_rows: list[dict[str, Any]]) -> None:
                 before = len(rows)
-                for row in payload.get("diff") or []:
+                for row in page_rows:
                     code = str(row.get("f12", ""))
                     if len(code) == 6 and code.isdigit():
                         rows[f"{row.get('f13')}:{code}"] = row
-                if len(rows) == total:
-                    break
                 if len(rows) <= before:
                     raise ValueError("行情分页为空或重复")
+
+            total, first_rows = fetch_page(1)
+            add_rows(first_rows)
+            page_count = math.ceil(total / 100)
+            if page_count > 1 and len(first_rows) >= min(100, total):
+                with ThreadPoolExecutor(max_workers=min(8, page_count - 1)) as pool:
+                    futures = [pool.submit(fetch_page, page) for page in range(2, page_count + 1)]
+                    for future in as_completed(futures):
+                        page_total, page_rows = future.result()
+                        if page_total != total:
+                            raise ValueError("行情分页总数不完整")
+                        add_rows(page_rows)
+            else:
+                # Some test/proxy sources return smaller pages despite pz=100.
+                for page in range(2, 101):
+                    if len(rows) >= total:
+                        break
+                    page_total, page_rows = fetch_page(page)
+                    if page_total != total:
+                        raise ValueError("行情分页总数不完整")
+                    add_rows(page_rows)
             if len(rows) != total:
                 raise ValueError("行情分页未收齐")
             changes = [_as_number(row.get("f3")) for row in rows.values()
@@ -278,10 +403,39 @@ def fetch_em_breadth() -> dict[str, Any] | None:
                 raise ValueError("行情涨幅缺失")
             return {"up": sum(v > 0 for v in changes), "down": sum(v < 0 for v in changes),
                     "limitUp": None, "limitDown": None,
+                    "distribution": build_change_distribution(changes),
                     "source": "东方财富全量沪深京A股" + ("（延迟行情）" if "delay" in host else "")}
         except Exception:
             continue
     return None
+
+
+def _cached_em_breadth_distribution() -> dict[str, Any] | None:
+    """Return the last full distribution immediately and refresh it off the request path."""
+    global _breadth_distribution_cache, _breadth_distribution_thread
+    now = time.monotonic()
+    with _breadth_lock:
+        cached = _breadth_distribution_cache
+        fresh = cached is not None and now - cached[0] < BREADTH_DISTRIBUTION_REFRESH_SECONDS
+        if not fresh and (_breadth_distribution_thread is None or not _breadth_distribution_thread.is_alive()):
+            def refresh() -> None:
+                global _breadth_distribution_cache, _breadth_distribution_thread
+                try:
+                    value = fetch_em_breadth()
+                    if _valid_breadth(value) and value.get("distribution") is not None:
+                        with _breadth_lock:
+                            _breadth_distribution_cache = (time.monotonic(), value)
+                finally:
+                    with _breadth_lock:
+                        _breadth_distribution_thread = None
+
+            _breadth_distribution_thread = threading.Thread(
+                target=refresh,
+                name="ft-breadth-distribution-refresh",
+                daemon=True,
+            )
+            _breadth_distribution_thread.start()
+        return cached[1] if cached else None
 
 
 def _valid_breadth(row: Any) -> bool:
@@ -300,17 +454,23 @@ def _default_adapters(current: datetime, trading_date: date, previous_date: date
         return rows
 
     def breadth():
+        # MarketReviewService already owns the five-minute snapshot cache.
+        # Calling the lightweight summary directly lets an explicit refresh
+        # actually reread current counts instead of hitting a nested cache.
+        summary = fetch_em_breadth_summary()
+        full_market = _cached_em_breadth_distribution()
+        if _valid_breadth(summary):
+            return {**summary, "distribution": (full_market or {}).get("distribution")}
+        if _valid_breadth(full_market):
+            return full_market
         row = market._sentiment()
         if not _valid_breadth(row):
-            with _breadth_lock:
-                fallback = market._cached("review_breadth", fetch_em_breadth)
-            if not _valid_breadth(fallback):
-                raise RuntimeError("涨跌家数主源和备用源暂不可用")
-            return fallback
+            raise RuntimeError("涨跌家数主源和备用源暂不可用")
         return {
             "up": row.get("up"), "down": row.get("down"),
             "limitUp": row.get("zt_real", row.get("zt")),
             "limitDown": row.get("dt_real", row.get("dt")),
+            "distribution": None,
             "source": "乐咕乐股市场宽度",
         }
 
@@ -435,7 +595,18 @@ class MarketReviewService:
                     source_rows.append({"name": name, "status": "missing", "fetchedAt": None, "detail": str(exc)})
 
         raw_breadth = values["breadth"] or {}
-        breadth = build_breadth(raw_breadth.get("up"), raw_breadth.get("down"), raw_breadth.get("limitUp"), raw_breadth.get("limitDown"))
+        distribution = raw_breadth.get("distribution")
+        cached_distribution = ((cached or {}).get("breadth") or {}).get("distribution")
+        if distribution is None and cached_distribution is not None:
+            distribution = cached_distribution
+            stale = True
+            for source in source_rows:
+                if source["name"] == "breadth":
+                    source["status"] = "stale"
+                    prefix = f"{source['detail']}；" if source["detail"] else ""
+                    source["detail"] = prefix + "涨跌分布使用最近真实缓存"
+                    break
+        breadth = build_breadth(raw_breadth.get("up"), raw_breadth.get("down"), raw_breadth.get("limitUp"), raw_breadth.get("limitDown"), distribution)
         raw_liquidity = values["liquidity"] or {}
         liquidity = build_liquidity(raw_liquidity.get("todayAmountYuan"), raw_liquidity.get("previousAmountYuan"))
         indices = _normalize_indices(values["indices"], trading_date)

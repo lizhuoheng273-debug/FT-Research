@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -97,6 +98,41 @@ def test_sina_content_only_schema_is_normalized(tmp_path):
 
     assert len(items) == 1
     assert items[0]["title"] == "新浪快讯正文可作为标题"
+
+
+def test_content_only_quick_news_uses_a_concise_headline_and_preserves_body(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    body = (
+        "OpenAI发布新一代GPT模型，多项能力获得提升。"
+        "受此影响，A股软件与AI应用方向走强，多只概念股涨停。"
+        "后续仍需关注模型的实际发布时间和上市公司公告。"
+    )
+
+    item = service.normalize_quick_rows(
+        [{"时间": "2026-08-31 15:59:00", "内容": body}],
+        source="新浪财经快讯",
+    )[0]
+
+    assert item["title"] == "OpenAI发布新一代GPT模型，多项能力获得提升"
+    assert item["summary"] == body
+    assert len(item["title"]) <= 64
+
+
+def test_existing_cached_long_title_gets_a_safe_display_title(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    long_title = "美联储公布最新利率决议并释放政策信号。" + "后续正文" * 30
+    event = {
+        **_item(title=long_title, id="long"), "independentSourceCount": 2,
+        "independentSources": ["新华社", "路透社"], "relatedSourceCount": 2,
+        "relatedSources": ["新华社", "路透社"], "globalScore": 90,
+        "importanceType": "policy_decision", "latestAt": NOW.isoformat(),
+    }
+    service.save_payload({"editorialVersion": 4, "globalHighlights": [event], "feed": [event]})
+
+    result = service.overview()["globalHighlights"][0]
+
+    assert result["displayTitle"] == "美联储公布最新利率决议并释放政策信号"
+    assert result["title"] == long_title
 
 
 def test_external_urls_accept_only_http_protocols(tmp_path):
@@ -241,6 +277,169 @@ def test_glm_refinement_is_batched_and_cached_by_event_content(tmp_path, monkeyp
     assert len(calls) == 2
 
 
+def test_ai_review_policy_coalesces_changes_rate_limits_and_runs_safety_review(tmp_path):
+    clock = [datetime(2026, 9, 4, 5, 0, tzinfo=timezone.utc)]
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: clock[0])
+    candidate = {**_item(id="event-1"), "globalScore": 78, "independentSourceCount": 1}
+
+    first = service._ai_review_plan([candidate], {})
+    assert first["shouldRun"] is False
+    assert first["reason"] == "coalescing"
+
+    clock[0] += __import__("datetime").timedelta(minutes=6)
+    due = service._ai_review_plan([candidate], first["metadata"])
+    assert due["shouldRun"] is True
+    assert due["reason"] == "candidate_changed"
+
+    rate_limited_meta = {
+        **due["metadata"],
+        "lastCheckedAt": (clock[0] - __import__("datetime").timedelta(minutes=5)).isoformat(),
+        "lastAttemptAt": (clock[0] - __import__("datetime").timedelta(minutes=5)).isoformat(),
+    }
+    limited = service._ai_review_plan([candidate], rate_limited_meta)
+    assert limited["shouldRun"] is False
+    assert limited["reason"] == "rate_limited"
+
+    unchanged_meta = {
+        **due["metadata"],
+        "lastCandidateFingerprint": due["candidateFingerprint"],
+        "lastCheckedAt": (clock[0] - __import__("datetime").timedelta(minutes=31)).isoformat(),
+    }
+    safety = service._ai_review_plan([candidate], unchanged_meta)
+    assert safety["shouldRun"] is True
+    assert safety["reason"] == "safety_review"
+
+
+def test_ai_review_policy_bypasses_coalescing_for_urgent_official_event_and_at_close(tmp_path):
+    clock = [datetime(2026, 9, 4, 5, 0, tzinfo=timezone.utc)]
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: clock[0])
+    urgent = {
+        **_item(id="official-1", sourceLevel="S", official=True),
+        "globalScore": 94,
+        "independentSourceCount": 1,
+    }
+    immediate = service._ai_review_plan([urgent], {})
+    assert immediate["shouldRun"] is True
+    assert immediate["reason"] == "urgent_change"
+
+    clock[0] = datetime(2026, 9, 4, 7, 10, tzinfo=timezone.utc)  # 15:10 Beijing
+    ordinary = {**_item(id="event-2"), "globalScore": 75, "independentSourceCount": 2}
+    fingerprint = service._ai_candidate_fingerprint([ordinary])
+    close = service._ai_review_plan([ordinary], {
+        "lastCandidateFingerprint": fingerprint,
+        "lastCheckedAt": datetime(2026, 9, 4, 6, 55, tzinfo=timezone.utc).isoformat(),
+    })
+    assert close["shouldRun"] is True
+    assert close["reason"] == "post_close"
+
+
+def test_ai_rate_limit_tracks_model_attempt_not_a_cache_only_safety_check(tmp_path):
+    now = datetime(2026, 9, 4, 5, 0, tzinfo=timezone.utc)
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: now)
+    urgent = {
+        **_item(id="urgent", sourceLevel="S", official=True),
+        "globalScore": 95, "independentSourceCount": 1,
+    }
+    plan = service._ai_review_plan([urgent], {
+        "lastCandidateFingerprint": "older-candidates",
+        "lastCheckedAt": (now - __import__("datetime").timedelta(minutes=1)).isoformat(),
+        "lastAttemptAt": (now - __import__("datetime").timedelta(minutes=20)).isoformat(),
+    })
+
+    assert plan["shouldRun"] is True
+    assert plan["reason"] == "urgent_change"
+
+
+def test_post_close_review_does_not_wait_for_candidate_coalescing(tmp_path):
+    now = datetime(2026, 9, 4, 7, 10, tzinfo=timezone.utc)
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: now)
+    candidate = {**_item(id="new-at-close"), "globalScore": 75, "independentSourceCount": 1}
+
+    plan = service._ai_review_plan([candidate], {
+        "lastCandidateFingerprint": "before-close",
+        "lastAttemptAt": (now - __import__("datetime").timedelta(minutes=20)).isoformat(),
+    })
+
+    assert plan["shouldRun"] is True
+    assert plan["reason"] == "post_close"
+
+
+def test_ai_candidate_discovery_includes_major_model_launch_for_market_linkage(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    model_release = {
+        **_item(id="gpt", title="OpenAI发布GPT-6新模型", summary="新一代大模型已正式发布"),
+        "globalScore": 55, "independentSourceCount": 1,
+    }
+    unrelated = {
+        **_item(id="show", title="明星参加互联网综艺", summary="节目预告"),
+        "globalScore": 55, "independentSourceCount": 1,
+    }
+
+    candidates = service._ai_review_candidates([model_release, unrelated])
+
+    assert [item["id"] for item in candidates] == ["gpt"]
+
+
+def test_ai_semantic_links_merge_independent_evidence_for_the_hot_list(tmp_path, monkeypatch):
+    import chat
+    import glm_config
+    import json
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test"})
+    monkeypatch.setattr(chat, "_call_llm", lambda *_args, **_kwargs: {"choices": [{"message": {"content": json.dumps([{
+        "id": "release", "displayTitle": "GPT新模型发布带动A股软件板块走强",
+        "digest": "模型发布与A股软件板块异动形成事件链。", "impactTags": ["AI应用", "A股软件"],
+        "importanceScore": 92, "relatedEventIds": ["market-reaction"],
+    }], ensure_ascii=False)}}]})
+    base = {
+        "summary": "", "publishedAt": NOW.isoformat(), "category": "产业", "sourceTier": 35,
+        "sourceLevel": "A", "originalUrl": "https://example.test/news", "relatedStocks": [],
+        "stale": False, "relatedSourceCount": 1, "independentSourceCount": 1,
+        "hotScore": 70, "globalScore": 75, "importanceType": "industry_update",
+    }
+    release = {**base, "id": "release", "title": "OpenAI即将发布GPT新模型", "source": "新华社", "relatedSources": ["新华社"], "reports": [{**base, "title": "OpenAI即将发布GPT新模型", "source": "新华社"}]}
+    reaction = {**base, "id": "market-reaction", "title": "A股软件股集体大涨", "source": "证券时报", "relatedSources": ["证券时报"], "reports": [{**base, "title": "A股软件股集体大涨", "source": "证券时报"}]}
+
+    service._apply_ai_refinements([release, reaction])
+    merged = service._merge_ai_related_events([release, reaction])
+
+    assert len(merged) == 1
+    assert merged[0]["displayTitle"] == "GPT新模型发布带动A股软件板块走强"
+    assert merged[0]["independentSourceCount"] == 2
+    assert merged[0]["aiImportance"] == 92
+
+
+def test_scheduled_ai_reviews_preserve_the_accumulated_daily_budget(tmp_path, monkeypatch):
+    import chat
+    import glm_config
+    import json
+
+    clock = [datetime(2026, 9, 4, 5, 0, tzinfo=timezone.utc)]
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: clock[0])
+    monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test"})
+
+    def respond(_cfg, messages, use_tools):
+        payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+        return {"choices": [{"message": {"content": json.dumps([{
+            "id": payload[0]["id"], "displayTitle": payload[0]["title"],
+            "digest": "权威事件已进入审核。", "impactTags": [],
+            "importanceScore": 90, "relatedEventIds": [],
+        }], ensure_ascii=False)}}]}
+
+    monkeypatch.setattr(chat, "_call_llm", respond)
+    base = {
+        **_item(sourceLevel="S", official=True), "globalScore": 95,
+        "independentSourceCount": 1, "relatedSourceCount": 1,
+        "relatedSources": ["新华社"], "independentSources": ["新华社"],
+    }
+    service._review_ai_if_due([{**base, "id": "first", "title": "央行发布利率决议"}])
+    clock[0] += __import__("datetime").timedelta(minutes=20)
+    service._review_ai_if_due([{**base, "id": "second", "title": "监管部门发布资本市场新规"}])
+
+    assert service._read(service.ai_file)["_meta"]["candidateCount"] == 2
+
+
 def test_glm_refinement_rejects_ungrounded_numbers_and_prompt_instructions(tmp_path, monkeypatch):
     import chat
     import glm_config
@@ -351,6 +550,46 @@ def test_financial_news_endpoints_expose_overview_feed_detail_and_status(monkeyp
     assert client.get("/api/finance/news/feed?category=all&limit=20").status_code == 200
     assert client.get("/api/finance/news/events/event-1").json()["data"]["id"] == "event-1"
     assert client.get("/api/finance/news/status").json()["data"]["quickIntervalSeconds"] == 180
+
+
+def test_financial_news_manual_refresh_returns_latest_shared_snapshot(monkeypatch):
+    refreshed = {
+        "refreshing": True, "outcome": "started",
+    }
+    calls = []
+    monkeypatch.setattr(app.financial_news_service, "request_refresh", lambda: calls.append("refresh") or refreshed)
+
+    response = TestClient(app.app).post("/api/finance/news/refresh")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == refreshed
+    assert calls == ["refresh"]
+
+
+def test_manual_refresh_returns_immediately_and_coalesces_concurrent_requests(tmp_path, monkeypatch):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    service.save_payload({"generatedAt": NOW.isoformat(), "globalHighlights": []})
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def slow_refresh():
+        calls.append("refresh")
+        entered.set()
+        release.wait(2)
+        return service.overview()
+
+    monkeypatch.setattr(service, "refresh_all", slow_refresh)
+    first = service.request_refresh()
+    assert entered.wait(1)
+    second = service.request_refresh()
+
+    assert first["refreshing"] is True
+    assert second["refreshing"] is True
+    assert first["outcome"] == "started"
+    assert second["outcome"] == "already_running"
+    assert calls == ["refresh"]
+    release.set()
 
 
 def test_successive_quick_refreshes_accumulate_a_rolling_event_library(tmp_path, monkeypatch):

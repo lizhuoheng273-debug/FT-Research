@@ -14,6 +14,7 @@ def test_market_reads_need_identity_and_tools_are_scoped():
     assert "query_quote" in allowed_tools(Principal("g", "guest"))
     assert "query_portfolio" not in allowed_tools(Principal("g", "guest"))
     assert policy_for("POST", "/api/finance/news/calendar/refresh") == "authenticated"
+    assert policy_for("POST", "/api/finance/news/refresh") == "authenticated"
 
 
 def test_run_event_stream_requires_identity():

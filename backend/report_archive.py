@@ -34,6 +34,7 @@ class ReportArchive:
         generated_at: str | None = None,
         window_start: str | None = None,
         window_end: str | None = None,
+        overwrite: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "kind": "daily",
@@ -45,7 +46,14 @@ class ReportArchive:
             "items": items,
             "source": {"provider": "FT-Research AI 热点资讯"},
         }
-        return self._write_once(self._path("daily", period), payload)
+        path = self._path("daily", period)
+        if not overwrite:
+            return self._write_once(path, payload)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp.replace(path)
+        return payload
 
     def load_daily(self, period: str) -> dict[str, Any] | None:
         path = self._path("daily", period)

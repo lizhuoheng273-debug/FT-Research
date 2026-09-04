@@ -12,6 +12,10 @@ client = TestClient(app_module.app)
 def test_normalize_asset_code_keeps_index_namespace_separate():
     assert market_chart.normalize_asset_code("stock", "600519") == "600519"
     assert market_chart.normalize_asset_code("index", "000001") == "000001"
+    assert market_chart.normalize_asset_code("index", "000680") == "000680"
+    assert market_chart.normalize_asset_code("index", "000688") == "000688"
+    assert market_chart.INDEX_CODES["000680"] == ("科创综指", "sh000680")
+    assert market_chart.INDEX_CODES["000688"] == ("科创50", "sh000688")
     with pytest.raises(ValueError):
         market_chart.normalize_asset_code("stock", "sh000001")
 

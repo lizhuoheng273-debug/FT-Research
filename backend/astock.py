@@ -110,11 +110,11 @@ def tencent_quote(codes: list[str]) -> dict[str, dict]:
 
 
 # A股大盘指数（前缀规则与个股不同，固定带前缀代码）
-A_INDICES = ["sh000001", "sz399001", "sz399006", "sh000300"]
+A_INDICES = ["sh000001", "sz399001", "sz399006", "sh000300", "sh000680", "sh000688"]
 
 
 def index_quote() -> list[dict]:
-    """A股大盘指数实时行情（上证/深证成指/创业板指/沪深300）。"""
+    """A股大盘指数实时行情（含科创综指与科创50）。"""
     parsed = _parse_gtimg(_fetch_gtimg(A_INDICES))
     out = []
     for full in A_INDICES:

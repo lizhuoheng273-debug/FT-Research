@@ -222,9 +222,15 @@ export interface MarketReviewIndex {
   code: string; name: string; price: number; change: number | null; changePct: number | null;
   source: string; updatedAt: string; stale: boolean;
 }
+export interface MarketChangeDistribution {
+  downOver10: number; down7To10: number; down5To7: number; down3To5: number; down0To3: number;
+  flat: number;
+  up0To3: number; up3To5: number; up5To7: number; up7To10: number; upOver10: number;
+}
 export interface MarketReviewBreadth {
   up: number | null; down: number | null; upRatio: number | null; downRatio: number | null;
   limitUp: number | null; limitDown: number | null;
+  distribution: MarketChangeDistribution | null;
 }
 export interface MarketReviewLiquidity {
   todayAmountYuan: number | null; previousAmountYuan: number | null;
@@ -281,6 +287,7 @@ export interface FinancialNewsItem extends FinancialNewsReport {
   relatedSourceCount: number; relatedSources: string[];
   relatedStocks: string[]; reports?: FinancialNewsReport[]; firstReportAt?: string;
   latestAt?: string; status?: string; aiDigest?: string; impactTags?: string[]; stale: boolean;
+  aiImportance?: number; aiRelatedEventIds?: string[];
   independentSourceCount?: number; independentSources?: string[]; sourceTimeline?: FinancialNewsSourceTimeline[];
   aShareImpactScore?: number; impactBreakdown?: FinancialNewsImpactBreakdown; impactReasons?: string[];
   marketEvidence?: FinancialNewsMarketEvidence; transmissionPath?: FinancialNewsTransmissionPath;
@@ -293,8 +300,15 @@ export interface FinancialNewsSourceStatus {
   count?: number; fetchedAt?: string; lastSuccessAt?: string | null; lastFailure?: string | null;
   cache?: "fresh" | "stale" | "missing"; error?: string;
 }
+export interface FinancialNewsAiReview {
+  status: string; reason: string; lastCheckedAt?: string | null; lastAiReviewAt?: string | null;
+  nextReviewAt?: string | null; candidateCount?: number; modelInvoked?: boolean;
+}
+export interface FinancialNewsRefreshResponse {
+  refreshing: boolean; outcome: "started" | "already_running";
+}
 export interface FinancialNewsOverview {
-  generatedAt: string | null; stale: boolean; urgent: FinancialNewsItem[];
+  generatedAt: string | null; stale: boolean; refreshing?: boolean; urgent: FinancialNewsItem[];
   staleComponents?: { quick: boolean; rss: boolean };
   freshness?: {
     quick?: { lastSuccessAt?: string | null; attemptedAt?: string | null };
@@ -303,15 +317,17 @@ export interface FinancialNewsOverview {
   hot: FinancialNewsItem[]; aShareHot?: FinancialNewsItem[]; candidates?: FinancialNewsItem[];
   globalObservation?: FinancialNewsItem[]; globalHighlights?: FinancialNewsItem[];
   feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
-  eventLibraryHours?: number;
+  eventLibraryHours?: number; aiReview?: FinancialNewsAiReview;
 }
 export interface FinancialNewsStatus {
   quickIntervalSeconds: number; rssIntervalSeconds: number; officialIntervalSeconds?: number;
+  aiReviewMinIntervalSeconds?: number; aiReviewSafetyIntervalSeconds?: number; aiReviewCoalesceSeconds?: number;
   eventLibraryHours?: number; generatedAt: string | null;
   stale: boolean; staleComponents?: { quick: boolean; rss: boolean };
   freshness?: FinancialNewsOverview["freshness"]; sources: FinancialNewsSourceStatus[]; sourceAttempts?: FinancialNewsSourceStatus[];
   sourceRegistry?: { total: number; valid: number; invalid: number; tiers: Record<string, number> };
   marketProbe?: { configured: boolean; recheckMinutes: number[] };
+  aiReview?: FinancialNewsAiReview;
 }
 export interface FinancialCalendarEvent {
   id: string; title: string; category: string; date: string; startsAt: string | null;
@@ -459,6 +475,7 @@ export const api = {
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
   financialNewsOverview: (signal?: AbortSignal) => request<FinancialNewsOverview>("/finance/news/overview", "GET", undefined, signal),
+  financialNewsRefresh: (signal?: AbortSignal) => request<FinancialNewsRefreshResponse>("/finance/news/refresh", "POST", undefined, signal),
   financialNewsCalendar: (signal?: AbortSignal) => request<FinancialCalendarResponse>("/finance/news/calendar", "GET", undefined, signal),
   financialNewsCalendarRefresh: (signal?: AbortSignal) => request<FinancialCalendarRefreshResponse>("/finance/news/calendar/refresh", "POST", undefined, signal),
   financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),

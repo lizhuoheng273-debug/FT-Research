@@ -42,3 +42,8 @@ test("workspace route target supports source identifiers without putting context
   assert.match(stockDetail, /\/finance\/ai\?source=stock&code=/);
   assert.doesNotMatch(stockDetail, /to=\{`\/finance\/stocks\/\$\{code\}\/ai`\}/);
 });
+
+test("index detail copy reflects all six supported review indices", () => {
+  assert.match(index, /支持六个主要 A 股指数/);
+  assert.doesNotMatch(index, /支持四个主要 A 股指数/);
+});

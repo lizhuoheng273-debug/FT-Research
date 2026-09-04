@@ -72,11 +72,72 @@ def test_parse_aihot_period_classes_and_relative_item_links():
 def test_report_endpoints_proxy_daily_and_period(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "report_archive", ReportArchive(tmp_path))
     app.report_archive.save_daily("2026-08-27", hot_topics=[{"rank": 1}], items=[])
-    monkeypatch.setattr(app.aihot_reports, "fetch_period", lambda kind, period: {"kind": kind, "period": period, "report": {"title": "周报"}, "stale": False})
+    monkeypatch.setattr(app.aihot_reports, "fetch_period", lambda kind, period, force=False: {"kind": kind, "period": period, "report": {"title": "周报"}, "stale": False})
     client = TestClient(app.app)
     assert client.get("/api/ai/reports/index?kind=daily").json()["items"][0]["period"] == "2026-08-27"
     assert client.get("/api/ai/reports/daily/2026-08-27").json()["report"]["kind"] == "daily"
     assert client.get("/api/ai/reports/weekly/2026-W34").json()["report"]["title"] == "周报"
+
+
+def test_period_report_route_forwards_explicit_refresh(monkeypatch):
+    calls = []
+
+    def fetch_period(kind, period, force=False):
+        calls.append((kind, period, force))
+        return {"kind": kind, "period": period, "report": {"title": "周报"}, "stale": False}
+
+    monkeypatch.setattr(app.aihot_reports, "fetch_period", fetch_period)
+    client = TestClient(app.app)
+
+    response = client.get("/api/ai/reports/weekly/2026-W34?refresh=true")
+
+    assert response.status_code == 200
+    assert calls == [("weekly", "2026-W34", True)]
+
+
+def test_period_client_prefers_cached_report_without_upstream_request(tmp_path, monkeypatch):
+    archive = ReportArchive(tmp_path)
+    cached = archive.save_period("weekly", "2026-W34", {"title": "已缓存周报", "themes": []})
+    client = AihotReportClient(archive=archive, base_url="https://example.test")
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("cached report should not request upstream")
+
+    monkeypatch.setattr(client._session, "get", unexpected_request)
+
+    assert client.fetch_period("weekly", "2026-W34") == cached
+
+
+def test_period_client_force_refreshes_cached_report(tmp_path, monkeypatch):
+    archive = ReportArchive(tmp_path)
+    archive.save_period("weekly", "2026-W34", {"title": "已缓存周报", "themes": []})
+    client = AihotReportClient(archive=archive, base_url="https://example.test")
+
+    class Response:
+        text = "<main><h1>远端周报</h1></main>"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(client._session, "get", lambda *args, **kwargs: Response())
+
+    refreshed = client.fetch_period("weekly", "2026-W34", force=True)
+
+    assert refreshed["report"]["title"] == "远端周报"
+    assert refreshed["stale"] is False
+
+
+def test_period_index_prefers_cached_periods_without_upstream_request(tmp_path, monkeypatch):
+    archive = ReportArchive(tmp_path)
+    archive.save_period("monthly", "2026-08", {"title": "已缓存月报", "themes": []})
+    client = AihotReportClient(archive=archive, base_url="https://example.test")
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("cached period index should not request upstream")
+
+    monkeypatch.setattr(client._session, "get", unexpected_request)
+
+    assert client.list_periods("monthly") == [{"kind": "monthly", "period": "2026-08", "title": "已缓存月报"}]
 
 
 def test_snapshot_previous_day_uses_shanghai_calendar_and_is_idempotent(tmp_path):
@@ -94,12 +155,94 @@ def test_snapshot_previous_day_uses_shanghai_calendar_and_is_idempotent(tmp_path
     assert first["hotTopics"][0]["storyId"] == "story-1"
 
 
+def test_snapshot_previous_day_enriches_every_topic_with_a_real_story_summary(tmp_path):
+    class Client:
+        def items(self, **_):
+            return {
+                "items": [
+                    {
+                        "id": "event-1",
+                        "title": "事件一",
+                        "summary": "精选资讯中的摘要",
+                        "links": {"story": "https://aihot/story/story-1"},
+                    }
+                ]
+            }
+
+        def hot_topics(self, **_):
+            return {
+                "items": [
+                    {"rank": 1, "id": "event-1", "title": "事件一", "links": {"story": "https://aihot/story/story-1"}},
+                    {"rank": 2, "id": "event-2", "title": "事件二", "links": {"story": "https://aihot/story/story-2"}},
+                ]
+            }
+
+        def daily(self, _period):
+            return {"report": {"sections": []}}
+
+        def story(self, public_id):
+            assert public_id == "story-2"
+            return {
+                "story": {
+                    "latest": "事件二的最新进展",
+                    "digest": "事件二的长篇综合摘要",
+                    "reports": [],
+                }
+            }
+
+    archive = ReportArchive(tmp_path)
+    now = datetime.fromisoformat("2026-08-28T08:00:00+08:00")
+
+    report = snapshot_previous_day(archive, Client(), now)
+
+    assert [topic["summary"] for topic in report["hotTopics"]] == [
+        "精选资讯中的摘要",
+        "事件二的最新进展",
+    ]
+
+
+def test_snapshot_previous_day_repairs_an_existing_incomplete_snapshot(tmp_path):
+    class Client:
+        def daily(self, _period):
+            return {
+                "report": {
+                    "sections": [
+                        {
+                            "items": [
+                                {
+                                    "title": "事件一",
+                                    "summary": "日报中的真实摘要",
+                                    "links": {"aihot": "https://aihot.virxact.com/items/event-1"},
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+
+        def story(self, _public_id):
+            raise AssertionError("daily report summary should avoid a story request")
+
+    archive = ReportArchive(tmp_path)
+    archive.save_daily(
+        "2026-08-27",
+        hot_topics=[{"rank": 1, "id": "event-1", "title": "事件一", "storyId": "story-1"}],
+        items=[],
+    )
+    now = datetime.fromisoformat("2026-08-28T08:00:00+08:00")
+
+    repaired = snapshot_previous_day(archive, Client(), now)
+
+    assert repaired["hotTopics"][0]["summary"] == "日报中的真实摘要"
+    assert archive.load_daily("2026-08-27")["hotTopics"][0]["summary"] == "日报中的真实摘要"
+
+
 def test_period_fetch_uses_cached_report_when_upstream_fails(tmp_path, monkeypatch):
     archive = ReportArchive(tmp_path)
     archive.save_period("weekly", "2026-W34", {"title": "已缓存周报", "themes": []})
     client = AihotReportClient(archive=archive, base_url="https://example.test")
     monkeypatch.setattr(client._session, "get", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
-    cached = client.fetch_period("weekly", "2026-W34")
+    cached = client.fetch_period("weekly", "2026-W34", force=True)
     assert cached["report"]["title"] == "已缓存周报"
     assert cached["stale"] is True
 
