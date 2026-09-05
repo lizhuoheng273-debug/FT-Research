@@ -23,7 +23,7 @@ _OWNER_EXACT = {
 _OWNER_PREFIXES = ("/api/myreports/file/", "/api/myreports/", "/api/portfolio/")
 
 _MARKET_READ = {
-    "/api/indices", "/api/quote", "/api/valuation", "/api/valuation/percentile", "/api/financials",
+    "/api/indices", "/api/quote", "/api/stock/search", "/api/valuation", "/api/valuation/percentile", "/api/financials",
     "/api/announcements", "/api/reports", "/api/news", "/api/info", "/api/disclosure", "/api/kline",
     "/api/market/chart", "/api/finance", "/api/margin", "/api/block-trade", "/api/holders", "/api/dividend",
     "/api/fund-flow", "/api/dragon-tiger", "/api/lockup", "/api/blocks", "/api/hot-concepts",

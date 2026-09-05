@@ -105,7 +105,7 @@ def test_failed_new_attempt_preserves_prior_success(tmp_path):
     assert result["lastAttemptStatus"] == "unavailable"
 
 
-def test_scheduler_skips_before_close_and_non_trading_day(tmp_path):
+def test_scheduler_skips_before_close(tmp_path):
     service = MarketReviewBriefService(tmp_path, llm_call=lambda prompt: "简述")
     snapshot = complete_snapshot()
     scheduler = PostCloseReviewScheduler(
@@ -115,12 +115,22 @@ def test_scheduler_skips_before_close_and_non_trading_day(tmp_path):
     )
     assert scheduler.run_once()["status"] == "before_close"
 
+
+def test_scheduler_catches_up_previous_trading_day_on_weekend(tmp_path):
+    calls = []
+    service = MarketReviewBriefService(tmp_path, llm_call=lambda prompt: calls.append(prompt) or "周五盘后简述")
+    snapshot = {**complete_snapshot(), "tradingDate": "2026-09-04", "generatedAt": "2026-09-04T16:00:00+08:00"}
     weekend = PostCloseReviewScheduler(
         snapshot_service=type("Snapshot", (), {"get_review": lambda self, force=False: snapshot})(),
         brief_service=service,
         now_fn=lambda: datetime(2026, 9, 5, 16, 0, tzinfo=market_review.BEIJING),
     )
-    assert weekend.run_once()["status"] == "non_trading_day"
+
+    result = weekend.run_once()
+
+    assert result["status"] == "generated"
+    assert result["text"] == "周五盘后简述"
+    assert len(calls) == 1
 
 
 def test_scheduler_runs_after_close_and_is_safe_to_repeat(tmp_path):

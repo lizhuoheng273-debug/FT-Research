@@ -30,11 +30,16 @@ class PostCloseReviewScheduler:
 
     def run_once(self) -> dict[str, Any]:
         now = _ensure_beijing(self.now_fn())
-        if not self.trading_day_fn(now.date()):
-            return {"status": "non_trading_day"}
-        if (now.hour, now.minute) < (15, 30):
-            return {"status": "before_close"}
         snapshot = self.snapshot_service.get_review()
+        try:
+            snapshot_date = date.fromisoformat(str(snapshot.get("tradingDate") or ""))
+        except ValueError:
+            snapshot_date = now.date()
+        if snapshot_date == now.date():
+            if not self.trading_day_fn(now.date()):
+                return {"status": "non_trading_day"}
+            if (now.hour, now.minute) < (15, 30):
+                return {"status": "before_close"}
         if not brief_ready(snapshot):
             return {"status": "missing", "brief": {"status": "missing"}}
         result = self.brief_service.generate(snapshot)
