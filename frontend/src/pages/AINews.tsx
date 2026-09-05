@@ -35,6 +35,7 @@ export function AINews() {
   const [rssSources, setRssSources] = useState<RssSource[]>([]);
   const [rssLoading, setRssLoading] = useState(true);
   const [rssError, setRssError] = useState<string | null>(null);
+  const [rssBulkRefreshing, setRssBulkRefreshing] = useState(false);
   const [refreshingIds, setRefreshingIds] = useState<string[]>([]);
   const [refreshMessages, setRefreshMessages] = useState<Record<string, string>>({});
   const activeLoad = useRef<AbortController | null>(null);
@@ -78,7 +79,10 @@ export function AINews() {
       try {
         const customUrls = readRssSubscriptionState().custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
         const rssBody = await read(`/ai/rss/sources${customUrls ? `?${customUrls}` : ""}`);
-        if (isCurrent()) setRssSources((current) => mergeRssSources(current, (rssBody.sources || []) as RssSource[]));
+        if (isCurrent()) {
+          setRssSources((current) => mergeRssSources(current, (rssBody.sources || []) as RssSource[]));
+          setRssBulkRefreshing(Boolean(rssBody.refreshing));
+        }
       } catch (e) { if (isCurrent()) setRssError(message(e, "媒体订阅暂不可用")); }
       finally { if (isCurrent()) setRssLoading(false); }
     };
@@ -118,6 +122,42 @@ export function AINews() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!rssBulkRefreshing) return;
+    const controller = new AbortController();
+    const poll = async () => {
+      try {
+        const customUrls = readRssSubscriptionState().custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
+        const response = await fetch(apiUrl(`/ai/rss/sources${customUrls ? `?${customUrls}` : ""}`), { headers: authHeaders(), signal: controller.signal });
+        const rssBody = await response.json();
+        if (!response.ok) throw new Error(rssBody.detail || `HTTP ${response.status}`);
+        if (!mounted.current) return;
+        setRssSources((current) => mergeRssSources(current, (rssBody.sources || []) as RssSource[]));
+        setRssBulkRefreshing(Boolean(rssBody.refreshing));
+      } catch (error) {
+        if (!controller.signal.aborted && mounted.current) setRssError(error instanceof Error ? error.message : "RSS 状态更新失败");
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 2000);
+    return () => { window.clearInterval(timer); controller.abort(); };
+  }, [rssBulkRefreshing]);
+
+  const refreshAll = async () => {
+    if (loading || rssLoading || rssBulkRefreshing) return;
+    setRssBulkRefreshing(true);
+    setRssError(null);
+    try {
+      const response = await fetch(apiUrl("/ai/rss/refresh-all"), { method:"POST", headers:authHeaders("POST") });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+      setRssBulkRefreshing(Boolean(body.refreshing));
+      await load();
+    } catch (error) {
+      setRssBulkRefreshing(false);
+      setRssError(error instanceof Error ? error.message : "RSS 批量刷新失败");
+    }
+  };
+
   const refreshSource = async (source: RssSource) => {
     const refresher = rssRefresher.current;
     if (!refresher || refresher.isRefreshing(source.id)) return;
@@ -140,7 +180,7 @@ export function AINews() {
   });
 
   return <div>
-    <PageHeader title="AI 热点资讯" subtitle="先看热点榜，再阅读我订阅的科技媒体" actions={<div className="flex items-center gap-2"><AskAiButton context={context || "暂无 AI 热点资讯"} workspaceSource="ai-news" label="AI 摘要与追问" suggestions={["今天最重要的三件事是什么？", "这些热点有哪些共同趋势？"]} /><button onClick={() => void load()} className="rounded-lg border border-border px-3 py-1.5 text-sm"><RefreshCw className="mr-1 inline h-4 w-4" />刷新</button></div>} />
+    <PageHeader title="AI 热点资讯" subtitle="先看热点榜，再阅读我订阅的科技媒体" actions={<div className="flex items-center gap-2"><AskAiButton context={context || "暂无 AI 热点资讯"} workspaceSource="ai-news" label="AI 摘要与追问" suggestions={["今天最重要的三件事是什么？", "这些热点有哪些共同趋势？"]} /><button type="button" onClick={() => void refreshAll()} disabled={loading || rssLoading || rssBulkRefreshing} aria-busy={loading || rssLoading || rssBulkRefreshing} aria-label={loading || rssLoading || rssBulkRefreshing ? "正在刷新 AI 热点资讯及全部 RSS" : "刷新 AI 热点资讯及全部 RSS"} className="rounded-lg border border-border px-3 py-1.5 text-sm disabled:opacity-50"><RefreshCw className={`mr-1 inline h-4 w-4 ${(loading || rssLoading || rssBulkRefreshing) ? "animate-spin" : ""}`} />{loading || rssLoading || rssBulkRefreshing ? "刷新中…" : "刷新"}</button></div>} />
     {stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">AI HOT 暂时不可用，当前显示本地缓存。</p>}
     {error && <p className="mb-3 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
     <AIHotFeed topics={topics} items={items} loading={loading} onOpenStory={openStory} showEvents={false} />

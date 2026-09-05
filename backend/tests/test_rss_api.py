@@ -86,6 +86,30 @@ def test_rss_refresh_reports_private_redirect_as_security_failure(monkeypatch, t
     assert response.json()["source"]["errorCode"] == "security"
 
 
+def test_authenticated_guest_can_start_whitelisted_bulk_rss_refresh(monkeypatch):
+    expected = {"refreshing": True, "outcome": "started"}
+    monkeypatch.setattr(app.rss_catalog, "request_refresh_builtins", lambda: expected)
+    client = TestClient(app.app)
+    guest = client.post("/api/auth/guest").json()
+
+    response = client.post(
+        "/api/ai/rss/refresh-all",
+        headers={"Authorization": f"Bearer {guest['token']}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+def test_rss_sources_exposes_bulk_refresh_progress(monkeypatch):
+    monkeypatch.setattr(app.rss_catalog, "sources", lambda urls=None: [])
+    monkeypatch.setattr(app.rss_catalog, "is_refreshing_builtins", lambda: True)
+
+    response = TestClient(app.app).get("/api/ai/rss/sources")
+
+    assert response.json() == {"sources": [], "refreshing": True}
+
+
 def test_concurrent_same_source_refresh_is_cooled_before_a_second_fetch(monkeypatch):
     import threading
     import time

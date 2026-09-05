@@ -130,7 +130,7 @@ def _check_base_url(url: str) -> None:
                 raise RuntimeError("Base URL 解析到了不允许的内网地址")
 
 
-def _call_llm(cfg: dict, messages: list, use_tools: bool) -> dict:
+def _call_llm(cfg: dict, messages: list, use_tools: bool, *, timeout_seconds: int = 90) -> dict:
     _check_base_url(cfg.get("baseURL", ""))
     base = cfg["baseURL"].rstrip("/")
     if not base.endswith(("/v1", "/v3", "/api/v3", "/v4")):
@@ -144,7 +144,7 @@ def _call_llm(cfg: dict, messages: list, use_tools: bool) -> dict:
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {cfg['apiKey']}", "Content-Type": "application/json"},
         json=payload,
-        timeout=90,
+        timeout=timeout_seconds,
     )
     if r.status_code != 200:
         status = r.status_code

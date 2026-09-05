@@ -256,7 +256,13 @@ def ai_rss_sources(urls: list[str] = Query(default=[])):
     The URL list is only a cache lookup hint from the visitor's browser; it is
     not persisted as a server-side subscription relationship.
     """
-    return {"sources": rss_catalog.sources(urls)}
+    return {"sources": rss_catalog.sources(urls), "refreshing": rss_catalog.is_refreshing_builtins()}
+
+
+@app.post("/api/ai/rss/refresh-all")
+def ai_rss_refresh_all():
+    """Refresh only the fixed built-in RSS allowlist in the background."""
+    return rss_catalog.request_refresh_builtins()
 
 
 @app.post("/api/ai/rss/resolve")
@@ -966,10 +972,11 @@ def market_chart_endpoint(
     code: str = Query(...),
     period: str = Query(...),
     adjust: str = Query("qfq"),
+    refresh: bool = Query(False),
 ):
     """股票 / 指数详情页统一 OHLCV 图表接口。"""
     try:
-        return market_chart.get_chart(asset, code, period, adjust)
+        return market_chart.get_chart(asset, code, period, adjust, force=refresh)
     except market_chart.ChartUnavailable as e:
         raise HTTPException(503, f"行情暂不可用，请稍后重试：{e}") from e
     except ValueError as e:

@@ -92,7 +92,7 @@ function IndexCarousel({ indices, loading, onRefresh }: { indices: MarketReviewI
     <div className="mb-3 flex items-center justify-between gap-3">
       <h3 className="text-sm font-semibold text-muted-foreground">大盘指数</h3>
       <div className="flex items-center gap-1">
-        {onRefresh && <button type="button" onClick={onRefresh} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-primary" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button>}
+        {onRefresh && <button type="button" onClick={onRefresh} disabled={loading} aria-busy={loading} aria-label={loading ? "正在刷新大盘指数" : "刷新大盘指数"} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-primary disabled:opacity-50" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button>}
         <button type="button" onClick={() => scroll(-480)} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="向左查看更多指数"><ChevronLeft className="h-4 w-4" /></button>
         <button type="button" onClick={() => scroll(480)} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="向右查看更多指数"><ChevronRight className="h-4 w-4" /></button>
       </div>

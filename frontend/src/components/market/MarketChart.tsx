@@ -96,12 +96,12 @@ export function MarketChart({ asset, code, onData }: Props) {
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
   const requestIdRef = useRef(0);
 
-  const load = async (reset = false) => {
+  const load = async (reset = false, force = false) => {
     const requestId = ++requestIdRef.current;
     if (reset) { setData(null); onData?.(null); }
     setLoading(true); setError(null);
     try {
-      const next = await api.marketChart(asset, code, period);
+      const next = await api.marketChart(asset, code, period, "qfq", force);
       if (requestId !== requestIdRef.current) return;
       setData(next); onData?.(next);
     } catch (reason) {
@@ -142,7 +142,7 @@ export function MarketChart({ asset, code, onData }: Props) {
           setPeriod(item.key);
         }} className={cn("rounded-md px-3 py-1.5 text-xs", period === item.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>{item.label}</button>)}
       </div>
-      <button onClick={() => void load()} disabled={loading} className="rounded-md p-2 text-muted-foreground hover:text-primary" title="刷新图表"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button>
+      <button type="button" onClick={() => void load(false, true)} disabled={loading} aria-busy={loading} aria-label={loading ? "正在刷新图表" : "刷新图表"} className="rounded-md p-2 text-muted-foreground hover:text-primary disabled:opacity-50" title="刷新图表"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button>
     </div>
     {data?.stale && <p className="mt-2 text-xs text-warning">当前为最近一次真实行情缓存，可能已过期。</p>}
     {error && <p className="mt-3 flex items-center gap-1 text-xs text-warning"><AlertCircle className="h-3.5 w-3.5" />{error} · 可点击刷新重试</p>}

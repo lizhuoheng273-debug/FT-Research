@@ -24,6 +24,7 @@ function mount(api){
       };
       if(name==='react/jsx-runtime')return{jsx:(type,props)=>({type,props}),jsxs:(type,props)=>({type,props})};
       if(name==='@/lib/api')return{api};
+      if(name==='react-router-dom')return{useNavigate:()=>()=>{}};
       return new Proxy({},{get:(_,key)=>key});
     },
   });
@@ -61,7 +62,7 @@ test('calendar renders independently while headlines are pending, without watchl
   app.unmount();assert.equal(signal.aborted,true);
 });
 test('a timed out calendar exits loading and leaves the hot list available',async()=>{
-  const app=mount({financialNewsOverview:()=>Promise.resolve({globalHighlights:[{id:'news'}]}),financialNewsCalendar:signal=>new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new Error('aborted'))))});
+  const app=mount({financialNewsOverview:()=>Promise.resolve({hotRank:[{id:'news'}]}),financialNewsCalendar:signal=>new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new Error('aborted'))))});
   await flush();app.expire();await flush();
   assert.equal(app.component('GlobalHotList').items[0].id,'news');
   assert.equal(app.component('UpcomingEvents').loading,false);
@@ -71,8 +72,17 @@ test('a timed out calendar exits loading and leaves the hot list available',asyn
 test('late responses after unmount cannot update the prior page',async()=>{
   let resolve;
   const app=mount({financialNewsOverview:()=>new Promise(r=>{resolve=r;}),financialNewsCalendar:()=>Promise.resolve({items:[]})});
-  await flush();app.unmount();resolve({globalHighlights:[{id:'late'}]});await flush();
+  await flush();app.unmount();resolve({hotRank:[{id:'late'}]});await flush();
   assert.equal(app.component('GlobalHotList').items.length,0);
+});
+test('financial highlights remain visible when the platform hot list is unavailable',async()=>{
+  const fallback={id:'fallback',title:'备用精选',source:'财联社',originalUrl:'https://www.cls.cn/fallback',publishedAt:'2026-09-05T01:00:00Z',stale:true};
+  const app=mount({financialNewsOverview:()=>Promise.resolve({hotRank:[],globalHighlights:[fallback],hotRankSourceStatus:[{source:'同花顺',ok:false,cache:'stale'}]}),financialNewsCalendar:()=>Promise.resolve({items:[]})});
+  await flush();
+  const list=app.component('GlobalHotList');
+  assert.equal(list.items[0].id,'fallback');
+  assert.equal(list.items[0].stale,true);
+  app.unmount();
 });
 test('refresh button refreshes news and calendar and exposes visible progress',async()=>{
   let finishNews, finishCalendar, newsCalls=0, calendarCalls=0;

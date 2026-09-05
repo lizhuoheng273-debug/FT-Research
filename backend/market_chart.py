@@ -365,7 +365,7 @@ def _quote(points: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def get_chart(asset: str, code: str, period: str, adjust: str = "qfq", count: int = 60) -> dict[str, Any]:
+def get_chart(asset: str, code: str, period: str, adjust: str = "qfq", count: int = 60, *, force: bool = False) -> dict[str, Any]:
     code = normalize_asset_code(asset, code)
     if period not in PERIODS:
         raise ValueError("period 不受支持")
@@ -375,9 +375,10 @@ def get_chart(asset: str, code: str, period: str, adjust: str = "qfq", count: in
     key = (asset, code, period, adjust, count)
     legacy_key = (asset, code, period, adjust)
     now = time.time()
-    cached = _CACHE.get(key) or _CACHE.get(legacy_key)
-    if cached and now - cached[0] < cache_ttl(period):
-        _CACHE.move_to_end(key)
+    cached_key = key if key in _CACHE else legacy_key
+    cached = _CACHE.get(cached_key)
+    if cached and not force and now - cached[0] < cache_ttl(period):
+        _CACHE.move_to_end(cached_key)
         return cached[1]
     try:
         fetched = _fetch_from_akshare(asset, code, period, adjust, count)
@@ -394,9 +395,9 @@ def get_chart(asset: str, code: str, period: str, adjust: str = "qfq", count: in
         if cached and now - cached[0] <= STALE_MAX_AGE:
             payload = dict(cached[1])
             payload["stale"] = True
-            _CACHE.move_to_end(key)
+            _CACHE.move_to_end(cached_key)
             return payload
-        _CACHE.pop(key, None)
+        _CACHE.pop(cached_key, None)
         raise ChartUnavailable(str(exc)) from exc
     name = INDEX_CODES[code][0] if asset == "index" else code
     payload = {

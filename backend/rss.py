@@ -395,6 +395,7 @@ class RssCatalog:
         self._source_locks_lock = threading.Lock()
         self._source_locks: dict[str, threading.Lock] = {}
         self._refresh_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REFRESHES)
+        self._bulk_refresh_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -583,6 +584,25 @@ class RssCatalog:
     def refresh_builtins(self) -> list[dict[str, object]]:
         with ThreadPoolExecutor(max_workers=4) as executor:
             return list(executor.map(self.refresh, self.source_defs))
+
+    def is_refreshing_builtins(self) -> bool:
+        return self._bulk_refresh_lock.locked()
+
+    def request_refresh_builtins(self) -> dict[str, object]:
+        """Start one coalesced refresh of the fixed built-in feed allowlist."""
+        started = self._bulk_refresh_lock.acquire(blocking=False)
+        if started:
+            def run() -> None:
+                try:
+                    self.refresh_builtins()
+                finally:
+                    self._bulk_refresh_lock.release()
+
+            threading.Thread(target=run, name="rss-bulk-refresh", daemon=True).start()
+        return {
+            "refreshing": self.is_refreshing_builtins(),
+            "outcome": "started" if started else "already_running",
+        }
 
     def start_scheduler(self, interval: int = 1800) -> None:
         if self._thread and self._thread.is_alive():

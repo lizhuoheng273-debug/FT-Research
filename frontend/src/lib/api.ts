@@ -42,9 +42,9 @@ export function saveAccessKey(key: string) {
   }
 }
 
-export function authHeaders(): Record<string, string> {
+export function authHeaders(method = "GET"): Record<string, string> {
   const k = loadAccessKey();
-  return { ...sessionAuthHeaders("GET"), ...(k ? { Authorization: `Bearer ${k}` } : {}) };
+  return { ...sessionAuthHeaders(method), ...(k ? { Authorization: `Bearer ${k}` } : {}) };
 }
 
 export interface MyReport {
@@ -304,6 +304,17 @@ export interface FinancialNewsAiReview {
   status: string; reason: string; lastCheckedAt?: string | null; lastAiReviewAt?: string | null;
   nextReviewAt?: string | null; candidateCount?: number; modelInvoked?: boolean;
 }
+export interface FinancialHotRankPlacement {
+  sourceId: "cls" | "sina" | "ths" | "eastmoney" | string;
+  sourceName: string; listKind: "popularity" | "editorial"; sourceRank: number;
+  title?: string; summary?: string; publishedAt?: string | null; originalUrl: string; fetchedAt?: string;
+}
+export interface FinancialHotRankItem {
+  id: string; rank: number; title: string; platformCount: number; rankScore: number;
+  bestSourceRank: number; publishedAt: string | null; originalUrl?: string;
+  placements: FinancialHotRankPlacement[]; aiDigest?: string;
+  aiDigestStatus: "ready" | "pending" | "unavailable"; stale: boolean;
+}
 export interface FinancialNewsRefreshResponse {
   refreshing: boolean; outcome: "started" | "already_running";
 }
@@ -318,6 +329,8 @@ export interface FinancialNewsOverview {
   globalObservation?: FinancialNewsItem[]; globalHighlights?: FinancialNewsItem[];
   feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
   eventLibraryHours?: number; aiReview?: FinancialNewsAiReview;
+  hotRank?: FinancialHotRankItem[]; hotRankGeneratedAt?: string | null;
+  hotRankSourceStatus?: FinancialNewsSourceStatus[];
 }
 export interface FinancialNewsStatus {
   quickIntervalSeconds: number; rssIntervalSeconds: number; officialIntervalSeconds?: number;
@@ -479,7 +492,7 @@ export const api = {
   financialNewsCalendar: (signal?: AbortSignal) => request<FinancialCalendarResponse>("/finance/news/calendar", "GET", undefined, signal),
   financialNewsCalendarRefresh: (signal?: AbortSignal) => request<FinancialCalendarRefreshResponse>("/finance/news/calendar/refresh", "POST", undefined, signal),
   financialNewsFeed: (category = "all", limit = 60) => get<FinancialNewsItem[]>(`/finance/news/feed?category=${encodeURIComponent(category)}&limit=${limit}`),
-  financialNewsEvent: (eventId: string) => get<FinancialNewsItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
+  financialNewsEvent: (eventId: string) => get<FinancialNewsItem | FinancialHotRankItem>(`/finance/news/events/${encodeURIComponent(eventId)}`),
   financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),
   financialNewsFollowing: (codes: string[], page = 1, pageSize = 20, signal?: AbortSignal) =>
     request<FinancialNewsFollowingResponse>("/finance/news/following", "POST", { codes, page, pageSize }, signal),
@@ -500,8 +513,8 @@ export const api = {
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),
   companyInfo: (code: string) => get<CompanyProfile>(`/info?code=${code}`),
   quote: (codes: string) => get<Record<string, Quote>>(`/quote?codes=${codes}`),
-  marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq") =>
-    get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}`),
+  marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq", force = false) =>
+    get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}${force ? "&refresh=true" : ""}`),
   reports: (code: string) => get<Report[]>(`/reports?code=${code}`),
   news: (code: string) => get<NewsItem[]>(`/news?code=${code}`),
   margin: (code: string) => get<MarginRow[]>(`/margin?code=${code}`),

@@ -26,6 +26,177 @@ def _item(**overrides):
     return item
 
 
+def test_overview_exposes_platform_hot_rank_and_event_detail(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    ranked = {
+        "id": "ranked-1", "rank": 1, "title": "多平台财经热点", "platformCount": 3,
+        "rankScore": 27, "bestSourceRank": 1, "publishedAt": NOW.isoformat(),
+        "originalUrl": "https://example.test/hot", "placements": [],
+        "aiDigestStatus": "pending", "stale": False,
+    }
+    service.hotlist._write({
+        "generatedAt": NOW.isoformat(),
+        "sources": {"cls": {"entries": [{
+            "sourceId": "cls", "sourceName": "财联社", "listKind": "popularity",
+            "sourceRank": 1, "title": ranked["title"], "originalUrl": ranked["originalUrl"],
+            "fetchedAt": NOW.isoformat(), "publishedAt": NOW.isoformat(),
+        }], "lastSuccessAt": NOW.isoformat(), "lastAttemptAt": NOW.isoformat()}},
+    })
+
+    overview = service.overview()
+    event = service.event(overview["hotRank"][0]["id"])
+
+    assert overview["hotRankGeneratedAt"] == NOW.isoformat()
+    assert overview["hotRank"][0]["title"] == "多平台财经热点"
+    assert event["placements"][0]["sourceName"] == "财联社"
+
+
+def test_refresh_hotlists_keeps_existing_financial_news_snapshot(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    service.save_payload({"generatedAt": NOW.isoformat(), "feed": [_item()], "globalHighlights": [_item()]})
+    service.hotlist.fetch_fn = lambda source_id: [{
+        "sourceId": source_id, "sourceName": source_id, "listKind": "popularity",
+        "sourceRank": 1, "title": "央行发布重要货币政策", "originalUrl": f"https://{source_id}.test/policy",
+        "fetchedAt": NOW.isoformat(),
+    }]
+
+    result = service.refresh_hotlists(force=True)
+
+    assert result["hotRank"][0]["platformCount"] == 4
+    assert result["feed"][0]["id"] == "x"
+
+
+def test_manual_refresh_updates_platform_hotlist_before_slow_rss_pipeline(tmp_path, monkeypatch):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    order = []
+    monkeypatch.setattr(service, "refresh_hotlists", lambda force=False: order.append("hotlist"))
+    monkeypatch.setattr(service, "refresh_quick", lambda: order.append("quick"))
+    monkeypatch.setattr(service, "refresh_rss", lambda: order.append("rss"))
+    monkeypatch.setattr(service, "overview", lambda: {"visible": True})
+
+    result = service.refresh_all()
+
+    assert order == ["hotlist", "quick", "rss"]
+    assert result == {"visible": True}
+
+
+def test_hotlist_ai_digest_is_generated_once_per_event_content_hash(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    service.hotlist.fetch_fn = lambda source_id: [{
+        "sourceId": source_id, "sourceName": source_id, "listKind": "popularity",
+        "sourceRank": 1, "title": "OpenAI发布GPT-6模型，软件板块走强",
+        "summary": "多个财经平台将其列入热点榜。",
+        "originalUrl": f"https://{source_id}.test/gpt", "fetchedAt": NOW.isoformat(),
+    }]
+    calls = []
+    service.hotlist_digest_provider = lambda events: calls.append(events) or {
+        events[0]["id"]: "OpenAI发布GPT-6模型，多个财经平台同步关注，市场重点讨论其对软件、云服务和人工智能产业链的影响。"
+    }
+
+    service.refresh_hotlists(force=True)
+    service.wait_for_hotlist_digests()
+    first = service.overview()
+    service.refresh_hotlists(force=True)
+    service.wait_for_hotlist_digests()
+    second = service.overview()
+
+    assert first["hotRank"][0]["aiDigestStatus"] == "ready"
+    assert "OpenAI" in first["hotRank"][0]["aiDigest"]
+    assert second["hotRank"][0]["aiDigest"] == first["hotRank"][0]["aiDigest"]
+
+
+def test_hotlist_ai_failure_has_backoff_for_unchanged_events(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    service.hotlist.fetch_fn = lambda source_id: [{
+        "sourceId": source_id, "sourceName": "来源", "listKind": "editorial", "sourceRank": 1,
+        "title": "OpenAI发布GPT新模型", "summary": "模型发布", "publishedAt": NOW.isoformat(),
+        "originalUrl": f"https://{source_id}.test/story", "fetchedAt": NOW.isoformat(),
+    }]
+    calls = []
+    service.hotlist_digest_provider = lambda events: calls.append(events) or None
+
+    service.refresh_hotlists(force=True)
+    service.wait_for_hotlist_digests()
+    service.refresh_hotlists(force=True)
+    service.wait_for_hotlist_digests()
+
+    assert len(calls) == 1
+
+
+def test_partial_hotlist_ai_response_backs_off_only_missing_digests(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    events = [
+        {"id": "one", "eventDay": "2026-09-04", "placements": [{"sourceId": "ths", "title": "央行发布政策", "fetchedAt": NOW.isoformat(), "originalUrl": "https://news.10jqka.com.cn/one"}]},
+        {"id": "two", "eventDay": "2026-09-04", "placements": [{"sourceId": "sina", "title": "美联储发布利率决议", "fetchedAt": NOW.isoformat(), "originalUrl": "https://finance.sina.com.cn/two"}]},
+    ]
+    calls = []
+    service.hotlist_digest_provider = lambda requested: calls.append([event["id"] for event in requested]) or {"one": "央行公布最新政策，市场关注其对流动性与权益资产估值的影响。"}
+
+    service._apply_hotlist_digests(events)
+    service._apply_hotlist_digests(events)
+
+    assert calls == [["one", "two"]]
+    attached = service._attach_hotlist_digests(events)
+    assert attached[0]["aiDigestStatus"] == "ready"
+    assert attached[1]["aiDigestStatus"] == "unavailable"
+
+
+def test_hotlist_digest_fingerprint_ignores_refresh_time_but_changes_across_event_days():
+    base = {
+        "eventDay": "2026-09-04",
+        "placements": [{
+            "sourceId": "ths", "sourceRank": 1, "title": "央行发布政策", "summary": "政策摘要",
+            "originalUrl": "https://news.10jqka.com.cn/one", "fetchedAt": "2026-09-04T08:00:00+00:00",
+        }],
+    }
+    refreshed = {**base, "placements": [{**base["placements"][0], "fetchedAt": "2026-09-04T08:05:00+00:00"}]}
+    next_day = {**base, "eventDay": "2026-09-05"}
+
+    assert FinancialNewsService._hotlist_fingerprint(base) == FinancialNewsService._hotlist_fingerprint(refreshed)
+    assert FinancialNewsService._hotlist_fingerprint(base) != FinancialNewsService._hotlist_fingerprint(next_day)
+
+
+def test_hotlist_digest_batch_gets_a_background_only_extended_timeout(tmp_path, monkeypatch):
+    import chat
+    import glm_config
+
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    captured = {}
+    monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test", "baseURL": "https://example.com/v4", "model": "test"})
+    def fake_call(_config, _messages, use_tools, **kwargs):
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": '[{"id":"one","digest":"已核对原始报道的财经事件导读。"}]'}}]}
+    monkeypatch.setattr(chat, "_call_llm", fake_call)
+
+    result = service._generate_hotlist_digests([{"id": "one", "placements": []}])
+
+    assert result == {"one": "已核对原始报道的财经事件导读。"}
+    assert captured["timeout_seconds"] == 240
+
+
+def test_hotlist_refresh_returns_before_slow_digest_generation(tmp_path):
+    service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
+    service.hotlist.fetch_fn = lambda source_id: [{
+        "sourceId": source_id, "sourceName": source_id, "listKind": "popularity",
+        "sourceRank": 1, "title": "央行发布重要货币政策",
+        "originalUrl": f"https://{source_id}.test/policy", "fetchedAt": NOW.isoformat(),
+    }]
+    entered = threading.Event()
+    release = threading.Event()
+    def slow_digest(_events):
+        entered.set()
+        release.wait(2)
+        return None
+    service.hotlist_digest_provider = slow_digest
+
+    result = service.refresh_hotlists(force=True)
+
+    assert result["hotRank"]
+    assert entered.wait(1)
+    release.set()
+    service.wait_for_hotlist_digests()
+
+
 def test_urgency_score_is_quantified_and_explainable():
     score, reasons = urgency_score(_item(), now=NOW, related_source_count=3)
     assert score == 100

@@ -5,7 +5,7 @@ import { AiConversation } from "@/components/ai/AiConversation";
 import { ConversationRail } from "@/components/ai/ConversationRail";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { useAiChatSession } from "@/hooks/useAiChatSession";
-import { api, type AiStatus, type FinancialCalendarResponse, type FinancialNewsItem, type FinancialNewsOverview, type MarketReview, type Quote } from "@/lib/api";
+import { api, type AiStatus, type FinancialCalendarResponse, type FinancialHotRankItem, type FinancialNewsItem, type FinancialNewsOverview, type MarketReview, type Quote } from "@/lib/api";
 import { buildFinanceAiKey, type FinanceAiSource } from "@/lib/financeAi";
 import { loadWatch } from "@/lib/watchlist";
 import { cn } from "@/lib/utils";
@@ -48,13 +48,15 @@ function buildContext(source: FinanceAiSource, payload: unknown, code: string, p
   }
   if (source === "news" ) {
     const data = payload as { overview?: FinancialNewsOverview; calendar?: FinancialCalendarResponse } | null;
-    const highlights = data?.overview?.globalHighlights || [];
+    const highlights = data?.overview?.hotRank || [];
     const upcoming = data?.calendar?.items || [];
-    return data ? [`来源：金融市场资讯`, `全球财经热点：${highlights.slice(0, 5).map((item) => `${item.displayTitle || item.title}（${item.independentSources?.join("、") || item.source} · ${item.latestAt || item.publishedAt || "日期缺失"}）`).join("；") || "暂无"}`, `未来重要事件（计划，非已发生事实）：${upcoming.map((item) => `${item.title}（${item.startsAt || item.date + ' 当地日期，时间待定'}；${item.source}；${item.originalUrl}）`).join("；") || "暂无已确认日程"}`, `日程完整性：${data.calendar?.partial ? "部分来源不可用，可能有遗漏" : "仅覆盖已接入的官方来源"}`].join("\n") : "金融资讯快照暂不可用。";
+    return data ? [`来源：金融市场资讯`, `全球财经热点：${highlights.slice(0, 5).map((item) => `${item.title}（${item.placements.map(row => row.sourceName).join("、")} · ${item.publishedAt || "日期缺失"}）`).join("；") || "暂无"}`, `未来重要事件（计划，非已发生事实）：${upcoming.map((item) => `${item.title}（${item.startsAt || item.date + ' 当地日期，时间待定'}；${item.source}；${item.originalUrl}）`).join("；") || "暂无已确认日程"}`, `日程完整性：${data.calendar?.partial ? "部分来源不可用，可能有遗漏" : "仅覆盖已接入的官方来源"}`].join("\n") : "金融资讯快照暂不可用。";
   }
   if (source === "news-story") {
-    const story = payload as FinancialNewsItem | null;
-    return story ? `来源：金融资讯事件\n事件：${story.title}\n摘要：${story.summary || "缺失"}\n来源：${story.source || "缺失"}\n事件编号：${eventId}` : `金融资讯事件 ${eventId} 暂不可用。`;
+    const story = payload as FinancialNewsItem | FinancialHotRankItem | null;
+    if (!story) return `金融资讯事件 ${eventId} 暂不可用。`;
+    if ("placements" in story) return `来源：财经热点榜\n事件：${story.title}\nAI导读：${story.aiDigest || "暂未生成"}\n上榜平台：${story.placements.map(item => `${item.sourceName}第${item.sourceRank}名`).join("、")}\n事件编号：${eventId}`;
+    return `来源：金融资讯事件\n事件：${story.title}\n摘要：${story.summary || "缺失"}\n来源：${story.source || "缺失"}\n事件编号：${eventId}`;
   }
   if (source === "index") {
     const index = payload as { name?: string; quote?: { price?: number; changePct?: number }; points?: unknown[] } | null;

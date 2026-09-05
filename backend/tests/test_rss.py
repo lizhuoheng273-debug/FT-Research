@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -314,6 +315,29 @@ def test_failure_preserves_content_and_health_across_catalog_restart(tmp_path):
     catalog.refresh(source)
     assert catalog.sources()[0]["error"] is None
     assert catalog.sources()[0]["stale"] is False
+
+
+def test_bulk_refresh_starts_in_background_and_coalesces_repeated_requests(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    catalog = rss.RssCatalog(cache_dir=tmp_path, validate_dns=False)
+    calls = []
+
+    def refresh_all():
+        calls.append("refresh")
+        started.set()
+        assert release.wait(1)
+        return []
+
+    catalog.refresh_builtins = refresh_all
+    first = catalog.request_refresh_builtins()
+    assert started.wait(1)
+    second = catalog.request_refresh_builtins()
+
+    assert first == {"refreshing": True, "outcome": "started"}
+    assert second == {"refreshing": True, "outcome": "already_running"}
+    assert calls == ["refresh"]
+    release.set()
 
 
 def test_single_source_recovers_from_timeout(tmp_path):

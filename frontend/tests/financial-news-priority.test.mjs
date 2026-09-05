@@ -14,7 +14,7 @@ test("financial news composes only the hot list and upcoming calendar", () => {
   for (const removed of ["紧要快讯", "A股热门事件榜", "全球观察", "全部资讯流", "全球市场", "GlobalMarketStrip", "financialNewsFollowing", "loadWatch"]) {
     assert.doesNotMatch(page, new RegExp(removed));
   }
-  assert.match(page, /globalHighlights/);
+  assert.match(page, /hotRank/);
   assert.match(page, /financialNewsCalendar/);
 });
 
@@ -24,11 +24,12 @@ test("news snapshot refresh cancels prior requests and has a finite deadline", (
   assert.match(page, /20000/);
 });
 
-test("financial event detail keeps original links and source evidence", () => {
+test("financial event detail leads with AI guide and keeps every platform original link", () => {
   assert.match(router, /\/finance\/news\/story\/:eventId/);
-  for (const label of ["原文链接暂缺", "原始来源", "相关报道时间线"]) assert.match(detail, new RegExp(label));
+  for (const label of ["AI 导读", "各平台原始报道", "AI 导读生成中"]) assert.match(detail, new RegExp(label));
   assert.match(detail, /safeHref/);
-  assert.match(detail, /sourceTimeline/);
+  assert.match(detail, /placements/);
+  for (const removed of ["A股传导路径", "紧要分依据", "热度分依据", "市场证据"]) assert.doesNotMatch(detail, new RegExp(removed));
 });
 
 test("frontend exposes global highlights and query-only following endpoints", () => {
@@ -39,7 +40,7 @@ test("frontend exposes global highlights and query-only following endpoints", ()
 });
 
 test("AI workspace uses global highlights and calendar context for finance news", () => {
-  assert.match(workspace, /globalHighlights/);
+  assert.match(workspace, /hotRank/);
   assert.match(workspace, /financialNewsCalendar/);
   assert.doesNotMatch(workspace, /financialNewsFollowing/);
   assert.doesNotMatch(workspace, /A股热门/);

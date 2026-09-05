@@ -43,8 +43,40 @@ def test_cache_hit_returns_fresh_data_without_upstream(monkeypatch):
     assert len(calls) == 1
 
 
+def test_force_refresh_bypasses_fresh_cache_and_fetches_upstream(monkeypatch):
+    market_chart.clear_cache()
+    calls = []
+    first_points = market_chart.fixture_points("index", "000001", "daily")
+    second_points = [{**first_points[-1], "close": first_points[-1]["close"] + 1}]
+
+    def fetch(*args, **kwargs):
+        calls.append(kwargs)
+        return ("fixture", first_points if len(calls) == 1 else second_points, first_points)
+
+    monkeypatch.setattr(market_chart, "_fetch_from_akshare", fetch)
+    first = market_chart.get_chart("index", "000001", "daily", "qfq")
+    refreshed = market_chart.get_chart("index", "000001", "daily", "qfq", force=True)
+
+    assert len(calls) == 2
+    assert refreshed["points"] == second_points
+    assert refreshed["stale"] is False
+
+
+def test_force_refresh_preserves_cached_chart_when_upstream_fails(monkeypatch):
+    market_chart.clear_cache()
+    points = market_chart.fixture_points("stock", "600519", "daily")
+    monkeypatch.setattr(market_chart, "_fetch_from_akshare", lambda *args, **kwargs: ("fixture", points, points))
+    cached = market_chart.get_chart("stock", "600519", "daily", "qfq")
+    monkeypatch.setattr(market_chart, "_fetch_from_akshare", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    fallback = market_chart.get_chart("stock", "600519", "daily", "qfq", force=True)
+
+    assert fallback["points"] == cached["points"]
+    assert fallback["stale"] is True
+
+
 def test_market_chart_endpoint_exposes_contract(monkeypatch):
-    monkeypatch.setattr(app_module.market_chart, "get_chart", lambda asset, code, period, adjust: {
+    monkeypatch.setattr(app_module.market_chart, "get_chart", lambda asset, code, period, adjust, *, force=False: {
         "asset": asset, "code": code, "name": "测试指数", "period": period, "adjust": adjust,
         "source": "fixture", "fetchedAt": "2026-08-28T07:00:00Z", "stale": True,
         "quote": {}, "points": [],
@@ -52,6 +84,22 @@ def test_market_chart_endpoint_exposes_contract(monkeypatch):
     response = client.get("/api/market/chart?asset=index&code=000001&period=daily&adjust=qfq")
     assert response.status_code == 200
     assert response.json()["asset"] == "index"
+
+
+def test_market_chart_endpoint_forwards_refresh_query_to_service(monkeypatch):
+    seen = {}
+
+    def fake_get_chart(asset, code, period, adjust, *, force=False):
+        seen["force"] = force
+        return {"asset": asset, "code": code, "name": "测试指数", "period": period, "adjust": adjust,
+                "source": "fixture", "fetchedAt": "2026-08-28T07:00:00Z", "stale": False,
+                "quote": {}, "points": []}
+
+    monkeypatch.setattr(app_module.market_chart, "get_chart", fake_get_chart)
+    response = client.get("/api/market/chart?asset=index&code=000001&period=daily&refresh=true")
+
+    assert response.status_code == 200
+    assert seen["force"] is True
 
 
 def test_market_chart_endpoint_rejects_non_supported_index(monkeypatch):
