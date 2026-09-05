@@ -252,11 +252,33 @@ def profit_forecast(code: str) -> list[dict]:
     return df.to_dict("records") if df is not None and not df.empty else []
 
 
+def _stock_news_timestamp(item: dict) -> float:
+    value = item.get("发布时间")
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            return float("-inf")
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return float("-inf")
+    try:
+        return parsed.timestamp()
+    except (OSError, OverflowError, ValueError):
+        return float("-inf")
+
+
 def stock_news(code: str, limit: int = 20) -> list[dict]:
     """个股新闻（东财）。"""
     ak = _akshare()
     df = ak.stock_news_em(symbol=code)
-    return df.head(limit).to_dict("records") if df is not None and not df.empty else []
+    if df is None or df.empty:
+        return []
+    rows = df.to_dict("records")
+    rows.sort(key=_stock_news_timestamp, reverse=True)
+    return rows[:limit]
 
 
 _A_STOCK_UNIVERSE_TTL = 6 * 60 * 60
