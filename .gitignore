@@ -39,6 +39,7 @@ portfolio/
 myreports/
 
 # ── 编辑器 / 系统 / 工具 ──────────────────────────────────────────
+.worktrees/
 **/.claude/
 .DS_Store
 *.log
