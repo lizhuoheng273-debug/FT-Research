@@ -67,7 +67,7 @@ def test_brief_routes_same_market_framework_as_ask_ai(tmp_path, monkeypatch):
     def run(cfg, messages, context="", analysis_scope="general"):
         calls.append((messages, context, analysis_scope))
         return {"content": "今天缩量回落。"}
-    monkeypatch.setattr(chat, "run_chat", run)
+    monkeypatch.setattr(chat, "run_chat_context_only", run)
     service = MarketReviewBriefService(tmp_path, config_loader=lambda: {"apiKey": "test"})
     service.generate(complete_snapshot())
     messages, context, scope = calls[0]

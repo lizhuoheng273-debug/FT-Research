@@ -192,6 +192,19 @@ def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: 
     return {"content": data["choices"][0]["message"].get("content") or "", "trace": trace, "rounds": MAX_ROUNDS}
 
 
+def run_chat_context_only(
+    cfg: dict,
+    user_messages: list,
+    context: str = "",
+    analysis_scope: research_framework.AnalysisScope = "general",
+) -> dict:
+    """Answer from supplied context without exposing data tools to the model."""
+    messages = [{"role": "system", "content": build_system_prompt(context, analysis_scope, user_messages)}]
+    messages.extend(user_messages)
+    data = _call_llm(cfg, messages, use_tools=False, timeout_seconds=45)
+    return {"content": data["choices"][0]["message"].get("content") or "", "trace": [], "rounds": 1}
+
+
 def run_chat_cli(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general") -> dict:
     """订阅接入：用本机已登录的 CLI 一次性作答（无 function-calling）。
 

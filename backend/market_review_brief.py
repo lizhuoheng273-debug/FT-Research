@@ -127,7 +127,12 @@ class MarketReviewBriefService:
                 cfg = self.config_loader()
                 if not cfg.get("apiKey"):
                     raise RuntimeError("GLM 未配置")
-                raw = chat.run_chat(cfg, [{"role": "user", "content": prompt}], context=build_brief_context(snapshot), analysis_scope="market").get("content", "")
+                raw = chat.run_chat_context_only(
+                    cfg,
+                    [{"role": "user", "content": prompt}],
+                    context=build_brief_context(snapshot),
+                    analysis_scope="market",
+                ).get("content", "")
             text = _clean_text(raw)
             if not text:
                 raise RuntimeError("模型未返回简述")
