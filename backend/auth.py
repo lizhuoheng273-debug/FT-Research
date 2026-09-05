@@ -81,7 +81,7 @@ class AuthService:
             raise Unauthorized("登录已过期")
         if session["kind"] == "guest" and session["last_heartbeat"] + 30 * 60 <= now:
             self.store.revoke_auth_session(session["token_hash"])
-            raise Unauthorized("游客体验已过期")
+            raise Unauthorized("访客体验已过期")
         if mode not in {"any", session["kind"]}:
             raise Unauthorized("身份凭据类型不匹配")
         return self.store.principal_by_id(session["principal_id"])

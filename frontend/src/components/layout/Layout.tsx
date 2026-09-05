@@ -129,7 +129,7 @@ export function Layout() {
                 {APP_VERSION} · 不荐股 · 不预测 · 无倾向
               </p>
               <button onClick={() => void signOut()} className="flex w-full items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
-                <LogOut className="h-3.5 w-3.5" />退出{identity.kind === "guest" ? "游客体验" : "主人登录"}
+                <LogOut className="h-3.5 w-3.5" />退出{identity.kind === "guest" ? "访客体验" : "管理员登录"}
               </button>
             </>
           )}

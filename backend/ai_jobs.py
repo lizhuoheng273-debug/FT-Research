@@ -48,7 +48,7 @@ class RunManager:
         try:
             self.limits.reserve_question(principal)
         except LimitExceeded:
-            self.store.finish_run(run["id"], "failed", {"code": "question_limit", "message": "本次游客体验的提问额度已用尽"})
+            self.store.finish_run(run["id"], "failed", {"code": "question_limit", "message": "本次访客体验的提问额度已用尽"})
             raise
         if not self.slots.acquire(blocking=False):
             self.store.finish_run(run["id"], "failed", {"code": "queue_full", "message": "任务队列已满"})

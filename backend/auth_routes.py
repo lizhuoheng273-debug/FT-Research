@@ -21,7 +21,7 @@ class LoginBody(BaseModel):
 def _auth(request: Request) -> AuthService:
     service = getattr(request.app.state, "auth", None)
     if service is None:
-        raise HTTPException(503, "主人认证尚未配置 FT_OWNER_PASSWORD_HASH")
+        raise HTTPException(503, "管理员认证尚未配置 FT_OWNER_PASSWORD_HASH")
     return service
 
 
@@ -30,7 +30,7 @@ def _token(request: Request) -> tuple[str | None, str | None]:
     header = request.headers.get("authorization", "")
     bearer = header[7:].strip() if header.lower().startswith("bearer ") else None
     if cookie and bearer:
-        raise HTTPException(401, "请勿混用主人 Cookie 与游客令牌")
+        raise HTTPException(401, "请勿混用管理员 Cookie 与访客令牌")
     return cookie, bearer
 
 
@@ -45,7 +45,7 @@ def require_principal(request: Request) -> Principal:
 def require_owner(request: Request) -> Principal:
     cookie, bearer = _token(request)
     if bearer or not cookie:
-        raise HTTPException(403, "仅主人可访问")
+        raise HTTPException(403, "仅管理员可访问")
     try:
         return _auth(request).authenticate(cookie, "owner")
     except Unauthorized as exc:
@@ -97,7 +97,7 @@ def install_auth_routes(app):
         enforce_write_csrf(request)
         _, bearer = _token(request)
         if not bearer:
-            raise HTTPException(403, "游客心跳需要游客令牌")
+            raise HTTPException(403, "访客心跳需要访客令牌")
         try:
             principal = _auth(request).heartbeat(bearer)
         except Unauthorized as exc:

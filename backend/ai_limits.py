@@ -25,7 +25,7 @@ class Limits:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT count FROM usage_counter WHERE bucket=? AND dimension=?", (bucket, dimension)).fetchone()
             if row and row["count"] >= self.guest_questions:
-                raise LimitExceeded("本次游客体验的提问额度已用尽")
+                raise LimitExceeded("本次访客体验的提问额度已用尽")
             conn.execute("INSERT INTO usage_counter(bucket,dimension,count) VALUES(?,?,1) ON CONFLICT(bucket,dimension) DO UPDATE SET count=count+1", (bucket, dimension))
         return True
 
