@@ -111,6 +111,7 @@ _SEARCH_ENDPOINTS = (
     "https://searchapi.eastmoney.com/api/suggest/get",
     "https://searchadapter.eastmoney.com/api/suggest/get",
 )
+_symbol_cache: dict[str, dict] = {}
 
 
 def _search(q: str) -> dict | None:
@@ -180,6 +181,40 @@ def _search(q: str) -> dict | None:
             "secucode": f"{code}{suffix}", "market": market}
 
 
+def _direct_symbol(q: str) -> dict | None:
+    """搜索端点不可用时，用行情端点校验精确代码并恢复市场映射。"""
+    if q.isdigit() and len(q) <= 5:
+        code = q.zfill(5)
+        candidates = ((116, code),)
+    elif q and all(ch.isascii() and (ch.isalnum() or ch in ".-") for ch in q):
+        code = q
+        candidates = tuple((mkt, code) for mkt in (105, 106, 107))
+    else:
+        return None
+
+    for mkt, candidate in candidates:
+        data = _push2_stock_get(f"{mkt}.{candidate}", "f57,f58")
+        resolved_code = str((data or {}).get("f57") or "").upper()
+        if resolved_code != candidate:
+            continue
+        suffix, market = _MKT[mkt]
+        return {
+            "code": candidate,
+            "name": str((data or {}).get("f58") or candidate),
+            "secid_prefix": mkt,
+            "secucode": f"{candidate}{suffix}",
+            "market": market,
+        }
+    return None
+
+
+def _remember_symbol(query: str, hit: dict) -> dict:
+    remembered = dict(hit)
+    _symbol_cache[query] = remembered
+    _symbol_cache[str(remembered.get("code") or query).upper()] = remembered
+    return dict(remembered)
+
+
 def resolve_symbol(query: str) -> dict | None:
     """代码/名称 → {code, name, secid_prefix, secucode, market}。认美股/港股/韩股。
     数字型港股短代码（如 `700`）补零到 5 位再试一次（东财按 `00700` 收）。
@@ -192,10 +227,34 @@ def resolve_symbol(query: str) -> dict | None:
         if q.endswith(suf):
             q = q[: -len(suf)]
             break
-    hit = _search(q)
-    if hit is None and q.isdigit() and len(q) < 5:
-        hit = _search(q.zfill(5))
-    return hit
+    cached = _symbol_cache.get(q)
+    if cached:
+        return dict(cached)
+
+    search_error = None
+    try:
+        hit = _search(q)
+    except SearchUnavailable as exc:
+        search_error = exc
+        hit = None
+
+    padded = q.zfill(5) if q.isdigit() and len(q) < 5 else q
+    if hit is None and padded != q:
+        cached = _symbol_cache.get(padded)
+        if cached:
+            return _remember_symbol(q, cached)
+        try:
+            hit = _search(padded)
+        except SearchUnavailable as exc:
+            search_error = exc
+
+    if hit is None:
+        hit = _direct_symbol(padded)
+    if hit is not None:
+        return _remember_symbol(q, hit)
+    if search_error is not None:
+        raise search_error
+    return None
 
 
 def _key_metrics(secucode: str) -> dict | None:

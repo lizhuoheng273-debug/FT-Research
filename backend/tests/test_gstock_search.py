@@ -165,3 +165,54 @@ def test_malformed_primary_still_uses_backup(monkeypatch):
 
     monkeypatch.setattr(gstock.astock, "em_get", fake_get)
     assert gstock._search("AAPL")["code"] == "AAPL"
+
+
+def test_resolve_symbol_uses_last_success_when_search_is_temporarily_unavailable(monkeypatch):
+    cached = {"code": "AAPL", "name": "苹果", "secid_prefix": 105,
+              "secucode": "AAPL.O", "market": "NASDAQ"}
+    calls = 0
+
+    def intermittently_unavailable(_query):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return cached
+        raise gstock.SearchUnavailable("temporary outage")
+
+    monkeypatch.setattr(gstock, "_symbol_cache", {}, raising=False)
+    monkeypatch.setattr(gstock, "_search", intermittently_unavailable)
+
+    assert gstock.resolve_symbol("AAPL") == cached
+    assert gstock.resolve_symbol("AAPL") == cached
+
+
+def test_resolve_symbol_identifies_us_stock_from_quote_when_search_is_unavailable(monkeypatch):
+    monkeypatch.setattr(gstock, "_symbol_cache", {}, raising=False)
+    monkeypatch.setattr(gstock, "_search", lambda _query: (_ for _ in ()).throw(
+        gstock.SearchUnavailable("temporary outage")))
+    monkeypatch.setattr(gstock, "_push2_stock_get", lambda secid, _fields: (
+        {"f57": "AAPL", "f58": "苹果"} if secid == "105.AAPL" else None))
+
+    assert gstock.resolve_symbol("AAPL") == {
+        "code": "AAPL", "name": "苹果", "secid_prefix": 105,
+        "secucode": "AAPL.O", "market": "NASDAQ",
+    }
+
+
+def test_hk_cashflow_uses_direct_hk_resolution_when_search_is_unavailable(monkeypatch):
+    monkeypatch.setattr(gstock, "_symbol_cache", {}, raising=False)
+    monkeypatch.setattr(gstock, "_search", lambda _query: (_ for _ in ()).throw(
+        gstock.SearchUnavailable("temporary outage")))
+    monkeypatch.setattr(gstock, "_push2_stock_get", lambda secid, _fields: (
+        {"f57": "00700", "f58": "腾讯控股"} if secid == "116.00700" else None))
+    monkeypatch.setattr(gstock.astock, "eastmoney_datacenter", lambda *_args, **_kwargs: [{
+        "REPORT_DATE": "2026-06-30", "STD_ITEM_CODE": "003999",
+        "REPORT": "2026年中报", "CURRENCY": "人民币", "ACCOUNT_STANDARD": "企业会计准则",
+        "AMOUNT": 123.0, "YOY_RATIO": 4.5,
+    }])
+
+    result = gstock.hk_cashflow("00700")
+
+    assert result["code"] == "00700"
+    assert result["name"] == "腾讯控股"
+    assert result["periods"][0]["items"]["经营活动现金流净额"]["amount"] == 123.0
