@@ -11,8 +11,8 @@ from auth import hash_password  # noqa: E402
 
 
 def main() -> int:
-    first = getpass.getpass("主人密码: ")
-    second = getpass.getpass("再次输入主人密码: ")
+    first = getpass.getpass("管理员密码: ")
+    second = getpass.getpass("再次输入管理员密码: ")
     if not first or first != second:
         print("密码为空或两次输入不一致", file=sys.stderr)
         return 2

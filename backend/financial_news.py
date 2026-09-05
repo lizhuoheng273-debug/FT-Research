@@ -28,6 +28,7 @@ from following_news import build_following_stream, normalize_codes
 from financial_editorial import financial_topic, independent_sources, headline, is_roundup
 from financial_calendar import FinancialCalendar
 from financial_hotlist import HotlistCollector, SOURCE_SPECS
+from data_paths import cache_path
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +293,7 @@ class FinancialNewsService:
         self, cache_dir: str | Path | None = None, now_fn: Callable[[], datetime] = _now,
         market_provider: MarketEvidenceProvider | None = None,
     ):
-        self.cache_dir = Path(cache_dir or os.environ.get("FINANCIAL_NEWS_CACHE_DIR", Path(__file__).parent / ".cache" / "financial-news"))
+        self.cache_dir = Path(cache_dir or os.environ.get("FINANCIAL_NEWS_CACHE_DIR", cache_path("financial-news")))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_file = self.cache_dir / "snapshot.json"
         self.quick_file = self.cache_dir / "quick.json"

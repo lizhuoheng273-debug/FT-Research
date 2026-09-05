@@ -47,7 +47,7 @@ from report_scheduler import DailyReportScheduler
 from market_review_brief import MarketReviewBriefService
 from market_review_scheduler import PostCloseReviewScheduler
 from rss import RssFetchError, RssSecurityError, rss_catalog
-from ai_jobs import RunManager
+from ai_jobs import RunCleanupScheduler, RunManager
 from ai_limits import Limits
 from auth import AuthService
 from auth_routes import install_auth_routes, require_owner, require_principal
@@ -82,9 +82,11 @@ async def lifespan(_app: FastAPI):
         financial_news_scheduler.start()
         market_review_scheduler.start()
         rss_catalog.start_scheduler(1800)
+        getattr(_app.state, "run_cleanup_scheduler", None) and _app.state.run_cleanup_scheduler.start()
     try:
         yield
     finally:
+        getattr(_app.state, "run_cleanup_scheduler", None) and _app.state.run_cleanup_scheduler.stop()
         getattr(_app.state, "run_manager", None) and _app.state.run_manager.shutdown()
         financial_news_scheduler.stop()
         market_review_scheduler.stop()
@@ -128,6 +130,7 @@ def _background_runner(run, control):
 
 
 app.state.run_manager = RunManager(session_store, _background_runner, Limits(session_store), clock=session_store.clock)
+app.state.run_cleanup_scheduler = RunCleanupScheduler(app.state.run_manager)
 install_auth_routes(app)
 install_conversation_routes(app)
 aihot_client = AihotClient()

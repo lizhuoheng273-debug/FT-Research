@@ -1,7 +1,7 @@
 """安全的 RSS/Atom 抓取、解析与逐媒体缓存。
 
 该模块只保存客观 feed 字段，不生成摘要、不保存用户订阅关系。缓存文件属于运行时
-产物，路径固定在 ``backend/.cache/rss``，API 只读这些缓存。
+产物；本地默认位于 ``backend/.cache/rss``，部署时随 ``VR_DATA_DIR`` 持久化。
 """
 
 from __future__ import annotations
@@ -28,9 +28,11 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlsplit, urlunparse, urlunsplit
 
+from data_paths import cache_path
+
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_CACHE_DIR = HERE / ".cache" / "rss"
+DEFAULT_CACHE_DIR = cache_path("rss")
 MAX_BYTES = 4 * 1024 * 1024
 MAX_REDIRECTS = 4
 CONNECT_TIMEOUT = 8

@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 from auth import AuthService, Unauthorized
+from ai_limits import LimitExceeded, Limits
 from session_store import Principal
 
 
@@ -82,6 +83,10 @@ def install_auth_routes(app):
 
     @app.post("/api/auth/guest")
     def guest(request: Request):
+        try:
+            Limits(_auth(request).store).reserve_guest_session(request.client.host if request.client else "unknown")
+        except LimitExceeded as exc:
+            raise HTTPException(429, str(exc)) from exc
         principal, token = _auth(request).start_guest()
         return {"identity": {"id": principal.id, "kind": principal.kind, "expiresAt": _auth(request).clock() + AuthService.GUEST_TTL}, "token": token}
 

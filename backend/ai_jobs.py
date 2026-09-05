@@ -32,6 +32,36 @@ class RunControl:
         return self._reserve()
 
 
+class RunCleanupScheduler:
+    def __init__(self, manager, interval: float = 30):
+        self.manager = manager
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="ft-guest-cleanup", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                self.manager.tick()
+            except Exception:
+                log.exception("guest cleanup tick failed")
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=max(1, self.interval + 1))
+
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+
 class RunManager:
     def __init__(self, store, runner, limits, clock, max_workers: int = 2, queue_size: int = 8):
         self.store, self.runner, self.limits, self.clock = store, runner, limits, clock

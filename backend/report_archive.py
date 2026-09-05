@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from data_paths import persistent_path
+
 
 class ReportArchive:
     def __init__(self, root: str | os.PathLike[str] | None = None):
-        self.root = Path(root or os.environ.get("FT_REPORTS_DIR", Path(__file__).parent / ".cache" / "ft-reports"))
+        default_root = persistent_path("reports", "ft-reports", legacy=Path(__file__).parent / ".cache" / "ft-reports")
+        self.root = Path(root or os.environ.get("FT_REPORTS_DIR", default_root))
 
     def _path(self, kind: str, period: str) -> Path:
         return self.root / kind / f"{period}.json"

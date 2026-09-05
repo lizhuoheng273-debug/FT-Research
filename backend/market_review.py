@@ -19,12 +19,13 @@ from zoneinfo import ZoneInfo
 
 import astock
 import market
+from data_paths import cache_path
 
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 PROMPT_VERSION = "market-review-brief-v2"
 INDEX_CODES = ("000001", "399001", "399006", "000300", "000680", "000688")
-REVIEW_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "market-review"
+REVIEW_CACHE_DIR = cache_path("market-review")
 REVIEW_REFRESH_SECONDS = 5 * 60
 BREADTH_DISTRIBUTION_REFRESH_SECONDS = 15 * 60
 _breadth_lock = threading.Lock()

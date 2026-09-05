@@ -1,0 +1,77 @@
+name: ft-research
+
+services:
+  ft-research:
+    build:
+      context: ../..
+    command:
+      - uvicorn
+      - app:app
+      - --app-dir
+      - backend
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "1"
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    environment:
+      GLM_BASE_URL: ${GLM_BASE_URL}
+      GLM_MODEL: ${GLM_MODEL}
+      GLM_API_KEY: ${GLM_API_KEY}
+      FT_OWNER_PASSWORD_HASH: ${FT_OWNER_PASSWORD_HASH}
+      FT_PUBLIC_DEMO: ${FT_PUBLIC_DEMO:-true}
+      FT_AUTH_SECURE_COOKIE: ${FT_AUTH_SECURE_COOKIE:-true}
+      FT_ALLOWED_ORIGINS: ${FT_ALLOWED_ORIGINS}
+      VR_ALLOW_ORIGINS: ${VR_ALLOW_ORIGINS}
+      VR_API_KEY: ${VR_API_KEY:-}
+      VR_DATA_DIR: /data
+      FT_GUEST_DAILY_CALLS: ${FT_GUEST_DAILY_CALLS:-5}
+      FT_IP_DAILY_CALLS: ${FT_IP_DAILY_CALLS:-30}
+      FT_SITE_DAILY_CALLS: ${FT_SITE_DAILY_CALLS:-100}
+      FT_GUEST_SESSION_IP_PER_HOUR: ${FT_GUEST_SESSION_IP_PER_HOUR:-20}
+      FT_GUEST_SESSION_SITE_PER_HOUR: ${FT_GUEST_SESSION_SITE_PER_HOUR:-200}
+    expose:
+      - "8000"
+    volumes:
+      - ft-research-data:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  caddy:
+    image: caddy:2.10-alpine
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      ft-research:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ft-research-data:
+  caddy-data:
+  caddy-config:

@@ -10,6 +10,8 @@ from typing import Any
 
 import requests
 
+from data_paths import cache_path
+
 DEFAULT_BASE_URL = "https://aihot.virxact.com"
 
 
@@ -39,7 +41,7 @@ class AihotClient:
         self.timeout = timeout
         self._session = requests.Session()
         self._cache: dict[str, tuple[str | None, dict[str, Any]]] = {}
-        self._cache_dir = Path(cache_dir or os.environ.get("AIHOT_CACHE_DIR", Path(__file__).parent / ".cache" / "aihot"))
+        self._cache_dir = Path(cache_dir or os.environ.get("AIHOT_CACHE_DIR", cache_path("aihot")))
 
     def _cache_path(self, key: str) -> Path:
         return self._cache_dir / (hashlib.sha256(key.encode()).hexdigest() + ".json")

@@ -1,6 +1,6 @@
 from threading import Event
 
-from ai_jobs import RunManager
+from ai_jobs import RunCleanupScheduler, RunManager
 from ai_limits import Limits
 from session_store import SessionStore
 
@@ -64,3 +64,19 @@ def test_explicit_cancel_keeps_partial_events(tmp_path, monkeypatch):
     jobs.shutdown()
     assert store.run_for_principal(principal, run["id"])["status"] == "stopped"
     assert any(e["type"] == "delta" for e in store.events_after(principal, run["id"], 0))
+
+
+def test_cleanup_scheduler_ticks_and_stops():
+    ticked = Event()
+
+    class Manager:
+        def tick(self):
+            ticked.set()
+
+    scheduler = RunCleanupScheduler(Manager(), interval=0.01)
+    scheduler.start()
+    try:
+        assert ticked.wait(1)
+    finally:
+        scheduler.stop()
+    assert not scheduler.is_alive()

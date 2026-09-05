@@ -20,10 +20,11 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import rss
+from data_paths import cache_path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCES_FILE = os.path.join(HERE, "news_sources.json")
-CACHE_DIR = os.path.join(HERE, ".cache")
+CACHE_DIR = str(cache_path("newsradar", legacy=os.path.join(HERE, ".cache")))
 CACHE_FILE = os.path.join(CACHE_DIR, "radar.json")
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
