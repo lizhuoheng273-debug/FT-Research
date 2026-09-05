@@ -16,11 +16,18 @@ echarts.use([
 interface Props {
   option: echarts.EChartsCoreOption;
   height?: number;
+  onDataZoom?: (event: DataZoomEvent) => void;
+}
+
+export interface DataZoomEvent {
+  start?: number;
+  end?: number;
+  batch?: Array<{ start?: number; end?: number }>;
 }
 
 // 轻量 ECharts 容器：初始化 / 跟随窗口 resize / 卸载时 dispose。
 // 主题策略：不感知亮暗色，option 里统一用中性灰 + 主题橙（两种模式下都可读）。
-export function EChart({ option, height = 300 }: Props) {
+export function EChart({ option, height = 300, onDataZoom }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const inst = useRef<echarts.ECharts | null>(null);
 
@@ -42,6 +49,14 @@ export function EChart({ option, height = 300 }: Props) {
     // notMerge=true：整份替换，避免旧 series 残留（刷新后型号增减时）
     inst.current?.setOption(option, true);
   }, [option]);
+
+  useEffect(() => {
+    const chart = inst.current;
+    if (!chart || !onDataZoom) return;
+    const handler = (...args: unknown[]) => onDataZoom(args[0] as DataZoomEvent);
+    chart.on("datazoom", handler);
+    return () => { chart.off("datazoom", handler); };
+  }, [onDataZoom]);
 
   return <div ref={ref} style={{ height }} />;
 }

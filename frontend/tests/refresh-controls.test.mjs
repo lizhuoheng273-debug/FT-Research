@@ -18,9 +18,9 @@ test("AI daily manual refresh bypasses report archives and exposes busy state", 
 
 test("market chart manual refresh requests force mode while normal loads stay cached", () => {
   assert.match(chart, /load\(false, true\)/);
-  assert.match(chart, /disabled=\{loading\}/);
-  assert.match(chart, /aria-busy=\{loading\}/);
-  assert.match(api, /marketChart: \(asset: "stock" \| "index", code: string, period: ChartPeriod, adjust: "qfq" \| "hfq" \| "" = "qfq", force = false\)/);
+  assert.match(chart, /disabled=\{loading \|\| loadingHistory\}/);
+  assert.match(chart, /aria-busy=\{loading \|\| loadingHistory\}/);
+  assert.match(api, /marketChart: \(asset: "stock" \| "index", code: string, period: ChartPeriod, adjust: "qfq" \| "hfq" \| "" = "qfq", force = false, scope: "recent" \| "full" = "recent"\)/);
   assert.match(api, /refresh=true/);
 });
 

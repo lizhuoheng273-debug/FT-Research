@@ -102,6 +102,25 @@ def test_market_chart_endpoint_forwards_refresh_query_to_service(monkeypatch):
     assert seen["force"] is True
 
 
+def test_market_chart_endpoint_forwards_full_history_scope(monkeypatch):
+    seen = {}
+
+    def fake_get_chart(asset, code, period, adjust, scope="recent", *, force=False):
+        seen["scope"] = scope
+        return {
+            "asset": asset, "code": code, "name": "测试指数", "period": period, "adjust": adjust,
+            "source": "fixture", "fetchedAt": "2026-08-28T07:00:00Z", "stale": False,
+            "quote": {}, "points": [],
+            "history": {"complete": scope == "full", "earliestTime": None, "latestTime": None},
+        }
+
+    monkeypatch.setattr(app_module.market_chart, "get_chart", fake_get_chart)
+    response = client.get("/api/market/chart?asset=index&code=000001&period=daily&scope=full")
+
+    assert response.status_code == 200
+    assert seen["scope"] == "full"
+
+
 def test_market_chart_endpoint_rejects_non_supported_index(monkeypatch):
     monkeypatch.setattr(app_module.market_chart, "get_chart", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("unsupported")))
     response = client.get("/api/market/chart?asset=index&code=399300&period=daily")
@@ -191,6 +210,43 @@ def test_daily_market_request_uses_count_based_window(monkeypatch):
 
     start = datetime.strptime(seen["start_date"], "%Y%m%d")
     assert (datetime.now() - start).days < 120
+
+
+def test_full_stock_history_starts_before_a_share_market_and_is_not_trimmed(monkeypatch):
+    import akshare as ak
+
+    seen = {}
+    rows = [
+        {"date": f"{year}-01-02", "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5}
+        for year in range(1991, 2027)
+    ]
+    monkeypatch.setattr(ak, "stock_zh_a_daily", lambda **kwargs: seen.update(kwargs) or rows)
+    monkeypatch.setattr(ak, "stock_zh_a_hist", lambda **kwargs: pytest.fail("首选源有数据时不应调用备用源"))
+
+    source, points, _quote_points = market_chart._fetch_from_akshare(
+        "stock", "600519", "daily", "qfq", scope="full"
+    )
+
+    assert source == "AKShare"
+    assert seen["start_date"] == "19900101"
+    assert len(points) == len(rows)
+    assert points[0]["time"].startswith("1991-01-02")
+
+
+def test_full_history_marks_range_complete_and_rejects_minute_periods(monkeypatch):
+    market_chart.clear_cache()
+    points = market_chart.fixture_points("stock", "600519", "daily")
+    monkeypatch.setattr(market_chart, "_fetch_from_akshare", lambda *args, **kwargs: ("fixture", points, points))
+
+    result = market_chart.get_chart("stock", "600519", "daily", "qfq", scope="full")
+
+    assert result["history"] == {
+        "complete": True,
+        "earliestTime": points[0]["time"],
+        "latestTime": points[-1]["time"],
+    }
+    with pytest.raises(ValueError, match="完整历史仅支持"):
+        market_chart.get_chart("stock", "600519", "intraday", "", scope="full")
 
 
 def test_stock_minute_falls_back_to_eastmoney_when_sina_fails(monkeypatch):
@@ -314,6 +370,25 @@ def test_expired_cache_is_not_returned_forever(monkeypatch):
         market_chart.get_chart(*key)
 
 
+def test_full_history_never_reuses_a_legacy_recent_cache(monkeypatch):
+    market_chart.clear_cache()
+    legacy_key = ("stock", "600519", "daily", "qfq")
+    points = market_chart.fixture_points("stock", "600519", "daily")
+    market_chart._CACHE[legacy_key] = (time.time(), {
+        "asset": "stock", "code": "600519", "name": "贵州茅台", "period": "daily",
+        "adjust": "qfq", "source": "AKShare", "fetchedAt": "2026-09-05T00:00:00Z",
+        "stale": False, "quote": {}, "points": points,
+    })
+    monkeypatch.setattr(
+        market_chart,
+        "_fetch_from_akshare",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("full offline")),
+    )
+
+    with pytest.raises(market_chart.ChartUnavailable, match="full offline"):
+        market_chart.get_chart("stock", "600519", "daily", "qfq", scope="full")
+
+
 def test_cache_has_a_hard_entry_limit(monkeypatch):
     market_chart.clear_cache()
     points = market_chart.fixture_points("stock", "600000", "daily")
@@ -321,3 +396,16 @@ def test_cache_has_a_hard_entry_limit(monkeypatch):
     for number in range(market_chart.CACHE_MAX_ENTRIES + 5):
         market_chart.get_chart("stock", f"{600000 + number:06d}", "daily", "qfq")
     assert len(market_chart._CACHE) == market_chart.CACHE_MAX_ENTRIES
+
+
+def test_cache_evicts_old_history_when_point_budget_is_exceeded(monkeypatch):
+    market_chart.clear_cache()
+    monkeypatch.setattr(market_chart, "CACHE_MAX_POINTS", 150)
+    points = market_chart.fixture_points("stock", "600000", "daily")
+    monkeypatch.setattr(market_chart, "_fetch_from_akshare", lambda *args, **kwargs: ("fixture", points, points))
+
+    market_chart.get_chart("stock", "600000", "daily", "qfq", scope="full")
+    market_chart.get_chart("stock", "600001", "daily", "qfq", scope="full")
+
+    assert sum(len(payload["points"]) for _, payload in market_chart._CACHE.values()) <= 150
+    assert all(key[1] != "600000" for key in market_chart._CACHE)

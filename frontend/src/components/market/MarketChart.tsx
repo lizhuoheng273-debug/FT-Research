@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import { EChart } from "@/components/ui/EChart";
+import { EChart, type DataZoomEvent } from "@/components/ui/EChart";
 import { api, type ChartPeriod, type MarketChart as MarketChartData } from "@/lib/api";
+import {
+  mergeHistoryPoints, restoreZoomWindow, shouldLoadFullHistory, visibleWindowTimes,
+} from "@/lib/marketChartHistory";
 import { cn } from "@/lib/utils";
 
 const periods: { key: ChartPeriod; label: string }[] = [
@@ -26,7 +29,9 @@ function movingAverage(values: number[], size: number) {
   });
 }
 
-function chartOption(data: MarketChartData) {
+type ZoomWindow = { startValue: number; endValue: number };
+
+function chartOption(data: MarketChartData, zoomWindow?: ZoomWindow) {
   const points = data.points;
   const labels = points.map((point) => data.period === "intraday" || data.period === "five_day" ? point.time.slice(5, 16) : point.time.slice(5, 10));
   if (data.period === "intraday" || data.period === "five_day") {
@@ -49,7 +54,7 @@ function chartOption(data: MarketChartData) {
   }
   const candles = points.map((point) => [point.open, point.close, point.low, point.high]);
   const closes = points.map((point) => point.close);
-  const initialWindow = data.period === "daily" ? { startValue: Math.max(0, points.length - 30), endValue: Math.max(0, points.length - 1) } : {};
+  const initialWindow = zoomWindow || (data.period === "daily" ? { startValue: Math.max(0, points.length - 30), endValue: Math.max(0, points.length - 1) } : {});
   return {
     animation: false,
     axisPointer: { link: [{ xAxisIndex: "all" }], label: { backgroundColor: "#64748b" } },
@@ -92,16 +97,23 @@ export function MarketChart({ asset, code, onData }: Props) {
   const [period, setPeriod] = useState<ChartPeriod>(initialPeriod);
   const [data, setData] = useState<MarketChartData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [zoomWindow, setZoomWindow] = useState<ZoomWindow | undefined>();
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
   const requestIdRef = useRef(0);
+  const historyRequestRef = useRef(false);
 
-  const load = async (reset = false, force = false) => {
+  const load = async (reset = false, force = false, scope: "recent" | "full" = "recent") => {
     const requestId = ++requestIdRef.current;
-    if (reset) { setData(null); onData?.(null); }
+    if (reset) {
+      historyRequestRef.current = false;
+      setData(null); setZoomWindow(undefined); setHistoryError(null); onData?.(null);
+    }
     setLoading(true); setError(null);
     try {
-      const next = await api.marketChart(asset, code, period, "qfq", force);
+      const next = await api.marketChart(asset, code, period, "qfq", force, scope);
       if (requestId !== requestIdRef.current) return;
       setData(next); onData?.(next);
     } catch (reason) {
@@ -111,9 +123,55 @@ export function MarketChart({ asset, code, onData }: Props) {
     }
   };
 
+  const loadFullHistory = async (startTime?: string, endTime?: string, force = false) => {
+    if (historyRequestRef.current || (!force && data?.history?.complete) || !data) return;
+    const requestId = requestIdRef.current;
+    historyRequestRef.current = true;
+    setLoadingHistory(true);
+    setHistoryError(null);
+    try {
+      const full = await api.marketChart(asset, code, period, "qfq", force, "full");
+      if (requestId !== requestIdRef.current) return;
+      const points = mergeHistoryPoints(data.points, full.points);
+      const next = { ...full, points };
+      setZoomWindow(restoreZoomWindow(points.map((point) => point.time), startTime, endTime));
+      setData(next);
+      onData?.(next);
+    } catch (reason) {
+      if (requestId === requestIdRef.current) {
+        setHistoryError(reason instanceof Error ? reason.message : "更早历史暂时不可用");
+      }
+    } finally {
+      if (requestId === requestIdRef.current) {
+        historyRequestRef.current = false;
+        setLoadingHistory(false);
+      }
+    }
+  };
+
+  const onZoom = (event: DataZoomEvent) => {
+    if (!data) return;
+    const detail = event.batch?.[0] || event;
+    const start = Number(detail.start ?? 0);
+    const end = Number(detail.end ?? 100);
+    const anchors = visibleWindowTimes(data.points.map((point) => point.time), start, end);
+    const restored = restoreZoomWindow(data.points.map((point) => point.time), anchors?.startTime, anchors?.endTime);
+    if (restored) setZoomWindow(restored);
+    if (shouldLoadFullHistory(period, start, Boolean(data.history?.complete), loadingHistory)) {
+      void loadFullHistory(anchors?.startTime, anchors?.endTime);
+    }
+  };
+
+  const refreshChart = () => {
+    if (!data?.history?.complete) { void load(false, true); return; }
+    const startTime = zoomWindow ? data.points[zoomWindow.startValue]?.time : data.points[0]?.time;
+    const endTime = zoomWindow ? data.points[zoomWindow.endValue]?.time : data.points[data.points.length - 1]?.time;
+    void loadFullHistory(startTime, endTime, true);
+  };
+
   useEffect(() => {
     void load(true);
-    return () => { requestIdRef.current += 1; };
+    return () => { requestIdRef.current += 1; historyRequestRef.current = false; };
   }, [asset, code, period]);
   useEffect(() => {
     const next = searchParams.get("period");
@@ -131,7 +189,7 @@ export function MarketChart({ asset, code, onData }: Props) {
     return () => window.clearInterval(timer);
   }, [asset, code, period, visible]);
 
-  const option = useMemo(() => data ? chartOption(data) : null, [data]);
+  const option = useMemo(() => data ? chartOption(data, zoomWindow) : null, [data, zoomWindow]);
   return <div className="rounded-xl border border-border/60 bg-muted/10 p-3 sm:p-4">
     <div className="flex flex-wrap items-center gap-2">
       <div className="flex min-w-0 flex-1 flex-wrap gap-1 rounded-lg bg-muted/30 p-1">
@@ -142,11 +200,13 @@ export function MarketChart({ asset, code, onData }: Props) {
           setPeriod(item.key);
         }} className={cn("rounded-md px-3 py-1.5 text-xs", period === item.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>{item.label}</button>)}
       </div>
-      <button type="button" onClick={() => void load(false, true)} disabled={loading} aria-busy={loading} aria-label={loading ? "正在刷新图表" : "刷新图表"} className="rounded-md p-2 text-muted-foreground hover:text-primary disabled:opacity-50" title="刷新图表"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button>
+      <button type="button" onClick={refreshChart} disabled={loading || loadingHistory} aria-busy={loading || loadingHistory} aria-label={loading || loadingHistory ? "正在刷新图表" : "刷新图表"} className="rounded-md p-2 text-muted-foreground hover:text-primary disabled:opacity-50" title="刷新图表"><RefreshCw className={cn("h-4 w-4", (loading || loadingHistory) && "animate-spin")} /></button>
     </div>
     {data?.stale && <p className="mt-2 text-xs text-warning">当前为最近一次真实行情缓存，可能已过期。</p>}
     {error && <p className="mt-3 flex items-center gap-1 text-xs text-warning"><AlertCircle className="h-3.5 w-3.5" />{error} · 可点击刷新重试</p>}
-    {option ? <EChart option={option} height={390} /> : <div className="flex h-[390px] items-center justify-center text-sm text-muted-foreground">{loading ? "图表加载中…" : "暂无图表数据"}</div>}
+    {historyError && <p className="mt-3 flex items-center gap-1 text-xs text-warning"><AlertCircle className="h-3.5 w-3.5" />更早历史暂时不可用 · 可再次向左拖动重试</p>}
+    {loadingHistory && <p className="mt-2 text-xs text-muted-foreground">正在加载更早历史数据…</p>}
+    {option ? <EChart option={option} height={390} onDataZoom={onZoom} /> : <div className="flex h-[390px] items-center justify-center text-sm text-muted-foreground">{loading ? "图表加载中…" : "暂无图表数据"}</div>}
     <p className="mt-2 text-[11px] text-muted-foreground/60">来源：{data?.source || "—"} · 更新时间：{data?.fetchedAt ? new Date(data.fetchedAt).toLocaleString("zh-CN") : "—"}{data?.stale ? " · 缓存/过期" : ""}</p>
   </div>;
 }

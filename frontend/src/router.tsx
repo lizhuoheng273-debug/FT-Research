@@ -21,6 +21,7 @@ import { FinanceAiWorkspace } from "@/pages/FinanceAiWorkspace";
 import { AiConversationWorkspace } from "@/pages/AiConversationWorkspace";
 import { FinancialNews } from "@/pages/FinancialNews";
 import { FinancialNewsDetail } from "@/pages/FinancialNewsDetail";
+import { LandingPage } from "@/pages/LandingPage";
 
 function LegacyResearch() {
   const [params] = useSearchParams();
@@ -35,10 +36,10 @@ function RetiredResearch() {
 }
 
 export const router = createBrowserRouter([
+  { path: "/", element: <LandingPage /> },
   {
     element: <Layout />,
     children: [
-      { path: "/", element: <Navigate to="/ai/news" replace /> },
       { path: "/ai/news", element: <AINews /> },
       { path: "/ai/news/story/:storyId", element: <AINewsDetail /> },
       { path: "/ai/news/:tab", element: <AINews /> },

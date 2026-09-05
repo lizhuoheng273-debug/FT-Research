@@ -181,6 +181,7 @@ export interface MarketChart {
     low: number; prevClose: number; volume: number; amount: number;
   };
   points: ChartPoint[];
+  history: { complete: boolean; earliestTime: string | null; latestTime: string | null };
 }
 
 export interface MarketSentiment {
@@ -513,8 +514,8 @@ export const api = {
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),
   companyInfo: (code: string) => get<CompanyProfile>(`/info?code=${code}`),
   quote: (codes: string) => get<Record<string, Quote>>(`/quote?codes=${codes}`),
-  marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq", force = false) =>
-    get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}${force ? "&refresh=true" : ""}`),
+  marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq", force = false, scope: "recent" | "full" = "recent") =>
+    get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}&scope=${scope}${force ? "&refresh=true" : ""}`),
   reports: (code: string) => get<Report[]>(`/reports?code=${code}`),
   news: (code: string) => get<NewsItem[]>(`/news?code=${code}`),
   margin: (code: string) => get<MarginRow[]>(`/margin?code=${code}`),

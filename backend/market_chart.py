@@ -16,6 +16,7 @@ from typing import Any
 
 PERIODS = {"intraday", "five_day", "daily", "weekly", "monthly"}
 ADJUSTS = {"qfq", "hfq", ""}
+HISTORY_SCOPES = {"recent", "full"}
 INDEX_CODES = {
     "000001": ("上证指数", "sh000001"),
     "399001": ("深证成指", "sz399001"),
@@ -27,6 +28,7 @@ INDEX_CODES = {
 
 STALE_MAX_AGE = 86_400
 CACHE_MAX_ENTRIES = 128
+CACHE_MAX_POINTS = 100_000
 _CACHE: OrderedDict[tuple, tuple[float, dict[str, Any]]] = OrderedDict()
 class ChartUnavailable(RuntimeError):
     """没有上游数据且没有可用缓存时抛出。"""
@@ -268,7 +270,14 @@ def _request_window_days(period: str, count: int) -> int:
     return (count + 3) * 31
 
 
-def _akshare_rows(asset: str, code: str, period: str, adjust: str, count: int = 60) -> Any:
+def _akshare_rows(
+    asset: str,
+    code: str,
+    period: str,
+    adjust: str,
+    count: int = 60,
+    scope: str = "recent",
+) -> Any:
     try:
         import akshare as ak
     except ImportError as exc:
@@ -290,7 +299,9 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str, count: int = 
         sina = getattr(ak, "stock_zh_a_daily", None)
         if eastmoney is None or sina is None:
             raise ChartUnavailable("AKShare 缺少 A 股历史接口")
-        start = (datetime.now() - timedelta(days=_request_window_days(period, count))).strftime("%Y%m%d")
+        start = "19900101" if scope == "full" else (
+            datetime.now() - timedelta(days=_request_window_days(period, count))
+        ).strftime("%Y%m%d")
         end = datetime.now().strftime("%Y%m%d")
         return _with_fallback(
             lambda: sina(symbol=_stock_market_symbol(code), start_date=start, end_date=end, adjust=adjust),
@@ -320,8 +331,15 @@ def _akshare_rows(asset: str, code: str, period: str, adjust: str, count: int = 
     )
 
 
-def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str, count: int = 60) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
-    points = _rows_to_points(_akshare_rows(asset, code, period, adjust, count))
+def _fetch_from_akshare(
+    asset: str,
+    code: str,
+    period: str,
+    adjust: str,
+    count: int = 60,
+    scope: str = "recent",
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    points = _rows_to_points(_akshare_rows(asset, code, period, adjust, count, scope))
     points = prepare_points(asset, period, points)
     quote_points = list(points)
     if period == "five_day":
@@ -335,7 +353,7 @@ def _fetch_from_akshare(asset: str, code: str, period: str, adjust: str, count: 
         points = today_points or points[-240:]
     elif period in {"weekly", "monthly"}:
         points = _aggregate(points, period)
-    if period in {"daily", "weekly", "monthly"}:
+    if period in {"daily", "weekly", "monthly"} and scope == "recent":
         points = points[-max(5, min(int(count or 60), 250)):]
     if not points:
         raise ChartUnavailable("上游未返回行情数据")
@@ -365,23 +383,46 @@ def _quote(points: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def get_chart(asset: str, code: str, period: str, adjust: str = "qfq", count: int = 60, *, force: bool = False) -> dict[str, Any]:
+def _cache_point_count() -> int:
+    return sum(len(payload.get("points") or []) for _, payload in _CACHE.values())
+
+
+def _trim_cache() -> None:
+    while len(_CACHE) > CACHE_MAX_ENTRIES or _cache_point_count() > CACHE_MAX_POINTS:
+        _CACHE.popitem(last=False)
+
+
+def get_chart(
+    asset: str,
+    code: str,
+    period: str,
+    adjust: str = "qfq",
+    count: int = 60,
+    scope: str = "recent",
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
     code = normalize_asset_code(asset, code)
     if period not in PERIODS:
         raise ValueError("period 不受支持")
     if adjust not in ADJUSTS:
         raise ValueError("adjust 必须是 qfq、hfq 或空字符串")
+    if scope not in HISTORY_SCOPES:
+        raise ValueError("scope 必须是 recent 或 full")
+    if scope == "full" and period in {"intraday", "five_day"}:
+        raise ValueError("完整历史仅支持日 K、周 K 和月 K")
     count = max(5, min(int(count or 60), 250))
-    key = (asset, code, period, adjust, count)
+    cache_count = 0 if scope == "full" else count
+    key = (asset, code, period, adjust, cache_count, scope)
     legacy_key = (asset, code, period, adjust)
     now = time.time()
-    cached_key = key if key in _CACHE else legacy_key
+    cached_key = key if key in _CACHE else legacy_key if scope == "recent" else key
     cached = _CACHE.get(cached_key)
     if cached and not force and now - cached[0] < cache_ttl(period):
         _CACHE.move_to_end(cached_key)
         return cached[1]
     try:
-        fetched = _fetch_from_akshare(asset, code, period, adjust, count)
+        fetched = _fetch_from_akshare(asset, code, period, adjust, count, scope)
         if isinstance(fetched, tuple) and len(fetched) == 3:
             source, points, quote_points = fetched
         elif isinstance(fetched, tuple) and len(fetched) == 2:
@@ -404,9 +445,13 @@ def get_chart(asset: str, code: str, period: str, adjust: str = "qfq", count: in
         "asset": asset, "code": code, "name": name, "period": period, "adjust": adjust,
         "source": source, "fetchedAt": _iso_now(), "stale": stale,
         "quote": _quote(quote_points), "points": points,
+        "history": {
+            "complete": scope == "full",
+            "earliestTime": points[0]["time"] if points else None,
+            "latestTime": points[-1]["time"] if points else None,
+        },
     }
     _CACHE[key] = (now, payload)
     _CACHE.move_to_end(key)
-    while len(_CACHE) > CACHE_MAX_ENTRIES:
-        _CACHE.popitem(last=False)
+    _trim_cache()
     return payload

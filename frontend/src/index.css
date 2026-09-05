@@ -121,6 +121,12 @@
 }
 
 @layer components {
+  .landing-shell {
+    background:
+      linear-gradient(90deg, hsl(var(--background) / 0.98) 0%, hsl(var(--background) / 0.88) 46%, hsl(var(--background) / 0.7) 100%),
+      radial-gradient(ellipse at 76% 42%, hsl(var(--primary) / 0.12), transparent 48%);
+  }
+
   /* AI HOT 风格的周期报告双栏布局：固定归档栏，内容栏自适应。 */
   .report-layout { grid-template-columns: minmax(0, 1fr); }
   @media (min-width: 768px) {

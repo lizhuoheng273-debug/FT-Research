@@ -975,11 +975,14 @@ def market_chart_endpoint(
     code: str = Query(...),
     period: str = Query(...),
     adjust: str = Query("qfq"),
+    scope: str = Query("recent"),
     refresh: bool = Query(False),
 ):
     """股票 / 指数详情页统一 OHLCV 图表接口。"""
     try:
-        return market_chart.get_chart(asset, code, period, adjust, force=refresh)
+        if scope == "recent":
+            return market_chart.get_chart(asset, code, period, adjust, force=refresh)
+        return market_chart.get_chart(asset, code, period, adjust, scope=scope, force=refresh)
     except market_chart.ChartUnavailable as e:
         raise HTTPException(503, f"行情暂不可用，请稍后重试：{e}") from e
     except ValueError as e:
