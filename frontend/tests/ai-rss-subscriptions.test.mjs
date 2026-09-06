@@ -6,10 +6,12 @@ import ts from "typescript";
 
 const page = await readFile(new URL("../src/pages/AINews.tsx", import.meta.url), "utf8");
 const feed = await readFile(new URL("../src/components/ai/AISubscriptionFeed.tsx", import.meta.url), "utf8");
+const sortableCard = await readFile(new URL("../src/components/ai/RssSortableCard.tsx", import.meta.url), "utf8").catch(() => "");
 const trash = await readFile(new URL("../src/components/ai/RssTrashDialog.tsx", import.meta.url), "utf8").catch(() => "");
 const state = await readFile(new URL("../src/lib/rssSubscriptions.ts", import.meta.url), "utf8");
 const hot = await readFile(new URL("../src/components/ai/AIHotFeed.tsx", import.meta.url), "utf8");
 const daily = await readFile(new URL("../src/pages/AIDaily.tsx", import.meta.url), "utf8");
+const feedAndCard = `${feed}\n${sortableCard}`;
 
 const compiledState = ts.transpileModule(state, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -34,9 +36,9 @@ test("AI news keeps the hotspot board but replaces duplicate event cards with me
   assert.match(page, /AISubscriptionFeed/);
   assert.doesNotMatch(page, /精选事件/);
   assert.match(state, /ithome.*qbitai.*jiqizhixin.*zhidx.*xinzhiyuan.*tmtpost.*huxiu.*solidot.*baijingapp.*williamlong/s);
-  assert.match(feed, /items\.slice\(0,\s*3\)/);
-  assert.match(feed, /originalUrl/);
-  assert.match(feed, /target="_blank"/);
+  assert.match(feedAndCard, /items\.slice\(0,\s*3\)/);
+  assert.match(feedAndCard, /originalUrl/);
+  assert.match(feedAndCard, /target="_blank"/);
   assert.match(hot, /showEvents\??:\s*boolean/);
   assert.match(daily, /<AIHotFeed topics=\{topics\} items=\{items\}/);
 });
@@ -47,15 +49,29 @@ test("subscription state persists order, pin, hide and custom sources locally", 
   for (const token of ["order", "pinned", "hidden", "custom", "resetSubscriptions", "removeCustomSource"]) assert.match(state, new RegExp(token));
 });
 
-test("subscription feed has search targeting and accessible pointer/keyboard reorder controls", () => {
-  for (const token of ["scrollIntoView", "highlightedId", "onPointerDown", "onPointerUp", "draggable", "onKeyDown", "上移", "下移", "置顶", "隐藏", "恢复默认"]) assert.match(feed, new RegExp(token));
+test("subscription feed has search targeting and accessible fallback reorder controls", () => {
+  for (const token of ["scrollIntoView", "highlightedId", "onKeyDown", "上移", "下移", "置顶", "隐藏", "恢复默认"]) assert.match(feed, new RegExp(token));
   assert.match(feed, /POST|\/ai\/rss\/resolve/);
 });
 
+test("subscription feed uses dnd-kit for pointer, touch and keyboard sorting", () => {
+  for (const token of ["DndContext", "SortableContext", "PointerSensor", "TouchSensor", "KeyboardSensor", "DragOverlay", "useSortable", "activationConstraint", "autoScroll", "sortableKeyboardCoordinates", "verticalListSortingStrategy", "arrayMove"]) {
+    assert.match(feedAndCard, new RegExp(token));
+  }
+  assert.match(feedAndCard, /distance:\s*6/);
+  assert.match(feedAndCard, /delay:\s*200/);
+  assert.match(feedAndCard, /tolerance:\s*8/);
+  assert.match(feedAndCard, /onDragEnd/);
+  assert.match(feedAndCard, /active\.id[\s\S]*over\.id/);
+  assert.match(feedAndCard, /data-no-drag/);
+  assert.doesNotMatch(feedAndCard, /\bdraggable\b/);
+  assert.doesNotMatch(feedAndCard, /onPointerUp/);
+});
+
 test("subscription cards keep actions below content on narrow screens", () => {
-  assert.match(feed, /grid-cols-\[auto_minmax\(0,1fr\)\]/);
-  assert.match(feed, /col-span-2[^\"]*flex-wrap/);
-  assert.match(feed, /sm:flex/);
+  assert.match(feedAndCard, /grid-cols-\[auto_minmax\(0,1fr\)\]/);
+  assert.match(feedAndCard, /col-span-2[^\"]*flex-wrap/);
+  assert.match(feedAndCard, /sm:flex/);
 });
 
 test("adding a source uses a centered accessible modal with test then save steps", () => {
