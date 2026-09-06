@@ -6,6 +6,7 @@ import ts from "typescript";
 
 const page = await readFile(new URL("../src/pages/AINews.tsx", import.meta.url), "utf8");
 const feed = await readFile(new URL("../src/components/ai/AISubscriptionFeed.tsx", import.meta.url), "utf8");
+const trash = await readFile(new URL("../src/components/ai/RssTrashDialog.tsx", import.meta.url), "utf8").catch(() => "");
 const state = await readFile(new URL("../src/lib/rssSubscriptions.ts", import.meta.url), "utf8");
 const hot = await readFile(new URL("../src/components/ai/AIHotFeed.tsx", import.meta.url), "utf8");
 const daily = await readFile(new URL("../src/pages/AIDaily.tsx", import.meta.url), "utf8");
@@ -197,4 +198,17 @@ test("batch restore sorts trash entries by original position before reinserting"
   const restored = api.restoreSubscriptions(state, ["b", "a"]);
 
   assert.deepEqual(plain(restored.order), ["a", "b", "c"]);
+});
+
+test("batch RSS management and recycle bin expose the restore-only accessible contract", () => {
+  const feedAndTrash = `${feed}\n${trash}`;
+
+  for (const text of ["批量管理", "移入回收站", "回收站", "恢复所选", "全部恢复"]) {
+    assert.match(feedAndTrash, new RegExp(text));
+  }
+  for (const token of ["managing", "selectedIds", "trashOpen", "trashSelectedIds", "trashSubscriptions", "restoreSubscriptions", "restoreAllSubscriptions", "window.confirm"]) {
+    assert.match(feedAndTrash, new RegExp(token));
+  }
+  assert.match(feedAndTrash, /aria-modal="true"/);
+  assert.doesNotMatch(feedAndTrash, /永久删除/);
 });
