@@ -351,12 +351,36 @@ def test_single_source_recovers_from_timeout(tmp_path):
     assert failed["source"]["staleReason"] == "fetch_failed"
     assert failed["source"]["errorCode"] == "timeout"
     assert failed["outcome"] == "cached"
+    assert failed["addedCount"] == 0
     catalog.fetcher = lambda _url: RSS
     recovered = catalog.refresh_source("solidot")
     assert recovered["outcome"] == "updated"
     assert recovered["source"]["stale"] is False
     assert recovered["source"]["error"] is None
     assert recovered["source"]["lastAttemptAt"] == recovered["source"]["lastSuccessAt"]
+
+
+def test_refresh_source_reports_item_ids_new_since_cached_snapshot(tmp_path):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    feeds = iter([feed(["one", "two"]), feed(["two", "three", "four"]), feed(["two", "three", "four"])])
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: next(feeds), validate_dns=False)
+
+    first = catalog.refresh_source("solidot")
+    second = catalog.refresh_source("solidot")
+    third = catalog.refresh_source("solidot")
+
+    assert first["outcome"] == "updated"
+    assert second["outcome"] == "updated"
+    assert second["addedCount"] == 2
+    assert third["outcome"] == "updated"
+    assert third["addedCount"] == 0
 
 
 def test_expired_cache_is_distinguished_from_fetch_failure(tmp_path, monkeypatch):

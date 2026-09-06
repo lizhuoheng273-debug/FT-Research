@@ -534,8 +534,16 @@ class RssCatalog:
 
     def refresh_source(self, source_id: str, custom_url: str | None = None) -> dict[str, object]:
         source = self.source_for_refresh(source_id, custom_url)
+        cached = self._read_cache(str(source["url"])) or {}
+        cached_items = cached.get("items") if isinstance(cached.get("items"), list) else []
+        cached_ids = {item.get("id") for item in cached_items if isinstance(item, dict) and isinstance(item.get("id"), str)}
         snapshot = self.refresh(source)
-        return {"source": snapshot, "outcome": "updated" if snapshot["error"] is None else "cached"}
+        if snapshot["error"] is None:
+            added_ids = {item.get("id") for item in snapshot["items"] if isinstance(item, dict) and isinstance(item.get("id"), str)} - cached_ids
+            added_count = len(added_ids)
+        else:
+            added_count = 0
+        return {"source": snapshot, "outcome": "updated" if snapshot["error"] is None else "cached", "addedCount": added_count}
 
     def resolve(self, url: str, *, source: dict[str, object] | None = None) -> dict[str, object]:
         normalized = validate_public_url(url, resolve_dns=self.validate_dns)
