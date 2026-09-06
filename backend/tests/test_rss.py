@@ -383,6 +383,25 @@ def test_refresh_source_reports_item_ids_new_since_cached_snapshot(tmp_path):
     assert third["addedCount"] == 0
 
 
+def test_refresh_source_counts_all_new_items_beyond_display_cap(tmp_path):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    feeds = iter([feed(["old"]), feed(["one", "two", "three", "four"])])
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: next(feeds), validate_dns=False)
+
+    catalog.refresh_source("solidot")
+    refreshed = catalog.refresh_source("solidot")
+
+    assert refreshed["addedCount"] == 4
+    assert len(refreshed["source"]["items"]) == 3
+
+
 def test_expired_cache_is_distinguished_from_fetch_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(rss, "_now", lambda: "2026-09-02T10:00:00+00:00")
     catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: RSS, validate_dns=False)

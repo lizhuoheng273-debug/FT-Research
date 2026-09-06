@@ -539,7 +539,10 @@ class RssCatalog:
         cached_ids = {item.get("id") for item in cached_items if isinstance(item, dict) and isinstance(item.get("id"), str)}
         snapshot = self.refresh(source)
         if snapshot["error"] is None:
-            added_ids = {item.get("id") for item in snapshot["items"] if isinstance(item, dict) and isinstance(item.get("id"), str)} - cached_ids
+            refreshed = self._read_cache(str(source["url"])) or {}
+            refreshed_items = refreshed.get("items") if isinstance(refreshed.get("items"), list) else []
+            refreshed_ids = {item.get("id") for item in refreshed_items if isinstance(item, dict) and isinstance(item.get("id"), str)}
+            added_ids = refreshed_ids - cached_ids
             added_count = len(added_ids)
         else:
             added_count = 0
