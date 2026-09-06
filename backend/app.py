@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -242,8 +243,22 @@ class RssRefreshReq(BaseModel):
 
 RSS_REFRESH_COOLDOWN_SECONDS = 30
 _rss_refresh_attempts: dict[str, float] = {}
+_rss_refresh_results: dict[str, dict[str, object]] = {}
+_rss_refresh_inflight: dict[str, threading.Event] = {}
 _rss_refresh_attempts_lock = threading.Lock()
 _rss_refresh_clock = time.monotonic
+_RSS_REFRESH_OUTCOMES = {"updated", "current", "cached"}
+
+
+def _normalize_rss_refresh_result(result: dict[str, object]) -> dict[str, object]:
+    outcome = result.get("outcome")
+    if outcome not in _RSS_REFRESH_OUTCOMES:
+        outcome = "current"
+    try:
+        added_count = max(0, int(result.get("addedCount", 0)))
+    except (TypeError, ValueError):
+        added_count = 0
+    return {"source": result["source"], "outcome": outcome, "addedCount": added_count}
 
 
 class FinancialNewsFollowingReq(BaseModel):
@@ -298,18 +313,55 @@ def ai_rss_refresh(request: RssRefreshReq):
     now = _rss_refresh_clock()
     with _rss_refresh_attempts_lock:
         last_attempt = _rss_refresh_attempts.get(source_id)
-        if last_attempt is not None:
+        refresh_event = _rss_refresh_inflight.get(source_id)
+        if refresh_event is not None:
+            remaining = RSS_REFRESH_COOLDOWN_SECONDS - (now - last_attempt) if last_attempt is not None else 0
+            retry_after = max(1, math.ceil(remaining))
+            should_refresh = False
+        elif last_attempt is not None:
             remaining = RSS_REFRESH_COOLDOWN_SECONDS - (now - last_attempt)
             if remaining > 0:
-                retry_after = max(1, int(remaining + 0.999))
-                raise HTTPException(429, "该信源刚刚刷新，请稍后重试", headers={"Retry-After": str(retry_after)})
-        _rss_refresh_attempts[source_id] = now
+                retry_after = max(1, math.ceil(remaining))
+                return {
+                    "source": _rss_refresh_results[source_id]["source"],
+                    "outcome": "current",
+                    "addedCount": 0,
+                    "retryAfter": retry_after,
+                }
+
+        if refresh_event is None:
+            _rss_refresh_attempts[source_id] = now
+            refresh_event = threading.Event()
+            _rss_refresh_inflight[source_id] = refresh_event
+            should_refresh = True
+
+    if not should_refresh:
+        refresh_event.wait()
+        with _rss_refresh_attempts_lock:
+            return {
+                "source": _rss_refresh_results[source_id]["source"],
+                "outcome": "current",
+                "addedCount": 0,
+                "retryAfter": retry_after,
+            }
+
+    result = None
     try:
-        return rss_catalog.refresh_source(request.sourceId, request.url)
+        result = _normalize_rss_refresh_result(rss_catalog.refresh_source(request.sourceId, request.url))
     except KeyError as exc:
         raise HTTPException(404, "RSS 信源不存在") from exc
     except (RssSecurityError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    finally:
+        with _rss_refresh_attempts_lock:
+            if result is not None:
+                _rss_refresh_results[source_id] = result
+            else:
+                _rss_refresh_attempts.pop(source_id, None)
+            event = _rss_refresh_inflight.pop(source_id)
+            event.set()
+    assert result is not None
+    return result
 
 
 @app.get("/api/ai/news/hot-topics")
