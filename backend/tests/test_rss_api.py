@@ -178,6 +178,41 @@ def test_concurrent_same_source_refresh_returns_current_without_a_second_fetch(m
     assert calls == ["solidot"]
 
 
+def test_concurrent_same_source_refresh_preserves_cached_outcome(monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {})
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {})
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(app.rss_catalog, "refresh_identity", lambda source_id, custom_url=None: source_id)
+
+    def refresh(source_id, custom_url=None):
+        calls.append(source_id)
+        started.set()
+        assert release.wait(1)
+        return {
+            "source": {"id": source_id, "items": [{"id": "old"}]},
+            "outcome": "cached",
+            "addedCount": 0,
+        }
+
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", refresh)
+    results = []
+    first = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})))
+    first.start(); assert started.wait(1)
+    second = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})))
+    second.start(); time.sleep(0.05); assert second.is_alive()
+    release.set(); first.join(1); second.join(1)
+
+    assert [response.status_code for response in results] == [200, 200]
+    assert [response.json()["outcome"] for response in results] == ["cached", "cached"]
+    assert calls == ["solidot"]
+
+
 def test_radar_keeps_legacy_industries_and_media_snapshots(monkeypatch):
     payload = {"generated_at": "now", "industries": [], "stats": {}, "sources": [], "sourceHealth": []}
     monkeypatch.setattr(app.newsradar, "get_radar", lambda force=False: payload)

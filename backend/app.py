@@ -338,8 +338,11 @@ def ai_rss_refresh(request: RssRefreshReq):
     if not should_refresh:
         refresh_event.wait()
         with _rss_refresh_attempts_lock:
+            completed_result = _rss_refresh_results[source_id]
+            if completed_result["outcome"] == "cached":
+                return completed_result
             return {
-                "source": _rss_refresh_results[source_id]["source"],
+                "source": completed_result["source"],
                 "outcome": "current",
                 "addedCount": 0,
                 "retryAfter": retry_after,
