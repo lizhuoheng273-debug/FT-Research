@@ -212,3 +212,14 @@ test("batch RSS management and recycle bin expose the restore-only accessible co
   assert.match(feedAndTrash, /aria-modal="true"/);
   assert.doesNotMatch(feedAndTrash, /永久删除/);
 });
+
+test("restore and reset notify the parent to refetch sources from the updated local state", () => {
+  assert.match(feed, /onSubscriptionSourcesChanged\?: \(state: RssSubscriptionState\) => void \| Promise<void>/);
+  assert.match(feed, /const nextState = restoreSubscriptions\(subscriptionState, trashSelectedIds\)/);
+  assert.match(feed, /const nextState = restoreAllSubscriptions\(subscriptionState\)/);
+  assert.match(feed, /const nextState = resetSubscriptions\(\)/);
+  assert.equal(feed.match(/onSubscriptionSourcesChanged\?\.\(nextState\)/g)?.length, 3);
+  assert.match(page, /const load = async \(subscriptionStateOverride\?: RssSubscriptionState\)/);
+  assert.match(page, /subscriptionStateOverride \?\? readRssSubscriptionState\(\)/);
+  assert.match(page, /onSubscriptionSourcesChanged=\{\(state\) => void load\(state\)\}/);
+});

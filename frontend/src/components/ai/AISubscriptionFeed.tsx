@@ -13,6 +13,7 @@ interface Props {
   refreshMessages?: Record<string, string>;
   onRefreshSource?: (source: RssSource) => void;
   onSourcesChanged?: (source: RssSource) => void;
+  onSubscriptionSourcesChanged?: (state: RssSubscriptionState) => void | Promise<void>;
 }
 
 function sourceStatus(source: RssSource) {
@@ -28,7 +29,7 @@ function readableError(value?: string | null) {
   return value;
 }
 
-export function AISubscriptionFeed({ sources, loading = false, error, refreshingIds = [], refreshMessages = {}, onRefreshSource, onSourcesChanged }: Props) {
+export function AISubscriptionFeed({ sources, loading = false, error, refreshingIds = [], refreshMessages = {}, onRefreshSource, onSourcesChanged, onSubscriptionSourcesChanged }: Props) {
   const [subscriptionState, setSubscriptionState] = useState<RssSubscriptionState>(() => readRssSubscriptionState());
   const [query, setQuery] = useState("");
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -71,12 +72,16 @@ export function AISubscriptionFeed({ sources, loading = false, error, refreshing
   };
   const restoreSelectedTrash = () => {
     if (trashSelectedIds.length === 0) return;
-    updateState(restoreSubscriptions(subscriptionState, trashSelectedIds));
+    const nextState = restoreSubscriptions(subscriptionState, trashSelectedIds);
+    updateState(nextState);
+    void onSubscriptionSourcesChanged?.(nextState);
     setTrashSelectedIds([]);
   };
   const restoreAllTrash = () => {
     if (subscriptionState.trash.length === 0) return;
-    updateState(restoreAllSubscriptions(subscriptionState));
+    const nextState = restoreAllSubscriptions(subscriptionState);
+    updateState(nextState);
+    void onSubscriptionSourcesChanged?.(nextState);
     setTrashSelectedIds([]);
   };
 
@@ -110,7 +115,9 @@ export function AISubscriptionFeed({ sources, loading = false, error, refreshing
 
   const restore = () => {
     if (!window.confirm("确定恢复默认 RSS 设置吗？这会重置本机排序、置顶、自定义订阅和回收站。")) return;
-    updateState(resetSubscriptions());
+    const nextState = resetSubscriptions();
+    updateState(nextState);
+    void onSubscriptionSourcesChanged?.(nextState);
     cancelBatchManagement();
     setTrashSelectedIds([]);
   };
