@@ -157,3 +157,44 @@ test("repeated reads are idempotent and malformed storage falls back to defaults
   const malformed = loadStateModule({ "ft-research:ai-rss-subscriptions:v2": "{not-json" });
   assert.deepEqual(plain(malformed.api.readRssSubscriptionState()), plain(malformed.api.defaultRssSubscriptionState()));
 });
+
+test("parseable malformed v1 fields fall back to default subscriptions", () => {
+  const { api, values } = loadStateModule({
+    "ft-research:ai-rss-subscriptions:v1": JSON.stringify({ order: "bad" }),
+  });
+
+  assert.deepEqual(plain(api.readRssSubscriptionState()), plain(api.defaultRssSubscriptionState()));
+  assert.equal(values.get("ft-research:ai-rss-subscriptions:v2"), undefined);
+});
+
+test("mismatched custom trash metadata makes v2 storage fall back to defaults", () => {
+  const { api } = loadStateModule({
+    "ft-research:ai-rss-subscriptions:v2": JSON.stringify({
+      version: 2,
+      order: [],
+      pinned: [],
+      custom: [],
+      trash: [{ id: "x", kind: "custom", previousIndex: 0, wasPinned: false, custom: { id: "y", name: "Y", url: "https://y.test/rss" } }],
+    }),
+  });
+
+  assert.deepEqual(plain(api.readRssSubscriptionState()), plain(api.defaultRssSubscriptionState()));
+});
+
+test("batch restore sorts trash entries by original position before reinserting", () => {
+  const { api } = loadStateModule();
+  const state = {
+    version: 2,
+    order: ["c"],
+    pinned: [],
+    custom: [],
+    trash: [
+      { id: "b", kind: "builtin", previousIndex: 1, wasPinned: false },
+      { id: "a", kind: "builtin", previousIndex: 0, wasPinned: false },
+    ],
+  };
+
+  const restored = api.restoreSubscriptions(state, ["b", "a"]);
+
+  assert.deepEqual(plain(restored.order), ["a", "b", "c"]);
+});

@@ -90,29 +90,33 @@ const uniqueCustomSubscriptions = (value: unknown): CustomRssSubscription[] => {
   }).map((item) => ({ ...item }));
 };
 
-const normalizeTrashEntries = (value: unknown): RssTrashEntry[] => {
-  if (!Array.isArray(value)) return [];
+const normalizeTrashEntries = (value: unknown): RssTrashEntry[] | null => {
+  if (!Array.isArray(value)) return null;
   const seen = new Set<string>();
-  return value.filter((item): item is RssTrashEntry => {
-    if (!isRecord(item) || typeof item.id !== "string" || seen.has(item.id)) return false;
-    if (item.kind !== "builtin" && item.kind !== "custom") return false;
-    if (typeof item.previousIndex !== "number" || !Number.isFinite(item.previousIndex)) return false;
-    if (typeof item.wasPinned !== "boolean") return false;
-    if (item.kind === "custom" && !isCustomSubscription(item.custom)) return false;
+  const entries: RssTrashEntry[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== "string") return null;
+    if (seen.has(item.id)) continue;
+    if (item.kind !== "builtin" && item.kind !== "custom") return null;
+    if (typeof item.previousIndex !== "number" || !Number.isFinite(item.previousIndex)) return null;
+    if (typeof item.wasPinned !== "boolean") return null;
+    if (item.kind === "custom" && (!isCustomSubscription(item.custom) || item.custom.id !== item.id)) return null;
     seen.add(item.id);
-    return true;
-  }).map((item) => ({
-    id: item.id,
-    kind: item.kind,
-    previousIndex: Math.max(0, Math.floor(item.previousIndex)),
-    wasPinned: item.wasPinned,
-    ...(item.kind === "custom" && isCustomSubscription(item.custom) ? { custom: { ...item.custom } } : {}),
-  }));
+    entries.push({
+      id: item.id,
+      kind: item.kind,
+      previousIndex: Math.max(0, Math.floor(item.previousIndex)),
+      wasPinned: item.wasPinned,
+      ...(item.kind === "custom" && isCustomSubscription(item.custom) ? { custom: { ...item.custom } } : {}),
+    });
+  }
+  return entries;
 };
 
 const normalizeV2State = (parsed: unknown): RssSubscriptionState | null => {
   if (!isRecord(parsed) || parsed.version !== 2 || !Array.isArray(parsed.order) || !Array.isArray(parsed.pinned) || !Array.isArray(parsed.custom) || !Array.isArray(parsed.trash)) return null;
   const trash = normalizeTrashEntries(parsed.trash);
+  if (!trash) return null;
   const trashedIds = new Set(trash.map((entry) => entry.id));
   return {
     version: 2,
@@ -126,7 +130,11 @@ const normalizeV2State = (parsed: unknown): RssSubscriptionState | null => {
 const migrateV1State = (parsed: unknown): RssSubscriptionState | null => {
   if (!isRecord(parsed)) return null;
   const legacy = parsed as LegacyRssSubscriptionState;
-  const order = uniqueStrings(legacy.order);
+  if (legacy.order !== undefined && !Array.isArray(legacy.order)) return null;
+  if (legacy.pinned !== undefined && !Array.isArray(legacy.pinned)) return null;
+  if (legacy.hidden !== undefined && !Array.isArray(legacy.hidden)) return null;
+  if (legacy.custom !== undefined && !Array.isArray(legacy.custom)) return null;
+  const order = legacy.order === undefined ? [...DEFAULT_RSS_SOURCE_ORDER] : uniqueStrings(legacy.order);
   const pinned = uniqueStrings(legacy.pinned);
   const custom = uniqueCustomSubscriptions(legacy.custom);
   const customById = new Map(custom.map((source) => [source.id, source]));
@@ -199,7 +207,7 @@ export function trashSubscriptions(state: RssSubscriptionState, sourceIds: strin
   const order = uniqueStrings(state.order);
   const pinned = uniqueStrings(state.pinned);
   const custom = uniqueCustomSubscriptions(state.custom);
-  const existingTrash = normalizeTrashEntries(state.trash);
+  const existingTrash = normalizeTrashEntries(state.trash) ?? [];
   const existingTrashIds = new Set(existingTrash.map((entry) => entry.id));
   const requestedIds = uniqueStrings(sourceIds).filter((id) => !existingTrashIds.has(id));
   const customById = new Map(custom.map((source) => [source.id, source]));
@@ -228,14 +236,14 @@ export function trashSubscriptions(state: RssSubscriptionState, sourceIds: strin
 
 export function restoreSubscriptions(state: RssSubscriptionState, sourceIds: string[]): RssSubscriptionState {
   const selectedIds = new Set(uniqueStrings(sourceIds));
-  const trash = normalizeTrashEntries(state.trash);
+  const trash = normalizeTrashEntries(state.trash) ?? [];
   const selectedTrashIds = new Set(trash.filter((entry) => selectedIds.has(entry.id)).map((entry) => entry.id));
   const order = uniqueStrings(state.order).filter((id) => !selectedTrashIds.has(id));
   const pinned = uniqueStrings(state.pinned).filter((id) => !selectedTrashIds.has(id));
   const custom = uniqueCustomSubscriptions(state.custom).filter((source) => !selectedTrashIds.has(source.id));
 
-  for (const entry of trash) {
-    if (!selectedTrashIds.has(entry.id)) continue;
+  const entriesToRestore = trash.filter((entry) => selectedTrashIds.has(entry.id)).sort((left, right) => left.previousIndex - right.previousIndex);
+  for (const entry of entriesToRestore) {
     const insertAt = Math.max(0, Math.min(entry.previousIndex, order.length));
     if (!order.includes(entry.id)) order.splice(insertAt, 0, entry.id);
     if (entry.wasPinned && !pinned.includes(entry.id)) pinned.push(entry.id);
