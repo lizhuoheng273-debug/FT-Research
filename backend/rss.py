@@ -546,7 +546,8 @@ class RssCatalog:
             added_count = len(added_ids)
         else:
             added_count = 0
-        return {"source": snapshot, "outcome": "updated" if snapshot["error"] is None else "cached", "addedCount": added_count}
+        outcome = "cached" if snapshot["error"] is not None else ("updated" if added_count > 0 else "current")
+        return {"source": snapshot, "outcome": outcome, "addedCount": added_count}
 
     def resolve(self, url: str, *, source: dict[str, object] | None = None) -> dict[str, object]:
         normalized = validate_public_url(url, resolve_dns=self.validate_dns)

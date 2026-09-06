@@ -354,7 +354,7 @@ def test_single_source_recovers_from_timeout(tmp_path):
     assert failed["addedCount"] == 0
     catalog.fetcher = lambda _url: RSS
     recovered = catalog.refresh_source("solidot")
-    assert recovered["outcome"] == "updated"
+    assert recovered["outcome"] == "current"
     assert recovered["source"]["stale"] is False
     assert recovered["source"]["error"] is None
     assert recovered["source"]["lastAttemptAt"] == recovered["source"]["lastSuccessAt"]
@@ -379,7 +379,7 @@ def test_refresh_source_reports_item_ids_new_since_cached_snapshot(tmp_path):
     assert first["outcome"] == "updated"
     assert second["outcome"] == "updated"
     assert second["addedCount"] == 2
-    assert third["outcome"] == "updated"
+    assert third["outcome"] == "current"
     assert third["addedCount"] == 0
 
 
