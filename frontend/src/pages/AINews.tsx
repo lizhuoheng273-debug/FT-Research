@@ -7,7 +7,7 @@ import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/
 import { AISubscriptionFeed } from "@/components/ai/AISubscriptionFeed";
 import { apiUrl, authHeaders } from "@/lib/api";
 import { readRssSubscriptionState, type RssSource } from "@/lib/rssSubscriptions";
-import { createRssRefresher } from "@/lib/rssRefresh";
+import { createRssRefresher, type RssRefreshResult } from "@/lib/rssRefresh";
 
 const storyId = (topic: HotFeedTopic, item?: HotFeedItem) => {
   const url = topic.links?.story || item?.links?.story || "";
@@ -40,8 +40,6 @@ export function AINews() {
   const [refreshMessages, setRefreshMessages] = useState<Record<string, string>>({});
   const activeLoad = useRef<AbortController | null>(null);
   const rssRefresher = useRef<ReturnType<typeof createRssRefresher> | null>(null);
-  const refreshOutcomes = useRef(new Map<string, "updated" | "cached">());
-  const refreshKnownItems = useRef(new Map<string, Set<string>>());
   const mounted = useRef(true);
 
   const load = async () => {
@@ -99,17 +97,20 @@ export function AINews() {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
-      refreshOutcomes.current.set(source.id, body.outcome as "updated" | "cached");
-      return body.source as RssSource;
-    }, (source) => {
+      const result: RssRefreshResult = {
+        source: body.source as RssSource,
+        outcome: body.outcome as RssRefreshResult["outcome"],
+        addedCount: Number(body.addedCount ?? 0),
+      };
+      if (body.retryAfter !== undefined) result.retryAfter = Number(body.retryAfter);
+      return result;
+    }, (result) => {
       if (!mounted.current) return;
-      const outcome = refreshOutcomes.current.get(source.id);
-      const knownItems = refreshKnownItems.current.get(source.id) || new Set<string>();
-      const hasNewItems = source.items.some((item) => !knownItems.has(item.id));
-      setRssSources((current) => mergeRssSource(current, source));
-      setRefreshMessages((current) => ({ ...current, [source.id]: outcome === "cached"
-        ? (source.items.length ? "更新失败 · 使用缓存" : "更新失败，暂无缓存内容")
-        : (hasNewItems ? "已更新" : "已检查，暂无新内容") }));
+      const message = result.outcome === "updated"
+        ? `已更新，共新增 ${result.addedCount} 条`
+        : result.outcome === "current" ? "已是最新内容" : "更新未完成，当前显示最近一次成功内容";
+      setRssSources((current) => mergeRssSource(current, result.source));
+      setRefreshMessages((current) => ({ ...current, [result.source.id]: message }));
     });
     void load();
     return () => {
@@ -161,7 +162,6 @@ export function AINews() {
   const refreshSource = async (source: RssSource) => {
     const refresher = rssRefresher.current;
     if (!refresher || refresher.isRefreshing(source.id)) return;
-    refreshKnownItems.current.set(source.id, new Set(source.items.map((item) => item.id)));
     setRefreshingIds((current) => [...current, source.id]);
     setRefreshMessages((current) => ({ ...current, [source.id]: "正在检查更新…" }));
     try {

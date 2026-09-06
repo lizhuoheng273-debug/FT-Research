@@ -13,6 +13,7 @@ async function loadRefresher() {
 }
 
 const source = (id) => ({ id, name: id, category: "tech", region: "cn", priority: 1, homepage: "", stale: false, items: [] });
+const result = (item, outcome = "updated", addedCount = 1, extra = {}) => ({ source: item, outcome, addedCount, ...extra });
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((next, fail) => { resolve = next; reject = fail; });
@@ -24,7 +25,7 @@ test("refreshes different cards independently while duplicate clicks share one r
   const a = deferred(); const b = deferred();
   const calls = [];
   const seen = [];
-  const refresher = createRssRefresher((item) => { calls.push(item.id); return item.id === "a" ? a.promise : b.promise; }, (item) => seen.push(item.id));
+  const refresher = createRssRefresher((item) => { calls.push(item.id); return item.id === "a" ? a.promise.then((next) => result(next, "updated", 1)) : b.promise.then((next) => result(next, "updated", 1)); }, (next) => seen.push(next));
   const firstA = refresher.refresh(source("a"));
   const secondA = refresher.refresh(source("a"));
   const firstB = refresher.refresh(source("b"));
@@ -33,8 +34,19 @@ test("refreshes different cards independently while duplicate clicks share one r
   assert.equal(refresher.isRefreshing("b"), true);
   b.resolve(source("b")); a.resolve(source("a"));
   await Promise.all([firstA, secondA, firstB]);
-  assert.deepEqual(seen.sort(), ["a", "b"]);
+  assert.deepEqual(seen.map((next) => next.source.id).sort(), ["a", "b"]);
+  assert.equal(seen[0].outcome, "updated");
   assert.equal(refresher.isRefreshing("a"), false);
+});
+
+test("delivers a current result unchanged to the success callback", async () => {
+  const createRssRefresher = await loadRefresher();
+  const current = result(source("a"), "current", 0, { retryAfter: 30 });
+  const seen = [];
+  const refresher = createRssRefresher(async () => current, (next) => seen.push(next));
+  await refresher.refresh(source("a"));
+  assert.equal(seen[0], current);
+  assert.deepEqual(seen[0], { source: current.source, outcome: "current", addedCount: 0, retryAfter: 30 });
 });
 
 test("failed request keeps the existing list because it does not emit a replacement", async () => {
@@ -50,7 +62,7 @@ test("dispose aborts requests and ignores late source callbacks", async () => {
   const createRssRefresher = await loadRefresher();
   const pending = deferred();
   const seen = [];
-  const refresher = createRssRefresher(() => pending.promise, (item) => seen.push(item.id));
+  const refresher = createRssRefresher(() => pending.promise.then((next) => result(next)), (item) => seen.push(item.source.id));
   const running = refresher.refresh(source("a"));
   refresher.dispose();
   pending.resolve(source("a"));

@@ -1,10 +1,17 @@
 import type { RssSource } from "@/lib/rssSubscriptions";
 
-type RefreshRequest = (source: RssSource, signal: AbortSignal) => Promise<RssSource>;
+export interface RssRefreshResult {
+  source: RssSource;
+  outcome: "updated" | "current" | "cached";
+  addedCount: number;
+  retryAfter?: number;
+}
+
+type RefreshRequest = (source: RssSource, signal: AbortSignal) => Promise<RssRefreshResult>;
 type ActiveRefresh = { controller: AbortController; serial: number; promise: Promise<void> };
 
 /** Coordinates manual RSS refreshes without coupling card state to networking. */
-export function createRssRefresher(request: RefreshRequest, onSource: (source: RssSource) => void) {
+export function createRssRefresher(request: RefreshRequest, onResult: (result: RssRefreshResult) => void) {
   const active = new Map<string, ActiveRefresh>();
   let serial = 0;
   let disposed = false;
@@ -17,8 +24,8 @@ export function createRssRefresher(request: RefreshRequest, onSource: (source: R
     const currentSerial = ++serial;
     const promise = (async () => {
       try {
-        const refreshed = await request(source, controller.signal);
-        if (!disposed && active.get(source.id)?.serial === currentSerial) onSource(refreshed);
+        const result = await request(source, controller.signal);
+        if (!disposed && active.get(source.id)?.serial === currentSerial) onResult(result);
       } finally {
         if (active.get(source.id)?.serial === currentSerial) active.delete(source.id);
       }
