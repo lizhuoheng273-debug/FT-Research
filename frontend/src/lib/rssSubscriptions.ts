@@ -203,6 +203,11 @@ export function orderRssSources(sources: RssSource[], state: RssSubscriptionStat
   return sourceOrder.sort((a, b) => Number(pinned.has(b)) - Number(pinned.has(a))).map((id) => byId.get(id)!).filter(Boolean);
 }
 
+export function removeRssSourcesById<T extends Pick<RssSource, "id">>(sources: T[], sourceIds: string[]): T[] {
+  const removedIds = new Set(sourceIds);
+  return sources.filter((source) => !removedIds.has(source.id));
+}
+
 export function trashSubscriptions(state: RssSubscriptionState, sourceIds: string[]): RssSubscriptionState {
   const order = uniqueStrings(state.order);
   const pinned = uniqueStrings(state.pinned);

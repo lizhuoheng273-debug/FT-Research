@@ -6,7 +6,7 @@ import { AskAiButton } from "@/components/ui/AskAiButton";
 import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/AIHotFeed";
 import { AISubscriptionFeed } from "@/components/ai/AISubscriptionFeed";
 import { apiUrl, authHeaders } from "@/lib/api";
-import { readRssSubscriptionState, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
+import { readRssSubscriptionState, removeRssSourcesById, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
 import { createRssRefresher, type RssRefreshResult } from "@/lib/rssRefresh";
 
 const storyId = (topic: HotFeedTopic, item?: HotFeedItem) => {
@@ -184,7 +184,7 @@ export function AINews() {
     {stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">AI HOT 暂时不可用，当前显示本地缓存。</p>}
     {error && <p className="mb-3 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
     <AIHotFeed topics={topics} items={items} loading={loading} onOpenStory={openStory} showEvents={false} />
-    <AISubscriptionFeed sources={rssSources} loading={rssLoading} error={rssError} refreshingIds={refreshingIds} refreshMessages={refreshMessages} onRefreshSource={refreshSource} onSourcesChanged={(source) => setRssSources((current) => mergeRssSource(current, source))} onSubscriptionSourcesChanged={(state) => void load(state)} />
+    <AISubscriptionFeed sources={rssSources} loading={rssLoading} error={rssError} refreshingIds={refreshingIds} refreshMessages={refreshMessages} onRefreshSource={refreshSource} onSourcesChanged={(source) => setRssSources((current) => mergeRssSource(current, source))} onSubscriptionSourcesChanged={(state, change) => { const removedSourceIds = change?.removedSourceIds || []; if (removedSourceIds.length > 0) setRssSources((current) => removeRssSourcesById(current, removedSourceIds)); void load(state); }} />
     {!loading && topics.length === 0 && <p className="mt-4 text-sm text-muted-foreground">暂无热点资讯。</p>}
     {itemById.size === 0 && !loading && topics.length > 0 && <p className="mt-2 text-xs text-muted-foreground">部分事件暂未返回摘要，将在详情页补充。</p>}
   </div>;

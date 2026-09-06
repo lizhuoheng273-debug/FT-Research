@@ -13,7 +13,7 @@ interface Props {
   refreshMessages?: Record<string, string>;
   onRefreshSource?: (source: RssSource) => void;
   onSourcesChanged?: (source: RssSource) => void;
-  onSubscriptionSourcesChanged?: (state: RssSubscriptionState) => void | Promise<void>;
+  onSubscriptionSourcesChanged?: (state: RssSubscriptionState, change?: { removedSourceIds?: string[] }) => void | Promise<void>;
 }
 
 function sourceStatus(source: RssSource) {
@@ -115,9 +115,10 @@ export function AISubscriptionFeed({ sources, loading = false, error, refreshing
 
   const restore = () => {
     if (!window.confirm("确定恢复默认 RSS 设置吗？这会重置本机排序、置顶、自定义订阅和回收站。")) return;
+    const removedSourceIds = subscriptionState.custom.map((source) => source.id);
     const nextState = resetSubscriptions();
     updateState(nextState);
-    void onSubscriptionSourcesChanged?.(nextState);
+    void onSubscriptionSourcesChanged?.(nextState, { removedSourceIds });
     cancelBatchManagement();
     setTrashSelectedIds([]);
   };

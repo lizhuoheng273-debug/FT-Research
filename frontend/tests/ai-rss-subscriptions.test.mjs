@@ -214,12 +214,27 @@ test("batch RSS management and recycle bin expose the restore-only accessible co
 });
 
 test("restore and reset notify the parent to refetch sources from the updated local state", () => {
-  assert.match(feed, /onSubscriptionSourcesChanged\?: \(state: RssSubscriptionState\) => void \| Promise<void>/);
+  assert.match(feed, /onSubscriptionSourcesChanged\?: \(state: RssSubscriptionState, change\?: \{ removedSourceIds\?: string\[\] \}\) => void \| Promise<void>/);
   assert.match(feed, /const nextState = restoreSubscriptions\(subscriptionState, trashSelectedIds\)/);
   assert.match(feed, /const nextState = restoreAllSubscriptions\(subscriptionState\)/);
   assert.match(feed, /const nextState = resetSubscriptions\(\)/);
-  assert.equal(feed.match(/onSubscriptionSourcesChanged\?\.\(nextState\)/g)?.length, 3);
+  assert.equal(feed.match(/onSubscriptionSourcesChanged\?\.\(nextState/g)?.length, 3);
   assert.match(page, /const load = async \(subscriptionStateOverride\?: RssSubscriptionState\)/);
   assert.match(page, /subscriptionStateOverride \?\? readRssSubscriptionState\(\)/);
-  assert.match(page, /onSubscriptionSourcesChanged=\{\(state\) => void load\(state\)\}/);
+  assert.match(page, /onSubscriptionSourcesChanged=\{\(state, change\) =>/);
+  assert.match(page, /void load\(state\)/);
+});
+
+test("reset synchronously removes pre-reset custom cards before the parent refetch", () => {
+  const { api } = loadStateModule();
+  const sources = [{ id: "custom-x", name: "X" }, { id: "qbitai", name: "QbitAI" }];
+
+  assert.equal(typeof api.removeRssSourcesById, "function");
+  assert.deepEqual(plain(api.removeRssSourcesById(sources, ["custom-x"])), [sources[1]]);
+  assert.match(feed, /const removedSourceIds = subscriptionState\.custom\.map\(\(source\) => source\.id\)/);
+  assert.match(feed, /onSubscriptionSourcesChanged\?\.\(nextState, \{ removedSourceIds \}\)/);
+
+  const parentSync = page.slice(page.indexOf("<AISubscriptionFeed"));
+  assert.match(parentSync, /removeRssSourcesById\(current, removedSourceIds\)/);
+  assert.ok(parentSync.indexOf("setRssSources((current) => removeRssSourcesById") < parentSync.indexOf("void load(state)"));
 });
