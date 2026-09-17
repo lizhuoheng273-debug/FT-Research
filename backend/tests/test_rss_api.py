@@ -234,6 +234,51 @@ def test_concurrent_same_source_refresh_preserves_cached_outcome(monkeypatch):
     assert calls == ["solidot"]
 
 
+def test_concurrent_first_refresh_failure_returns_same_http_error_to_waiter(monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {})
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {})
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(app.rss_catalog, "refresh_identity", lambda source_id, custom_url=None: source_id)
+
+    def refresh(source_id, custom_url=None):
+        calls.append(source_id)
+        started.set()
+        assert release.wait(1)
+        raise app.HTTPException(status_code=502, detail="刷新失败，请稍后重试。")
+
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", refresh)
+    responses = {}
+
+    def request(label):
+        responses[label] = TestClient(app.app, raise_server_exceptions=False).post(
+            "/api/ai/rss/refresh", json={"sourceId": "solidot"}
+        )
+
+    first = threading.Thread(target=request, args=("first",))
+    first.start()
+    assert started.wait(1)
+    waiter = threading.Thread(target=request, args=("waiter",))
+    waiter.start()
+    time.sleep(0.05)
+    assert waiter.is_alive()
+    release.set()
+    first.join(1)
+    waiter.join(1)
+
+    assert calls == ["solidot"]
+    assert responses["first"].status_code == 502
+    assert responses["waiter"].status_code == 502
+    assert responses["first"].json() == responses["waiter"].json() == {
+        "detail": "刷新失败，请稍后重试。"
+    }
+
+
 def test_radar_keeps_legacy_industries_and_media_snapshots(monkeypatch):
     payload = {"generated_at": "now", "industries": [], "stats": {}, "sources": [], "sourceHealth": []}
     monkeypatch.setattr(app.newsradar, "get_radar", lambda force=False: payload)

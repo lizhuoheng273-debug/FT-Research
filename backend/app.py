@@ -244,7 +244,16 @@ class RssRefreshReq(BaseModel):
 RSS_REFRESH_COOLDOWN_SECONDS = 30
 _rss_refresh_attempts: dict[str, float] = {}
 _rss_refresh_results: dict[str, dict[str, object]] = {}
-_rss_refresh_inflight: dict[str, threading.Event] = {}
+
+
+class _RssRefreshFlight:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: dict[str, object] | None = None
+        self.error: tuple[int, object, dict[str, str] | None] | None = None
+
+
+_rss_refresh_inflight: dict[str, _RssRefreshFlight] = {}
 _rss_refresh_attempts_lock = threading.Lock()
 _rss_refresh_clock = time.monotonic
 _RSS_REFRESH_OUTCOMES = {"updated", "current", "cached"}
@@ -313,8 +322,8 @@ def ai_rss_refresh(request: RssRefreshReq):
     now = _rss_refresh_clock()
     with _rss_refresh_attempts_lock:
         last_attempt = _rss_refresh_attempts.get(source_id)
-        refresh_event = _rss_refresh_inflight.get(source_id)
-        if refresh_event is not None:
+        refresh_flight = _rss_refresh_inflight.get(source_id)
+        if refresh_flight is not None:
             remaining = RSS_REFRESH_COOLDOWN_SECONDS - (now - last_attempt) if last_attempt is not None else 0
             retry_after = max(1, math.ceil(remaining))
             should_refresh = False
@@ -329,40 +338,50 @@ def ai_rss_refresh(request: RssRefreshReq):
                     "retryAfter": retry_after,
                 }
 
-        if refresh_event is None:
+        if refresh_flight is None:
             _rss_refresh_attempts[source_id] = now
-            refresh_event = threading.Event()
-            _rss_refresh_inflight[source_id] = refresh_event
+            refresh_flight = _RssRefreshFlight()
+            _rss_refresh_inflight[source_id] = refresh_flight
             should_refresh = True
 
     if not should_refresh:
-        refresh_event.wait()
-        with _rss_refresh_attempts_lock:
-            completed_result = _rss_refresh_results[source_id]
-            if completed_result["outcome"] == "cached":
-                return completed_result
-            return {
-                "source": completed_result["source"],
-                "outcome": "current",
-                "addedCount": 0,
-                "retryAfter": retry_after,
-            }
+        refresh_flight.event.wait()
+        if refresh_flight.error is not None:
+            status_code, detail, headers = refresh_flight.error
+            raise HTTPException(status_code=status_code, detail=detail, headers=headers)
+        assert refresh_flight.result is not None
+        if refresh_flight.result["outcome"] == "cached":
+            return refresh_flight.result
+        return {
+            "source": refresh_flight.result["source"],
+            "outcome": "current",
+            "addedCount": 0,
+            "retryAfter": retry_after,
+        }
 
     result = None
+    failure = None
     try:
         result = _normalize_rss_refresh_result(rss_catalog.refresh_source(request.sourceId, request.url))
+    except HTTPException as exc:
+        failure = (exc.status_code, exc.detail, exc.headers)
+        raise
     except KeyError as exc:
+        failure = (404, "RSS 信源不存在", None)
         raise HTTPException(404, "RSS 信源不存在") from exc
     except (RssSecurityError, ValueError) as exc:
+        failure = (400, str(exc), None)
         raise HTTPException(400, str(exc)) from exc
     finally:
         with _rss_refresh_attempts_lock:
             if result is not None:
                 _rss_refresh_results[source_id] = result
+                refresh_flight.result = result
             else:
                 _rss_refresh_attempts.pop(source_id, None)
-            event = _rss_refresh_inflight.pop(source_id)
-            event.set()
+                refresh_flight.error = failure
+            _rss_refresh_inflight.pop(source_id)
+            refresh_flight.event.set()
     assert result is not None
     return result
 

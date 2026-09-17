@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { RotateCcw, X } from "lucide-react";
+import { trapDialogFocus } from "@/lib/rssInteractions";
 import type { RssSource, RssTrashEntry } from "@/lib/rssSubscriptions";
 
 interface Props {
@@ -36,28 +37,9 @@ export function RssTrashDialog({
         onClose();
         return;
       }
-      if (event.key !== "Tab") return;
-
       const dialog = dialogRef.current;
       if (!dialog) return;
-      const focusableElements = Array.from(dialog.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ));
-      if (focusableElements.length === 0) {
-        event.preventDefault();
-        return;
-      }
-
-      const firstFocusable = focusableElements[0]!;
-      const lastFocusable = focusableElements[focusableElements.length - 1]!;
-      const focusOutsideDialog = !dialog.contains(document.activeElement);
-      if (event.shiftKey && (document.activeElement === firstFocusable || focusOutsideDialog)) {
-        event.preventDefault();
-        lastFocusable.focus();
-      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusOutsideDialog)) {
-        event.preventDefault();
-        firstFocusable.focus();
-      }
+      trapDialogFocus(event, dialog, document.activeElement);
     };
     document.addEventListener("keydown", handleKeyDown);
     const previousOverflow = document.body.style.overflow;

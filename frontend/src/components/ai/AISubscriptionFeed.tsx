@@ -5,6 +5,7 @@ import { Check, Loader2, Plus, RotateCcw, Search, Trash2, X } from "lucide-react
 import { RssSortableCard, RssSortableCardOverlay } from "@/components/ai/RssSortableCard";
 import { RssTrashDialog } from "@/components/ai/RssTrashDialog";
 import { apiUrl, authHeaders } from "@/lib/api";
+import { restoreFocusOnNextFrame } from "@/lib/rssInteractions";
 import { addCustomSubscription, moveSubscription, orderRssSources, readRssSubscriptionState, removeCustomSource, resetSubscriptions, restoreAllSubscriptions, restoreSubscriptions, trashSubscriptions, toggleSubscriptionFlag, writeRssSubscriptionState, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
 
 interface Props {
@@ -69,7 +70,7 @@ export function AISubscriptionFeed({ sources, loading = false, error, refreshing
   const openTrash = () => { setTrashSelectedIds([]); setTrashOpen(true); };
   const closeTrash = () => {
     setTrashOpen(false);
-    window.requestAnimationFrame(() => trashButtonRef.current?.focus());
+    restoreFocusOnNextFrame(trashButtonRef.current);
   };
   const restoreSelectedTrash = () => {
     if (trashSelectedIds.length === 0) return;

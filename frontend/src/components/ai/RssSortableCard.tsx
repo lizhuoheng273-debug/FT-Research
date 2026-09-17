@@ -1,8 +1,9 @@
-import type { CSSProperties, SyntheticEvent } from "react";
+import type { CSSProperties } from "react";
 import { AlertTriangle, ArrowDown, ArrowUp, ExternalLink, EyeOff, GripVertical, Loader2, Pin, RefreshCw, Trash2 } from "lucide-react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { stopDragActivation } from "@/lib/rssInteractions";
 import type { RssSource } from "@/lib/rssSubscriptions";
 
 interface Props {
@@ -30,8 +31,6 @@ function sourceStatus(source: RssSource) {
   if (source.staleReason === "ttl" || source.stale) return { label: "待更新", className: "text-warning" };
   return { label: "健康", className: "text-success" };
 }
-
-const stopDrag = (event: SyntheticEvent) => event.stopPropagation();
 
 export function RssSortableCard({
   source,
@@ -66,7 +65,7 @@ export function RssSortableCard({
     transition,
     zIndex: isDragging ? 1 : undefined,
   };
-  const noDragProps = { "data-no-drag": true, onPointerDown: stopDrag, onTouchStart: stopDrag, onKeyDown: stopDrag };
+  const noDragProps = { "data-no-drag": true, onPointerDown: stopDragActivation, onTouchStart: stopDragActivation, onKeyDown: stopDragActivation };
   const dragProps = dragDisabled ? {} : {
     ...attributes,
     ...listeners,

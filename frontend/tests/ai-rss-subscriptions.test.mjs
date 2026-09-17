@@ -8,12 +8,16 @@ const page = await readFile(new URL("../src/pages/AINews.tsx", import.meta.url),
 const feed = await readFile(new URL("../src/components/ai/AISubscriptionFeed.tsx", import.meta.url), "utf8");
 const sortableCard = await readFile(new URL("../src/components/ai/RssSortableCard.tsx", import.meta.url), "utf8").catch(() => "");
 const trash = await readFile(new URL("../src/components/ai/RssTrashDialog.tsx", import.meta.url), "utf8").catch(() => "");
+const interactions = await readFile(new URL("../src/lib/rssInteractions.ts", import.meta.url), "utf8").catch(() => "");
 const state = await readFile(new URL("../src/lib/rssSubscriptions.ts", import.meta.url), "utf8");
 const hot = await readFile(new URL("../src/components/ai/AIHotFeed.tsx", import.meta.url), "utf8");
 const daily = await readFile(new URL("../src/pages/AIDaily.tsx", import.meta.url), "utf8");
 const feedAndCard = `${feed}\n${sortableCard}`;
 
 const compiledState = ts.transpileModule(state, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const compiledInteractions = ts.transpileModule(interactions, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
@@ -27,6 +31,12 @@ function loadStateModule(initial = {}) {
   const exports = {};
   vm.runInNewContext(compiledState, { exports, window: { localStorage }, JSON, Math, Map, Set });
   return { api: exports, values };
+}
+
+function loadInteractionModule() {
+  const exports = {};
+  vm.runInNewContext(compiledInteractions, { exports });
+  return exports;
 }
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -68,8 +78,14 @@ test("subscription feed uses dnd-kit for pointer, touch and keyboard sorting", (
   assert.doesNotMatch(feedAndCard, /onPointerUp/);
 });
 
-test("interactive RSS controls stop touchstart before it reaches TouchSensor", () => {
-  assert.match(sortableCard, /const noDragProps = \{[^}]*onPointerDown:\s*stopDrag,[^}]*onTouchStart:\s*stopDrag/s);
+test("interactive RSS controls stop touch activation before it reaches TouchSensor", () => {
+  const api = loadInteractionModule();
+  let propagationStops = 0;
+
+  api.stopDragActivation({ stopPropagation: () => { propagationStops += 1; } });
+
+  assert.equal(propagationStops, 1);
+  assert.match(sortableCard, /onTouchStart:\s*stopDragActivation/);
 });
 
 test("subscription cards keep actions below content on narrow screens", () => {
@@ -233,13 +249,47 @@ test("batch RSS management and recycle bin expose the restore-only accessible co
   assert.doesNotMatch(feedAndTrash, /永久删除/);
 });
 
-test("RSS recycle-bin dialog traps Tab and Shift+Tab within its controls", () => {
-  assert.match(trash, /querySelectorAll<HTMLElement>/);
-  assert.match(trash, /event\.key !== "Tab"/);
-  assert.match(trash, /event\.shiftKey/);
-  assert.match(trash, /!dialog\.contains\(document\.activeElement\)/);
-  assert.match(trash, /firstFocusable\.focus\(\)/);
-  assert.match(trash, /lastFocusable\.focus\(\)/);
+test("RSS recycle-bin focus behavior wraps both Tab directions and restores its trigger", () => {
+  const api = loadInteractionModule();
+  const focusLog = [];
+  const first = { focus: () => focusLog.push("first") };
+  const middle = { focus: () => focusLog.push("middle") };
+  const last = { focus: () => focusLog.push("last") };
+  const controls = [first, middle, last];
+  const dialog = {
+    querySelectorAll: () => controls,
+    contains: (element) => controls.includes(element),
+  };
+  const makeEvent = (shiftKey = false) => ({
+    key: "Tab",
+    shiftKey,
+    prevented: false,
+    preventDefault() { this.prevented = true; },
+  });
+
+  const forward = makeEvent();
+  api.trapDialogFocus(forward, dialog, last);
+  assert.equal(forward.prevented, true);
+  assert.deepEqual(focusLog, ["first"]);
+
+  const backward = makeEvent(true);
+  api.trapDialogFocus(backward, dialog, first);
+  assert.equal(backward.prevented, true);
+  assert.deepEqual(focusLog, ["first", "last"]);
+
+  const middleTab = makeEvent();
+  api.trapDialogFocus(middleTab, dialog, middle);
+  assert.equal(middleTab.prevented, false);
+
+  const scheduled = [];
+  const trigger = { focus: () => focusLog.push("trigger") };
+  api.restoreFocusOnNextFrame(trigger, (callback) => scheduled.push(callback));
+  assert.deepEqual(focusLog, ["first", "last"]);
+  scheduled[0]();
+  assert.deepEqual(focusLog, ["first", "last", "trigger"]);
+
+  assert.match(trash, /trapDialogFocus/);
+  assert.match(feed, /restoreFocusOnNextFrame/);
 });
 
 test("batch management removes drag semantics and cursor affordances from cards", () => {
