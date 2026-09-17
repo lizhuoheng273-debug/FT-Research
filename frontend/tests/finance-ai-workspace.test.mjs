@@ -145,6 +145,13 @@ function findHeading(node) {
   return findHeading(node.props?.children);
 }
 
+function nodeText(node) {
+  if (node == null || typeof node === "boolean") return "";
+  if (Array.isArray(node)) return node.map(nodeText).join(" ");
+  if (typeof node !== "object") return String(node);
+  return nodeText(node.props?.children);
+}
+
 test("finance AI workspace exposes the shared route and all source keys", async () => {
   const workspaceUrl = new URL("pages/FinanceAiWorkspace.tsx", root);
   const workspace = await readFile(workspaceUrl, "utf8");
@@ -287,7 +294,7 @@ test("AI news without an event retains general context and AI Daily keeps its da
   assert.match(daily.sessionOptions.context, /2026-09-17/);
 });
 
-test("AI-news story IDs are encoded in the detail request and missing stories stay unavailable", async () => {
+test("AI-news story IDs are encoded in the detail request", async () => {
   const encoded = mountAiWorkspace({
     query: "source=ai-news&eventId=story%2Fone",
     responses: { "/ai/news/stories/story%2Fone": { body: { title: "编码故事" } } },
@@ -298,7 +305,9 @@ test("AI-news story IDs are encoded in the detail request and missing stories st
   assert.deepEqual(encoded.requests, ["/api/ai/news/stories/story%2Fone"]);
   assert.equal(encoded.sessionOptions.conversationKey, "ai:ai-news:story/one");
   assert.equal(encoded.sessionOptions.source.eventId, "story/one");
+});
 
+test("failed story fetch keeps its warning but enables meaningful fallback context", async () => {
   const fallback = { title: "失败备用标题", summary: "失败备用摘要", originalUrl: "https://example.com/fallback" };
   const returnState = { fallback: { title: "详情标题", summary: "详情摘要" } };
   const missing = mountAiWorkspace({
@@ -306,6 +315,7 @@ test("AI-news story IDs are encoded in the detail request and missing stories st
     locationState: { from: "/ai/news/story/missing-story", returnState, storySnapshot: fallback },
     responses: { "/ai/news/stories/missing-story": { body: { detail: "Not Found" }, ok: false, status: 404 } },
   });
+  assert.equal(missing.sessionOptions.contextReady, true);
   await flush();
   await flush();
   missing.render();
@@ -313,13 +323,35 @@ test("AI-news story IDs are encoded in the detail request and missing stories st
   assert.match(missing.sessionOptions.context, /失败备用标题/);
   assert.match(missing.sessionOptions.context, /失败备用摘要/);
   assert.match(missing.sessionOptions.context, /https:\/\/example\.com\/fallback/);
-  assert.equal(missing.sessionOptions.contextReady, false);
+  assert.equal(missing.sessionOptions.contextReady, true);
+  assert.match(nodeText(missing.render()), /上下文异常/);
   assert.equal(findHeading(missing.render()), "失败备用标题");
+  assert.equal(missing.sessionOptions.conversationKey, "ai:ai-news:missing-story");
 
   findButton(missing.render(), "返回").onClick();
   assert.equal(missing.navigations[0].to, "/ai/news/story/missing-story");
   assert.equal(missing.navigations[0].options.replace, true);
   assert.deepEqual(missing.navigations[0].options.state, returnState);
+});
+
+test("failed story fetch blocks sending when route state has no meaningful context", async () => {
+  for (const [eventId, storySnapshot] of [
+    ["title-only", { title: "只有标题" }],
+    ["no-snapshot", undefined],
+  ]) {
+    const app = mountAiWorkspace({
+      query: `source=ai-news&eventId=${eventId}`,
+      locationState: { from: `/ai/news/story/${eventId}`, storySnapshot },
+      responses: { [`/ai/news/stories/${eventId}`]: { body: { detail: "Not Found" }, ok: false, status: 404 } },
+    });
+    await flush();
+    await flush();
+    app.render();
+
+    assert.equal(app.sessionOptions.contextReady, false);
+    assert.equal(app.sessionOptions.conversationKey, `ai:ai-news:${eventId}`);
+    assert.match(nodeText(app.render()), /上下文异常/);
+  }
 });
 
 test("index detail copy reflects all six supported review indices", () => {

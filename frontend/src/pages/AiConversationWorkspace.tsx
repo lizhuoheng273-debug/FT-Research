@@ -33,6 +33,10 @@ function readStorySnapshot(value: unknown): StorySnapshot | undefined {
   return Object.keys(snapshot).length ? snapshot : undefined;
 }
 
+function hasMeaningfulStorySnapshot(snapshot?: StorySnapshot): boolean {
+  return Boolean(snapshot?.title?.trim() && (snapshot.summary?.trim() || snapshot.originalUrl?.trim()));
+}
+
 function storyContext(story: AiNewsStory = {}, snapshot?: StorySnapshot): { title: string; text: string } {
   const reports = Array.isArray(story.reports) ? story.reports : [];
   const reportContext = reports.map((report, index) => {
@@ -122,7 +126,8 @@ export function AiConversationWorkspace() {
   useEffect(() => load(), [source, date, eventId]);
 
   const conversationKey = source === "ai-news" ? `ai:ai-news:${eventId || "latest"}` : `ai:${source}:${date || "latest"}`;
-  const session = useAiChatSession({ conversationKey, conversationId, context, contextReady: !loading && !error, analysisScope: "general", source: { type: source, ...(source === "ai-news" && eventId ? { eventId } : {}), date } });
+  const fallbackContextReady = Boolean(eventId && hasMeaningfulStorySnapshot(storySnapshot));
+  const session = useAiChatSession({ conversationKey, conversationId, context, contextReady: fallbackContextReady || (!loading && !error), analysisScope: "general", source: { type: source, ...(source === "ai-news" && eventId ? { eventId } : {}), date } });
   const stateFrom = routeState.from;
   const returnTo = () => navigate(
     stateFrom || (source === "ai-daily" ? "/ai/daily" : "/ai/news"),
