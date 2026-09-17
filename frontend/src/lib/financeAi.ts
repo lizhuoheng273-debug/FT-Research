@@ -31,6 +31,7 @@ export function buildFinanceAiPath(target: FinanceAiTarget): string {
 export function buildAiWorkspacePath(source: AiWorkspaceSource, identifiers: Omit<FinanceAiTarget, "source"> = {}): string {
   if (source === "ai-news" || source === "ai-daily") {
     const params = new URLSearchParams({ source });
+    if (source === "ai-news" && identifiers.eventId) params.set("eventId", identifiers.eventId);
     if (identifiers.date) params.set("date", identifiers.date);
     return `/ai/conversations?${params.toString()}`;
   }

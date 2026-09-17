@@ -21,6 +21,11 @@ test("AI hotspot detail route is registered", () => {
   for (const section of ["AI 导读", "推荐理由", "标签", "报道时间线", "AI 摘要与追问"]) assert.match(detail, new RegExp(section));
 });
 
+test("AI hotspot follow-up opens the full workspace for the selected story", () => {
+  assert.match(detail, /<AskAiButton[\s\S]*workspaceSource="ai-news"[\s\S]*workspaceEventId=\{storyId\}/);
+  assert.doesNotMatch(detail, /<AskAiButton[^>]*workspaceSource=\{undefined\}/);
+});
+
 test("AI hotspot feed prefetches only on intentional pointer and keyboard focus", () => {
   assert.match(sharedFeed, /onPrefetchStory\??\s*:/);
   assert.match(sharedFeed, /onMouseEnter=\{[^}]*onPrefetchStory/);

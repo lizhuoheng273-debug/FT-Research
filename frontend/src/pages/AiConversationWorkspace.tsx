@@ -9,6 +9,8 @@ import { apiUrl, authHeaders } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type HotTopic = { rank?: number; title?: string; source?: string };
+type AiNewsReport = { title?: string; summary?: string; source?: string | { name?: string }; publishedAt?: string; links?: { original?: string } };
+type AiNewsStory = { title?: string; digest?: string; latest?: string; links?: { original?: string }; reports?: AiNewsReport[] };
 
 const sourceLabel: Record<"ai-news" | "ai-daily", string> = {
   "ai-news": "AI 热点资讯",
@@ -26,6 +28,7 @@ export function AiConversationWorkspace() {
   const source = parseSource(params.get("source"));
   const conversationId = params.get("conversationId") || undefined;
   const date = params.get("date") || "";
+  const eventId = source === "ai-news" ? params.get("eventId") || "" : "";
   const requestVersion = useRef(0);
   const [context, setContext] = useState("正在读取 AI 板块上下文…");
   const [loading, setLoading] = useState(true);
@@ -43,7 +46,25 @@ export function AiConversationWorkspace() {
       return body;
     };
     const request = source === "ai-news"
-      ? Promise.all([read("/ai/news/hot-topics"), read("/ai/news?mode=selected&window=24h&limit=50")]).then(([hot, feed]) => {
+      ? eventId
+        ? read(`/ai/news/stories/${encodeURIComponent(eventId)}`).then((body) => {
+          const story = (body.story && typeof body.story === "object" ? body.story : body) as AiNewsStory;
+          const reports = Array.isArray(story.reports) ? story.reports : [];
+          const reportContext = reports.map((report, index) => {
+            const reportSource = typeof report.source === "string" ? report.source : report.source?.name;
+            return [`${index + 1}. ${report.title || "未命名报道"}`, report.summary, reportSource, report.publishedAt].filter(Boolean).join("｜");
+          }).join("\n");
+          const originalLinks = [...new Set([story.links?.original, ...reports.map((report) => report.links?.original)].filter((link): link is string => Boolean(link)))];
+          return [
+            "来源：AI 热点资讯",
+            `标题：${story.title || "未命名热点"}`,
+            `AI 摘要：${story.digest || "暂无"}`,
+            `最新进展：${story.latest || "暂无"}`,
+            `来源报道：${reportContext || "暂无"}`,
+            `原文链接：${originalLinks.join("\n") || "暂无"}`,
+          ].join("\n");
+        })
+        : Promise.all([read("/ai/news/hot-topics"), read("/ai/news?mode=selected&window=24h&limit=50")]).then(([hot, feed]) => {
         const topics = ((hot.items || []) as HotTopic[]).sort((a, b) => (a.rank || 0) - (b.rank || 0)).slice(0, 10);
         const items = Array.isArray(feed.items) ? feed.items : [];
         return [`来源：AI 热点资讯`, `热点：${topics.map((item) => `${item.rank || ""}. ${item.title || "未命名热点"}（${item.source || "未知来源"}）`).join("；") || "暂无"}`, `订阅资讯：${items.slice(0, 20).map((item: { title?: string; source?: string }) => `${item.title || "未命名资讯"}（${item.source || "未知来源"}）`).join("；") || "暂无"}`].join("\n");
@@ -53,10 +74,10 @@ export function AiConversationWorkspace() {
     return () => { cancelled = true; };
   };
 
-  useEffect(() => load(), [source, date]);
+  useEffect(() => load(), [source, date, eventId]);
 
-  const conversationKey = `ai:${source}:${date || "latest"}`;
-  const session = useAiChatSession({ conversationKey, conversationId, context, contextReady: !loading && !error, analysisScope: "general", source: { type: source, date } });
+  const conversationKey = source === "ai-news" ? `ai:ai-news:${eventId || "latest"}` : `ai:${source}:${date || "latest"}`;
+  const session = useAiChatSession({ conversationKey, conversationId, context, contextReady: !loading && !error, analysisScope: "general", source: { type: source, ...(source === "ai-news" && eventId ? { eventId } : {}), date } });
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const returnTo = () => navigate(stateFrom || (source === "ai-daily" ? "/ai/daily" : "/ai/news"), { replace: true });
   const startNew = () => { session.clearChat(); const next = new URLSearchParams(params); next.delete("conversationId"); navigate(`/ai/conversations?${next}`); };
