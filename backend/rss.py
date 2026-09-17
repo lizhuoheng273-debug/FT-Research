@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlsplit, urlunparse, urlunsplit
 
+from fastapi import HTTPException
+
 from data_paths import cache_path
 
 
@@ -472,25 +474,29 @@ class RssCatalog:
         return self._public_snapshot(source, items=[], last_success=None, last_attempt=None, stale=False,
                                      stale_reason="fetch_failed" if error else None, error=error or "尚未成功抓取", error_code=None)
 
+    def _refresh_locked(self, source: dict[str, object]) -> dict[str, object]:
+        url = str(source["url"])
+        try:
+            validate_public_url(url, resolve_dns=self.validate_dns)
+            parsed = parse_feed(self.fetcher(url), source_url=url)
+            now = _now()
+            cache_value = {"source": {key: source.get(key) for key in ("id", "name", "category", "region", "priority", "homepage", "url")}, "lastSuccessAt": now, "lastAttemptAt": now, "items": [item.as_dict() for item in parsed.items]}
+            self._write_cache(url, cache_value)
+            resolved_source = {**source, "name": source.get("name") or parsed.name}
+            return self._public_snapshot(resolved_source, items=cache_value["items"], last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
+        except Exception as exc:  # noqa: BLE001 - stale fallback is the public contract
+            error_code = self._error_code(exc)
+            self._record_failure(source, str(exc), error_code)
+            snapshot = self._read_snapshot(source, stale=True, error=str(exc))
+            snapshot["errorCode"] = error_code
+            return snapshot
+
     def refresh(self, source: dict[str, object]) -> dict[str, object]:
         url = str(source["url"])
         # The lock intentionally includes fetch + write. A slow failure must not
         # finish after a newer successful refresh and overwrite its cache.
         with self._source_lock(url), self._refresh_slots:
-            try:
-                validate_public_url(url, resolve_dns=self.validate_dns)
-                parsed = parse_feed(self.fetcher(url), source_url=url)
-                now = _now()
-                cache_value = {"source": {key: source.get(key) for key in ("id", "name", "category", "region", "priority", "homepage", "url")}, "lastSuccessAt": now, "lastAttemptAt": now, "items": [item.as_dict() for item in parsed.items]}
-                self._write_cache(url, cache_value)
-                resolved_source = {**source, "name": source.get("name") or parsed.name}
-                return self._public_snapshot(resolved_source, items=cache_value["items"], last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
-            except Exception as exc:  # noqa: BLE001 - stale fallback is the public contract
-                error_code = self._error_code(exc)
-                self._record_failure(source, str(exc), error_code)
-                snapshot = self._read_snapshot(source, stale=True, error=str(exc))
-                snapshot["errorCode"] = error_code
-                return snapshot
+            return self._refresh_locked(source)
 
     def refresh_identity(self, source_id: str, custom_url: str | None = None) -> str:
         """Validate identity before the HTTP route applies its cooldown.
@@ -534,8 +540,23 @@ class RssCatalog:
 
     def refresh_source(self, source_id: str, custom_url: str | None = None) -> dict[str, object]:
         source = self.source_for_refresh(source_id, custom_url)
-        snapshot = self.refresh(source)
-        return {"source": snapshot, "outcome": "updated" if snapshot["error"] is None else "cached"}
+        url = str(source["url"])
+        with self._source_lock(url), self._refresh_slots:
+            cached = self._read_cache(url) or {}
+            cached_items = cached.get("items") if isinstance(cached.get("items"), list) else []
+            cached_ids = {item.get("id") for item in cached_items if isinstance(item, dict) and isinstance(item.get("id"), str)}
+            snapshot = self._refresh_locked(source)
+            if snapshot["error"] is None:
+                refreshed = self._read_cache(url) or {}
+                refreshed_items = refreshed.get("items") if isinstance(refreshed.get("items"), list) else []
+                refreshed_ids = {item.get("id") for item in refreshed_items if isinstance(item, dict) and isinstance(item.get("id"), str)}
+                added_count = len(refreshed_ids - cached_ids)
+            else:
+                if not snapshot["lastSuccessAt"]:
+                    raise HTTPException(status_code=502, detail="刷新失败，请稍后重试。")
+                added_count = 0
+            outcome = "cached" if snapshot["error"] is not None else ("updated" if added_count > 0 else "current")
+            return {"source": snapshot, "outcome": outcome, "addedCount": added_count}
 
     def resolve(self, url: str, *, source: dict[str, object] | None = None) -> dict[str, object]:
         normalized = validate_public_url(url, resolve_dns=self.validate_dns)
@@ -546,12 +567,14 @@ class RssCatalog:
         base.setdefault("region", "custom")
         base.setdefault("priority", 100)
         base.setdefault("homepage", f"{urlsplit(normalized).scheme}://{urlsplit(normalized).netloc}")
-        raw = self.fetcher(normalized)
-        parsed = parse_feed(raw, source_url=normalized)
-        base["name"] = parsed.name
-        now = _now()
-        self._write_cache(normalized, {"source": base, "lastSuccessAt": now, "items": [item.as_dict() for item in parsed.items]})
-        return self._public_snapshot(base, items=[item.as_dict() for item in parsed.items], last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
+        with self._source_lock(normalized):
+            raw = self.fetcher(normalized)
+            parsed = parse_feed(raw, source_url=normalized)
+            base["name"] = parsed.name
+            now = _now()
+            items = [item.as_dict() for item in parsed.items]
+            self._write_cache(normalized, {"source": base, "lastSuccessAt": now, "items": items})
+            return self._public_snapshot(base, items=items, last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
 
     def sources(self, urls: Iterable[str] | None = None) -> list[dict[str, object]]:
         sources = [self._read_snapshot(source) for source in self.source_defs]

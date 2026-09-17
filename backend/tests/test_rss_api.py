@@ -57,16 +57,79 @@ def test_rss_refresh_rejects_unknown_source(monkeypatch):
     assert response.status_code == 404
 
 
-def test_rss_refresh_returns_retry_after_during_source_cooldown(monkeypatch):
+def test_rss_refresh_returns_current_during_source_cooldown(monkeypatch):
     monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {}, raising=False)
     monkeypatch.setattr(app, "_rss_refresh_clock", lambda: 100.0)
-    refreshed = {"source": {"id": "solidot", "name": "Solidot", "lastAttemptAt": "now", "lastSuccessAt": "now", "stale": False, "staleReason": None, "errorCode": None, "error": None, "items": []}, "outcome": "updated"}
-    monkeypatch.setattr(app.rss_catalog, "refresh_source", lambda source_id, custom_url=None: refreshed)
+    source = {"id": "solidot", "items": [{"id": "old"}]}
+    calls = []
+
+    def refresh(source_id, custom_url=None):
+        calls.append((source_id, custom_url))
+        return {"source": source, "outcome": "updated", "addedCount": 1}
+
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", refresh)
     client = TestClient(app.app)
     assert client.post("/api/ai/rss/refresh", json={"sourceId": "solidot"}).status_code == 200
     response = client.post("/api/ai/rss/refresh", json={"sourceId": "solidot"})
-    assert response.status_code == 429
-    assert response.headers["retry-after"] == "30"
+    assert response.status_code == 200
+    assert response.json() == {"source": source, "outcome": "current", "addedCount": 0, "retryAfter": 30}
+    assert calls == [("solidot", None)]
+
+
+def test_rss_refresh_preserves_cached_outcome(monkeypatch):
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {}, raising=False)
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", lambda *_args, **_kwargs: {
+        "source": {"id": "solidot", "items": [{"id": "old"}]},
+        "outcome": "cached",
+        "addedCount": 0,
+    })
+
+    body = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"}).json()
+
+    assert body["outcome"] == "cached"
+    assert body["addedCount"] == 0
+
+
+def test_rss_refresh_returns_http_failure_when_first_fetch_fails(monkeypatch, tmp_path):
+    import rss
+
+    catalog = rss.RssCatalog(
+        cache_dir=tmp_path,
+        fetcher=lambda _url: (_ for _ in ()).throw(OSError("upstream offline")),
+        validate_dns=False,
+    )
+    monkeypatch.setattr(app, "rss_catalog", catalog)
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {}, raising=False)
+
+    response = TestClient(app.app, raise_server_exceptions=False).post(
+        "/api/ai/rss/refresh", json={"sourceId": "solidot"}
+    )
+
+    assert response.status_code == 502
+    assert "cached" not in response.text
+
+
+def test_rss_refresh_normalizes_undocumented_catalog_fields(monkeypatch):
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {}, raising=False)
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", lambda *_args, **_kwargs: {
+        "source": {"id": "solidot", "items": []},
+        "outcome": "unexpected",
+        "addedCount": "2",
+    })
+
+    body = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"}).json()
+
+    assert body["outcome"] == "current"
+    assert body["addedCount"] == 2
+    assert isinstance(body["addedCount"], int)
 
 
 def test_rss_refresh_rejects_custom_private_url(monkeypatch):
@@ -82,8 +145,8 @@ def test_rss_refresh_reports_private_redirect_as_security_failure(monkeypatch, t
     monkeypatch.setattr(app, "rss_catalog", catalog)
     monkeypatch.setattr(app, "_rss_refresh_attempts", {})
     response = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})
-    assert response.status_code == 200
-    assert response.json()["source"]["errorCode"] == "security"
+    assert response.status_code == 502
+    assert response.json()["detail"] == "刷新失败，请稍后重试。"
 
 
 def test_authenticated_guest_can_start_whitelisted_bulk_rss_refresh(monkeypatch):
@@ -110,11 +173,13 @@ def test_rss_sources_exposes_bulk_refresh_progress(monkeypatch):
     assert response.json() == {"sources": [], "refreshing": True}
 
 
-def test_concurrent_same_source_refresh_is_cooled_before_a_second_fetch(monkeypatch):
+def test_concurrent_same_source_refresh_returns_current_without_a_second_fetch(monkeypatch):
     import threading
     import time
 
     monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {}, raising=False)
     started = threading.Event()
     release = threading.Event()
     calls = []
@@ -124,12 +189,94 @@ def test_concurrent_same_source_refresh_is_cooled_before_a_second_fetch(monkeypa
         return {"source": {"id": source_id, "items": []}, "outcome": "updated"}
     monkeypatch.setattr(app.rss_catalog, "refresh_source", refresh)
     results = []
-    first = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"}).status_code))
+    first = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})))
     first.start(); assert started.wait(1)
-    second = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})
-    release.set(); first.join(1)
-    assert sorted(results + [second.status_code]) == [200, 429]
+    second = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})))
+    second.start(); time.sleep(0.05); assert second.is_alive()
+    release.set(); first.join(1); second.join(1)
+    assert [response.status_code for response in results] == [200, 200]
+    assert sorted(response.json()["outcome"] for response in results) == ["current", "updated"]
     assert calls == ["solidot"]
+
+
+def test_concurrent_same_source_refresh_preserves_cached_outcome(monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {})
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {})
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(app.rss_catalog, "refresh_identity", lambda source_id, custom_url=None: source_id)
+
+    def refresh(source_id, custom_url=None):
+        calls.append(source_id)
+        started.set()
+        assert release.wait(1)
+        return {
+            "source": {"id": source_id, "items": [{"id": "old"}]},
+            "outcome": "cached",
+            "addedCount": 0,
+        }
+
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", refresh)
+    results = []
+    first = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})))
+    first.start(); assert started.wait(1)
+    second = threading.Thread(target=lambda: results.append(TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})))
+    second.start(); time.sleep(0.05); assert second.is_alive()
+    release.set(); first.join(1); second.join(1)
+
+    assert [response.status_code for response in results] == [200, 200]
+    assert [response.json()["outcome"] for response in results] == ["cached", "cached"]
+    assert calls == ["solidot"]
+
+
+def test_concurrent_first_refresh_failure_returns_same_http_error_to_waiter(monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {})
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {})
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(app.rss_catalog, "refresh_identity", lambda source_id, custom_url=None: source_id)
+
+    def refresh(source_id, custom_url=None):
+        calls.append(source_id)
+        started.set()
+        assert release.wait(1)
+        raise app.HTTPException(status_code=502, detail="刷新失败，请稍后重试。")
+
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", refresh)
+    responses = {}
+
+    def request(label):
+        responses[label] = TestClient(app.app, raise_server_exceptions=False).post(
+            "/api/ai/rss/refresh", json={"sourceId": "solidot"}
+        )
+
+    first = threading.Thread(target=request, args=("first",))
+    first.start()
+    assert started.wait(1)
+    waiter = threading.Thread(target=request, args=("waiter",))
+    waiter.start()
+    time.sleep(0.05)
+    assert waiter.is_alive()
+    release.set()
+    first.join(1)
+    waiter.join(1)
+
+    assert calls == ["solidot"]
+    assert responses["first"].status_code == 502
+    assert responses["waiter"].status_code == 502
+    assert responses["first"].json() == responses["waiter"].json() == {
+        "detail": "刷新失败，请稍后重试。"
+    }
 
 
 def test_radar_keeps_legacy_industries_and_media_snapshots(monkeypatch):

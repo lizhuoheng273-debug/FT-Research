@@ -238,7 +238,7 @@ export function Debate() {
         </GlassCard>
       )}
 
-      <Disclaimer />
+      <Disclaimer variant="debate" />
     </div>
   );
 }

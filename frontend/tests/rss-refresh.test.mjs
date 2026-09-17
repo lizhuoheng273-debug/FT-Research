@@ -12,7 +12,22 @@ async function loadRefresher() {
   return exports.createRssRefresher;
 }
 
+async function loadSubscriptions(initial = {}) {
+  const source = await readFile(new URL("../src/lib/rssSubscriptions.ts", import.meta.url), "utf8");
+  const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const values = new Map(Object.entries(initial));
+  const localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+  const exports = {};
+  vm.runInNewContext(js, { exports, window: { localStorage }, JSON, Math, Map, Set });
+  return { api: exports, values };
+}
+
 const source = (id) => ({ id, name: id, category: "tech", region: "cn", priority: 1, homepage: "", stale: false, items: [] });
+const result = (item, outcome = "updated", addedCount = 1, extra = {}) => ({ source: item, outcome, addedCount, ...extra });
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((next, fail) => { resolve = next; reject = fail; });
@@ -24,7 +39,7 @@ test("refreshes different cards independently while duplicate clicks share one r
   const a = deferred(); const b = deferred();
   const calls = [];
   const seen = [];
-  const refresher = createRssRefresher((item) => { calls.push(item.id); return item.id === "a" ? a.promise : b.promise; }, (item) => seen.push(item.id));
+  const refresher = createRssRefresher((item) => { calls.push(item.id); return item.id === "a" ? a.promise.then((next) => result(next, "updated", 1)) : b.promise.then((next) => result(next, "updated", 1)); }, (next) => seen.push(next));
   const firstA = refresher.refresh(source("a"));
   const secondA = refresher.refresh(source("a"));
   const firstB = refresher.refresh(source("b"));
@@ -33,8 +48,19 @@ test("refreshes different cards independently while duplicate clicks share one r
   assert.equal(refresher.isRefreshing("b"), true);
   b.resolve(source("b")); a.resolve(source("a"));
   await Promise.all([firstA, secondA, firstB]);
-  assert.deepEqual(seen.sort(), ["a", "b"]);
+  assert.deepEqual(seen.map((next) => next.source.id).sort(), ["a", "b"]);
+  assert.equal(seen[0].outcome, "updated");
   assert.equal(refresher.isRefreshing("a"), false);
+});
+
+test("delivers a current result unchanged to the success callback", async () => {
+  const createRssRefresher = await loadRefresher();
+  const current = result(source("a"), "current", 0, { retryAfter: 30 });
+  const seen = [];
+  const refresher = createRssRefresher(async () => current, (next) => seen.push(next));
+  await refresher.refresh(source("a"));
+  assert.equal(seen[0], current);
+  assert.deepEqual(seen[0], { source: current.source, outcome: "current", addedCount: 0, retryAfter: 30 });
 });
 
 test("failed request keeps the existing list because it does not emit a replacement", async () => {
@@ -50,10 +76,43 @@ test("dispose aborts requests and ignores late source callbacks", async () => {
   const createRssRefresher = await loadRefresher();
   const pending = deferred();
   const seen = [];
-  const refresher = createRssRefresher(() => pending.promise, (item) => seen.push(item.id));
+  const refresher = createRssRefresher(() => pending.promise.then((next) => result(next)), (item) => seen.push(item.source.id));
   const running = refresher.refresh(source("a"));
   refresher.dispose();
   pending.resolve(source("a"));
   await running;
   assert.deepEqual(seen, []);
+});
+
+test("reset invalidates a custom refresh so its late result cannot restore card or storage", async () => {
+  const createRssRefresher = await loadRefresher();
+  const { api } = await loadSubscriptions();
+  const pending = deferred();
+  const custom = { ...source("custom-x"), region: "custom", url: "https://x.test/rss" };
+  let subscriptions = {
+    version: 2,
+    order: ["ithome", "custom-x"],
+    pinned: [],
+    custom: [{ id: "custom-x", name: "X", url: custom.url }],
+    trash: [{ id: "custom-old", kind: "custom", previousIndex: 1, wasPinned: false, custom: { id: "custom-old", name: "Old", url: "https://old.test/rss" } }],
+  };
+  api.writeRssSubscriptionState(subscriptions);
+  let displayed = [custom];
+  const refresher = createRssRefresher(
+    () => pending.promise.then((next) => result(next)),
+    (next) => { displayed = api.filterRssSourcesForSubscriptions([next.source], subscriptions); },
+  );
+
+  const running = refresher.refresh(custom);
+  const removedIds = api.customSubscriptionIds(subscriptions);
+  subscriptions = api.resetSubscriptions();
+  displayed = api.removeRssSourcesById(displayed, removedIds);
+  refresher.invalidate(removedIds);
+  pending.resolve({ ...custom, items: [{ id: "late", title: "迟到文章", originalUrl: "https://x.test/late" }] });
+  await running;
+
+  assert.deepEqual(Array.from(removedIds).sort(), ["custom-old", "custom-x"]);
+  assert.equal(displayed.length, 0);
+  assert.equal(api.readRssSubscriptionState().custom.length, 0);
+  assert.equal(api.readRssSubscriptionState().trash.length, 0);
 });

@@ -351,12 +351,220 @@ def test_single_source_recovers_from_timeout(tmp_path):
     assert failed["source"]["staleReason"] == "fetch_failed"
     assert failed["source"]["errorCode"] == "timeout"
     assert failed["outcome"] == "cached"
+    assert failed["addedCount"] == 0
     catalog.fetcher = lambda _url: RSS
     recovered = catalog.refresh_source("solidot")
-    assert recovered["outcome"] == "updated"
+    assert recovered["outcome"] == "current"
     assert recovered["source"]["stale"] is False
     assert recovered["source"]["error"] is None
     assert recovered["source"]["lastAttemptAt"] == recovered["source"]["lastSuccessAt"]
+
+
+def test_refresh_source_reports_item_ids_new_since_cached_snapshot(tmp_path):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    feeds = iter([feed(["one", "two"]), feed(["two", "three", "four"]), feed(["two", "three", "four"])])
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: next(feeds), validate_dns=False)
+
+    first = catalog.refresh_source("solidot")
+    second = catalog.refresh_source("solidot")
+    third = catalog.refresh_source("solidot")
+
+    assert first["outcome"] == "updated"
+    assert second["outcome"] == "updated"
+    assert second["addedCount"] == 2
+    assert third["outcome"] == "current"
+    assert third["addedCount"] == 0
+
+
+def test_refresh_source_counts_all_new_items_beyond_display_cap(tmp_path):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    feeds = iter([feed(["old"]), feed(["one", "two", "three", "four"])])
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: next(feeds), validate_dns=False)
+
+    catalog.refresh_source("solidot")
+    refreshed = catalog.refresh_source("solidot")
+
+    assert refreshed["addedCount"] == 4
+    assert len(refreshed["source"]["items"]) == 3
+
+
+def test_concurrent_refresh_count_and_snapshot_share_the_url_lock(tmp_path, monkeypatch):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: feed(["old"]), validate_dns=False)
+    catalog.refresh_source("solidot")
+
+    class TrackingLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.owner = None
+
+        def __enter__(self):
+            self.lock.acquire()
+            self.owner = threading.get_ident()
+
+        def __exit__(self, *_args):
+            self.owner = None
+            self.lock.release()
+
+        def held_by_current_thread(self):
+            return self.owner == threading.get_ident()
+
+    url_lock = TrackingLock()
+    monkeypatch.setattr(catalog, "_source_lock", lambda _url: url_lock)
+    original_read_cache = catalog._read_cache
+    reads_by_thread = {}
+    first_fetched = threading.Event()
+    second_finished = threading.Event()
+
+    def fetch(_url):
+        if threading.current_thread().name == "first-refresh":
+            first_fetched.set()
+            return feed(["old", "first"])
+        return feed(["old", "first", "second"])
+
+    def read_cache(url):
+        name = threading.current_thread().name
+        reads_by_thread[name] = reads_by_thread.get(name, 0) + 1
+        if name == "first-refresh" and reads_by_thread[name] == 2 and not url_lock.held_by_current_thread():
+            assert second_finished.wait(1)
+        return original_read_cache(url)
+
+    catalog.fetcher = fetch
+    monkeypatch.setattr(catalog, "_read_cache", read_cache)
+    results = {}
+
+    def run(name):
+        results[name] = catalog.refresh_source("solidot")
+        if name == "second":
+            second_finished.set()
+
+    first = threading.Thread(target=lambda: run("first"), name="first-refresh")
+    second = threading.Thread(target=lambda: run("second"), name="second-refresh")
+    first.start()
+    assert first_fetched.wait(1)
+    second.start()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results["first"]["addedCount"] == 1
+    assert [item["title"] for item in results["first"]["source"]["items"]] == ["old", "first"]
+    assert results["second"]["addedCount"] == 1
+
+
+def test_resolve_cannot_replace_cache_between_refresh_snapshot_and_count(tmp_path, monkeypatch):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: feed(["old"]), validate_dns=False)
+    catalog.refresh_source("solidot")
+    source = dict(next(item for item in catalog.source_defs if item["id"] == "solidot"))
+
+    resolver_positioned = threading.Event()
+    resolver_fetch_started = threading.Event()
+    refresh_wrote = threading.Event()
+    resolver_finished = threading.Event()
+
+    class TrackingLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if self.lock.locked() and threading.current_thread().name == "resolve-race":
+                resolver_positioned.set()
+            self.lock.acquire()
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    url_lock = TrackingLock()
+    monkeypatch.setattr(catalog, "_source_lock", lambda _url: url_lock)
+    original_read_cache = catalog._read_cache
+    original_write_cache = catalog._write_cache
+    refresh_reads = 0
+
+    def fetch(_url):
+        if threading.current_thread().name == "refresh-race":
+            assert resolver_positioned.wait(1)
+            return feed(["old", "refresh"])
+        resolver_fetch_started.set()
+        resolver_positioned.set()
+        assert refresh_wrote.wait(1)
+        return feed(["old", "resolve-a", "resolve-b"])
+
+    def write_cache(url, value):
+        original_write_cache(url, value)
+        if threading.current_thread().name == "refresh-race":
+            refresh_wrote.set()
+
+    def read_cache(url):
+        nonlocal refresh_reads
+        if threading.current_thread().name == "refresh-race":
+            refresh_reads += 1
+            if refresh_reads == 2 and resolver_fetch_started.is_set():
+                assert resolver_finished.wait(1)
+        return original_read_cache(url)
+
+    catalog.fetcher = fetch
+    monkeypatch.setattr(catalog, "_write_cache", write_cache)
+    monkeypatch.setattr(catalog, "_read_cache", read_cache)
+    results = {}
+    errors = []
+
+    def refresh():
+        try:
+            results["refresh"] = catalog.refresh_source("solidot")
+        except Exception as exc:  # noqa: BLE001 - surfaced in the main test thread
+            errors.append(exc)
+
+    def resolve():
+        try:
+            results["resolve"] = catalog.resolve(str(source["url"]), source=source)
+        except Exception as exc:  # noqa: BLE001 - surfaced in the main test thread
+            errors.append(exc)
+        finally:
+            resolver_finished.set()
+
+    refresh_thread = threading.Thread(target=refresh, name="refresh-race")
+    resolve_thread = threading.Thread(target=resolve, name="resolve-race")
+    refresh_thread.start()
+    resolve_thread.start()
+    refresh_thread.join(2)
+    resolve_thread.join(2)
+
+    assert not refresh_thread.is_alive()
+    assert not resolve_thread.is_alive()
+    assert errors == []
+    assert results["refresh"]["addedCount"] == 1
+    assert [item["title"] for item in results["refresh"]["source"]["items"]] == ["old", "refresh"]
+    assert [item["title"] for item in results["resolve"]["items"]] == ["old", "resolve-a", "resolve-b"]
 
 
 def test_expired_cache_is_distinguished_from_fetch_failure(tmp_path, monkeypatch):
@@ -414,7 +622,9 @@ def test_custom_dns_validation_happens_only_inside_refresh_admission(tmp_path, m
 
 
 def test_catalog_exposes_timeout_code_for_bounded_fetch_timeout(tmp_path):
-    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: (_ for _ in ()).throw(rss.RssTimeoutError("RSS 下载总时限已到")), validate_dns=False)
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: RSS, validate_dns=False)
+    catalog.refresh_source("solidot")
+    catalog.fetcher = lambda _url: (_ for _ in ()).throw(rss.RssTimeoutError("RSS 下载总时限已到"))
     result = catalog.refresh_source("solidot")
     assert result["source"]["errorCode"] == "timeout"
 
@@ -436,7 +646,15 @@ def test_same_url_refresh_serializes_failure_before_later_success(tmp_path):
         return RSS
 
     catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=fetch, validate_dns=False)
-    first = threading.Thread(target=lambda: catalog.refresh_source("solidot"))
+    first_errors = []
+
+    def refresh_first():
+        try:
+            catalog.refresh_source("solidot")
+        except Exception as exc:  # noqa: BLE001 - a first-ever failure is an HTTP error
+            first_errors.append(exc)
+
+    first = threading.Thread(target=refresh_first)
     second = threading.Thread(target=lambda: catalog.refresh_source("solidot"))
     first.start()
     assert first_started.wait(1)
@@ -445,6 +663,8 @@ def test_same_url_refresh_serializes_failure_before_later_success(tmp_path):
     first.join(1); second.join(1)
     snapshot = catalog.sources()[7]
     assert calls == [1, 1]
+    assert len(first_errors) == 1
+    assert first_errors[0].status_code == 502
     assert snapshot["error"] is None
     assert snapshot["stale"] is False
 
