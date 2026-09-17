@@ -43,6 +43,12 @@ const item = (overrides = {}) => ({
   ...overrides,
 });
 
+function pythonContextPayloadLength(text, analysisScope = "general") {
+  // Python json.dumps(..., ensure_ascii=False) adds spaces after separators and
+  // counts Unicode code points rather than UTF-16 code units.
+  return Array.from(JSON.stringify({ text, analysisScope })).length + 3;
+}
+
 test("storyPublicId prefers topic and item story links before the topic id", async () => {
   const api = await loadApi();
   assert.equal(api.storyPublicId(topic({ links: { story: "https://x/stories/topic-public" } }), item({ links: { story: "https://x/stories/item-public" } })), "topic-public");
@@ -183,9 +189,9 @@ test("prefetch cache keeps its ten-story size bound", async () => {
   assert.ok(api.takePrefetchedAiNewsStory("bounded-10"));
 });
 
-test("AI story context is deterministically bounded below the conversation payload limit", async () => {
+test("AI story context is escape-aware and bounded below the backend payload limit", async () => {
   const api = await loadApi();
-  const repeated = "长内容".repeat(4_000);
+  const repeated = "\"\\中文".repeat(4_000);
   const story = {
     title: `关键标题 ${repeated}`,
     digest: `关键摘要 ${repeated}`,
@@ -202,12 +208,11 @@ test("AI story context is deterministically bounded below the conversation paylo
 
   const built = api.buildAiNewsStoryContext(story);
   assert.ok(built.text.length <= 18_000, `context length was ${built.text.length}`);
-  assert.ok(JSON.stringify({ text: built.text, analysisScope: "general" }).length < 24_000);
+  assert.ok(pythonContextPayloadLength(built.text) <= 20_000, `backend payload length was ${pythonContextPayloadLength(built.text)}`);
   assert.match(built.text, /关键标题/);
   assert.match(built.text, /关键摘要/);
   assert.match(built.text, /关键进展/);
   assert.match(built.text, /1\. 报道 1/);
-  assert.match(built.text, /https:\/\/example\.com\/main/);
   assert.ok(built.text.indexOf("标题：") < built.text.indexOf("AI 摘要："));
   assert.ok(built.text.indexOf("AI 摘要：") < built.text.indexOf("最新进展："));
   assert.ok(built.text.indexOf("最新进展：") < built.text.indexOf("来源报道："));

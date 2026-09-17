@@ -68,6 +68,7 @@ export interface TakePrefetchedAiNewsStoryOptions {
 const PREFETCH_CACHE_LIMIT = 10;
 const PREFETCH_TTL_MS = 30_000;
 export const AI_NEWS_STORY_CONTEXT_LIMIT = 18_000;
+export const AI_NEWS_CONTEXT_PAYLOAD_LIMIT = 20_000;
 const TITLE_LIMIT = 500;
 const DIGEST_LIMIT = 5_000;
 const LATEST_LIMIT = 3_000;
@@ -75,6 +76,12 @@ const REPORT_LIMIT = 1_000;
 const REPORTS_LIMIT = 7_000;
 const LINK_LIMIT = 500;
 const LINKS_LIMIT = 2_000;
+const TITLE_PAYLOAD_LIMIT = 1_000;
+const DIGEST_PAYLOAD_LIMIT = 7_000;
+const LATEST_PAYLOAD_LIMIT = 4_000;
+const REPORT_PAYLOAD_LIMIT = 1_200;
+const REPORTS_PAYLOAD_LIMIT = 4_500;
+const LINKS_PAYLOAD_LIMIT = 1_800;
 
 interface PrefetchedStoryEntry {
   promise: Promise<Story>;
@@ -92,6 +99,23 @@ const truncate = (value: unknown, limit: number, fallback = "暂无") => {
   return `${text.slice(0, Math.max(0, limit - 1))}…`;
 };
 
+const escapedTextLength = (text: string) => Array.from(JSON.stringify(text)).length - 2;
+
+const truncateEscaped = (value: unknown, rawLimit: number, escapedLimit: number, fallback = "暂无") => {
+  const text = truncate(value, rawLimit, fallback);
+  if (escapedTextLength(text) <= escapedLimit) return text;
+  const characters = Array.from(text);
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = `${characters.slice(0, middle).join("").trimEnd()}…`;
+    if (escapedTextLength(candidate) <= escapedLimit) low = middle;
+    else high = middle - 1;
+  }
+  return `${characters.slice(0, low).join("").trimEnd()}…`;
+};
+
 const boundedSection = (label: string, values: string[], limit: number) => {
   const prefix = `${label}：`;
   if (!values.length) return `${prefix}暂无`;
@@ -104,11 +128,32 @@ const boundedSection = (label: string, values: string[], limit: number) => {
   return section === prefix ? `${prefix}${truncate(values[0], Math.max(1, limit - prefix.length))}` : section;
 };
 
+const contextPayloadLength = (text: string, analysisScope = "general") => {
+  // The backend uses len(json.dumps(context, ensure_ascii=False)). JSON.stringify
+  // has the same escaping for string content but omits Python's three separator spaces.
+  // Array.from counts Unicode code points, matching Python len and avoiding CJK inflation.
+  return Array.from(JSON.stringify({ text, analysisScope })).length + 3;
+};
+
+const fitContextPayload = (text: string, analysisScope = "general") => {
+  if (contextPayloadLength(text, analysisScope) <= AI_NEWS_CONTEXT_PAYLOAD_LIMIT) return text;
+  const characters = Array.from(text);
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = `${characters.slice(0, middle).join("").trimEnd()}…`;
+    if (contextPayloadLength(candidate, analysisScope) <= AI_NEWS_CONTEXT_PAYLOAD_LIMIT) low = middle;
+    else high = middle - 1;
+  }
+  return `${characters.slice(0, low).join("").trimEnd()}…`;
+};
+
 export function buildAiNewsStoryContext(story: Story = {}, snapshot?: AiNewsStorySnapshot): { title: string; text: string } {
   const reports = Array.isArray(story.reports) ? story.reports : [];
-  const title = truncate(story.title || snapshot?.title, TITLE_LIMIT, "未命名热点");
-  const digest = truncate(story.digest || snapshot?.summary, DIGEST_LIMIT);
-  const latest = truncate(story.latest || snapshot?.latest, LATEST_LIMIT);
+  const title = truncateEscaped(story.title || snapshot?.title, TITLE_LIMIT, TITLE_PAYLOAD_LIMIT, "未命名热点");
+  const digest = truncateEscaped(story.digest || snapshot?.summary, DIGEST_LIMIT, DIGEST_PAYLOAD_LIMIT);
+  const latest = truncateEscaped(story.latest || snapshot?.latest, LATEST_LIMIT, LATEST_PAYLOAD_LIMIT);
   const reportRows = reports.map((report, index) => {
     const reportSource = typeof report.source === "string" ? report.source : report.source?.name;
     const row = [
@@ -117,22 +162,24 @@ export function buildAiNewsStoryContext(story: Story = {}, snapshot?: AiNewsStor
       truncate(reportSource, 100, ""),
       truncate(report.publishedAt, 80, ""),
     ].filter(Boolean).join("｜");
-    return truncate(row, REPORT_LIMIT, "");
+    return truncateEscaped(row, REPORT_LIMIT, REPORT_PAYLOAD_LIMIT, "");
   }).filter(Boolean);
   const originalLinks = [...new Set([
     story.links?.original,
     ...reports.map((report) => report.links?.original),
     snapshot?.originalUrl,
   ].filter((link): link is string => Boolean(link)))].map((link) => truncate(link, LINK_LIMIT, "")).filter(Boolean);
+  const reportSection = truncateEscaped(boundedSection("来源报道", reportRows, REPORTS_LIMIT), REPORTS_LIMIT, REPORTS_PAYLOAD_LIMIT, "");
+  const linkSection = truncateEscaped(boundedSection("原文链接", originalLinks, LINKS_LIMIT), LINKS_LIMIT, LINKS_PAYLOAD_LIMIT, "");
   const text = [
     "来源：AI 热点资讯",
     `标题：${title}`,
     `AI 摘要：${digest}`,
     `最新进展：${latest}`,
-    boundedSection("来源报道", reportRows, REPORTS_LIMIT),
-    boundedSection("原文链接", originalLinks, LINKS_LIMIT),
+    reportSection,
+    linkSection,
   ].join("\n");
-  return { title, text: truncate(text, AI_NEWS_STORY_CONTEXT_LIMIT, "") };
+  return { title, text: fitContextPayload(truncate(text, AI_NEWS_STORY_CONTEXT_LIMIT, "")) };
 }
 
 const publicIdFromLink = (link?: string) => {

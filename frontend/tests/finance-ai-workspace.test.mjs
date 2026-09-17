@@ -169,6 +169,10 @@ function nodeText(node) {
   return nodeText(node.props?.children);
 }
 
+function pythonContextPayloadLength(text, analysisScope = "general") {
+  return Array.from(JSON.stringify({ text, analysisScope })).length + 3;
+}
+
 function findNodeByType(node, type) {
   if (Array.isArray(node)) return node.map((child) => findNodeByType(child, type)).find(Boolean);
   if (!node || typeof node !== "object") return undefined;
@@ -395,7 +399,7 @@ test("new conversation preserves story fallback and return state after a failed 
 });
 
 test("large fetched stories keep bounded context ready for submission", async () => {
-  const repeated = "超长内容".repeat(4_000);
+  const repeated = "\"\\超长内容".repeat(4_000);
   const story = {
     title: `可提交标题 ${repeated}`,
     digest: `可提交摘要 ${repeated}`,
@@ -417,7 +421,7 @@ test("large fetched stories keep bounded context ready for submission", async ()
 
   assert.equal(app.sessionOptions.contextReady, true);
   assert.ok(app.sessionOptions.context.length <= 18_000, `context length was ${app.sessionOptions.context.length}`);
-  assert.ok(JSON.stringify({ text: app.sessionOptions.context, analysisScope: "general" }).length < 24_000);
+  assert.ok(pythonContextPayloadLength(app.sessionOptions.context) <= 20_000, `backend payload length was ${pythonContextPayloadLength(app.sessionOptions.context)}`);
   assert.match(app.sessionOptions.context, /可提交标题/);
   assert.match(app.sessionOptions.context, /可提交摘要/);
   assert.match(app.sessionOptions.context, /可提交进展/);
