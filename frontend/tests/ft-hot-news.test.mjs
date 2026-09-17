@@ -20,3 +20,19 @@ test("AI hotspot detail route is registered", () => {
   assert.match(router, /\/ai\/news\/story\/:storyId/);
   for (const section of ["AI 导读", "推荐理由", "标签", "报道时间线", "AI 摘要与追问"]) assert.match(detail, new RegExp(section));
 });
+
+test("AI hotspot feed prefetches only on intentional pointer and keyboard focus", () => {
+  assert.match(sharedFeed, /onPrefetchStory\??\s*:/);
+  assert.match(sharedFeed, /onMouseEnter=\{[^}]*onPrefetchStory/);
+  assert.match(sharedFeed, /onFocus=\{[^}]*onPrefetchStory/);
+  assert.match(sharedFeed, /onTouchStart=\{[^}]*onPrefetchStory/);
+  assert.match(sharedFeed, /onPrefetchStory(?:\?\.)?\(topic,\s*item/);
+});
+
+test("AI hotspot page uses the shared story identity, fallback and prefetch helpers", () => {
+  assert.match(news, /aiNewsStory/);
+  assert.match(news, /storyPublicId\(topic,\s*fallback/);
+  assert.match(news, /findStoryFallback\(topic,\s*items\)/);
+  assert.match(news, /prefetchAiNewsStory\(/);
+  assert.match(news, /links:\s*\{\s*original:[\s\S]*story:/);
+});

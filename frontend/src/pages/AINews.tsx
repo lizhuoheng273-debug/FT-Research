@@ -8,11 +8,7 @@ import { AISubscriptionFeed } from "@/components/ai/AISubscriptionFeed";
 import { apiUrl, authHeaders } from "@/lib/api";
 import { readRssSubscriptionState, removeRssSourcesById, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
 import { createRssRefresher, type RssRefreshResult } from "@/lib/rssRefresh";
-
-const storyId = (topic: HotFeedTopic, item?: HotFeedItem) => {
-  const url = topic.links?.story || item?.links?.story || "";
-  return url.split("/").pop() || topic.id;
-};
+import { findStoryFallback, prefetchAiNewsStory, storyPublicId } from "@/lib/aiNewsStory";
 
 const attemptAt = (source: RssSource) => source.lastAttemptAt || source.lastSuccessAt || "";
 const mergeRssSource = (current: RssSource[], incoming: RssSource) => [
@@ -175,15 +171,24 @@ export function AINews() {
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const context = topics.map((topic) => `${topic.rank}. ${topic.title}（${topic.source || "未知来源"}）`).join("\n");
-  const openStory = (topic: HotFeedTopic, item?: HotFeedItem) => navigate(`/ai/news/story/${storyId(topic, item)}`, {
-    state: { fallback: { title: topic.title, summary: item?.summary, reason: item?.reason, category: item?.category, score: item?.score ?? topic.score, source: item?.source || topic.source, publishedAt: item?.publishedAt || topic.latestAt, links: { original: item?.links?.original || topic.links?.original } } },
-  });
+  const fallbackFor = (topic: HotFeedTopic, item?: HotFeedItem) => findStoryFallback(topic, items) || item;
+  const prefetchStory = (topic: HotFeedTopic, item?: HotFeedItem) => {
+    const fallback = fallbackFor(topic, item);
+    void prefetchAiNewsStory(storyPublicId(topic, fallback)).catch(() => undefined);
+  };
+  const openStory = (topic: HotFeedTopic, item?: HotFeedItem) => {
+    const fallback = fallbackFor(topic, item);
+    const id = storyPublicId(topic, fallback);
+    return navigate(`/ai/news/story/${id}`, {
+    state: { fallback: { title: fallback?.title || topic.title, summary: fallback?.summary || topic.summary, reason: fallback?.reason || topic.reason, category: fallback?.category || topic.category, score: fallback?.score ?? topic.score, source: fallback?.source || topic.source, publishedAt: fallback?.publishedAt || topic.latestAt, links: { original: fallback?.links?.original || fallback?.originalUrl || topic.links?.original, story: topic.links?.story || fallback?.links?.story } } },
+    });
+  };
 
   return <div>
     <PageHeader title="AI 热点资讯" subtitle="先看热点榜，再阅读我订阅的科技媒体" actions={<div className="flex items-center gap-2"><AskAiButton context={context || "暂无 AI 热点资讯"} workspaceSource="ai-news" label="AI 摘要与追问" suggestions={["今天最重要的三件事是什么？", "这些热点有哪些共同趋势？"]} /><button type="button" onClick={() => void refreshAll()} disabled={loading || rssLoading || rssBulkRefreshing} aria-busy={loading || rssLoading || rssBulkRefreshing} aria-label={loading || rssLoading || rssBulkRefreshing ? "正在刷新 AI 热点资讯及全部 RSS" : "刷新 AI 热点资讯及全部 RSS"} className="rounded-lg border border-border px-3 py-1.5 text-sm disabled:opacity-50"><RefreshCw className={`mr-1 inline h-4 w-4 ${(loading || rssLoading || rssBulkRefreshing) ? "animate-spin" : ""}`} />{loading || rssLoading || rssBulkRefreshing ? "刷新中…" : "刷新"}</button></div>} />
     {stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">AI HOT 暂时不可用，当前显示本地缓存。</p>}
     {error && <p className="mb-3 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
-    <AIHotFeed topics={topics} items={items} loading={loading} onOpenStory={openStory} showEvents={false} />
+    <AIHotFeed topics={topics} items={items} loading={loading} onOpenStory={openStory} onPrefetchStory={prefetchStory} showEvents={false} />
     <AISubscriptionFeed sources={rssSources} loading={rssLoading} error={rssError} refreshingIds={refreshingIds} refreshMessages={refreshMessages} onRefreshSource={refreshSource} onSourcesChanged={(source) => setRssSources((current) => mergeRssSource(current, source))} onSubscriptionSourcesChanged={(state, change) => { const removedSourceIds = change?.removedSourceIds || []; if (removedSourceIds.length > 0) setRssSources((current) => removeRssSourcesById(current, removedSourceIds)); void load(state); }} />
     {!loading && topics.length === 0 && <p className="mt-4 text-sm text-muted-foreground">暂无热点资讯。</p>}
     {itemById.size === 0 && !loading && topics.length > 0 && <p className="mt-2 text-xs text-muted-foreground">部分事件暂未返回摘要，将在详情页补充。</p>}
