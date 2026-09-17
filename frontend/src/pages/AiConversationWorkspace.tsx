@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils";
 type HotTopic = { rank?: number; title?: string; source?: string };
 type AiNewsReport = { title?: string; summary?: string; source?: string | { name?: string }; publishedAt?: string; links?: { original?: string } };
 type AiNewsStory = { title?: string; digest?: string; latest?: string; links?: { original?: string }; reports?: AiNewsReport[] };
+type StorySnapshot = { title?: string; summary?: string; latest?: string; originalUrl?: string };
+type WorkspaceRouteState = { from?: string; returnState?: unknown; storySnapshot?: unknown };
 
 const sourceLabel: Record<"ai-news" | "ai-daily", string> = {
   "ai-news": "AI 热点资讯",
@@ -21,6 +23,39 @@ function parseSource(value: string | null): "ai-news" | "ai-daily" {
   return value === "ai-daily" ? "ai-daily" : "ai-news";
 }
 
+function readStorySnapshot(value: unknown): StorySnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Record<string, unknown>;
+  const snapshot: StorySnapshot = {};
+  for (const key of ["title", "summary", "latest", "originalUrl"] as const) {
+    if (typeof candidate[key] === "string" && candidate[key]) snapshot[key] = candidate[key];
+  }
+  return Object.keys(snapshot).length ? snapshot : undefined;
+}
+
+function storyContext(story: AiNewsStory = {}, snapshot?: StorySnapshot): { title: string; text: string } {
+  const reports = Array.isArray(story.reports) ? story.reports : [];
+  const reportContext = reports.map((report, index) => {
+    const reportSource = typeof report.source === "string" ? report.source : report.source?.name;
+    return [`${index + 1}. ${report.title || "未命名报道"}`, report.summary, reportSource, report.publishedAt].filter(Boolean).join("｜");
+  }).join("\n");
+  const title = story.title || snapshot?.title || "未命名热点";
+  const digest = story.digest || snapshot?.summary || "暂无";
+  const latest = story.latest || snapshot?.latest || "暂无";
+  const originalLinks = [...new Set([story.links?.original, ...reports.map((report) => report.links?.original), snapshot?.originalUrl].filter((link): link is string => Boolean(link)))];
+  return {
+    title,
+    text: [
+      "来源：AI 热点资讯",
+      `标题：${title}`,
+      `AI 摘要：${digest}`,
+      `最新进展：${latest}`,
+      `来源报道：${reportContext || "暂无"}`,
+      `原文链接：${originalLinks.join("\n") || "暂无"}`,
+    ].join("\n"),
+  };
+}
+
 export function AiConversationWorkspace() {
   const [params] = useSearchParams();
   const location = useLocation();
@@ -29,8 +64,12 @@ export function AiConversationWorkspace() {
   const conversationId = params.get("conversationId") || undefined;
   const date = params.get("date") || "";
   const eventId = source === "ai-news" ? params.get("eventId") || "" : "";
+  const routeState = (location.state || {}) as WorkspaceRouteState;
+  const storySnapshot = readStorySnapshot(routeState.storySnapshot);
+  const initialStoryContext = eventId && storySnapshot ? storyContext({}, storySnapshot) : undefined;
   const requestVersion = useRef(0);
-  const [context, setContext] = useState("正在读取 AI 板块上下文…");
+  const [context, setContext] = useState(initialStoryContext?.text || "正在读取 AI 板块上下文…");
+  const [workspaceTitle, setWorkspaceTitle] = useState(initialStoryContext?.title || sourceLabel[source]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,6 +78,13 @@ export function AiConversationWorkspace() {
     const version = ++requestVersion.current;
     setLoading(true);
     setError(null);
+    if (eventId && storySnapshot) {
+      const immediate = storyContext({}, storySnapshot);
+      setContext(immediate.text);
+      setWorkspaceTitle(immediate.title);
+    } else {
+      setWorkspaceTitle(sourceLabel[source]);
+    }
     const read = async (path: string) => {
       const response = await fetch(apiUrl(path), { headers: authHeaders() });
       const body = await response.json();
@@ -49,20 +95,7 @@ export function AiConversationWorkspace() {
       ? eventId
         ? read(`/ai/news/stories/${encodeURIComponent(eventId)}`).then((body) => {
           const story = (body.story && typeof body.story === "object" ? body.story : body) as AiNewsStory;
-          const reports = Array.isArray(story.reports) ? story.reports : [];
-          const reportContext = reports.map((report, index) => {
-            const reportSource = typeof report.source === "string" ? report.source : report.source?.name;
-            return [`${index + 1}. ${report.title || "未命名报道"}`, report.summary, reportSource, report.publishedAt].filter(Boolean).join("｜");
-          }).join("\n");
-          const originalLinks = [...new Set([story.links?.original, ...reports.map((report) => report.links?.original)].filter((link): link is string => Boolean(link)))];
-          return [
-            "来源：AI 热点资讯",
-            `标题：${story.title || "未命名热点"}`,
-            `AI 摘要：${story.digest || "暂无"}`,
-            `最新进展：${story.latest || "暂无"}`,
-            `来源报道：${reportContext || "暂无"}`,
-            `原文链接：${originalLinks.join("\n") || "暂无"}`,
-          ].join("\n");
+          return storyContext(story, storySnapshot);
         })
         : Promise.all([read("/ai/news/hot-topics"), read("/ai/news?mode=selected&window=24h&limit=50")]).then(([hot, feed]) => {
         const topics = ((hot.items || []) as HotTopic[]).sort((a, b) => (a.rank || 0) - (b.rank || 0)).slice(0, 10);
@@ -70,7 +103,19 @@ export function AiConversationWorkspace() {
         return [`来源：AI 热点资讯`, `热点：${topics.map((item) => `${item.rank || ""}. ${item.title || "未命名热点"}（${item.source || "未知来源"}）`).join("；") || "暂无"}`, `订阅资讯：${items.slice(0, 20).map((item: { title?: string; source?: string }) => `${item.title || "未命名资讯"}（${item.source || "未知来源"}）`).join("；") || "暂无"}`].join("\n");
       })
       : Promise.resolve(`来源：AI 日报${date ? `\n日期：${date}` : ""}\n当前会话从 AI 日报入口进入，具体报告内容按问题读取。`);
-    request.then((value) => { if (!cancelled && version === requestVersion.current) setContext(value); }).catch((reason) => { if (!cancelled && version === requestVersion.current) { setContext(`来源：${sourceLabel[source]}\n上下文暂不可用。`); setError(reason instanceof Error ? reason.message : "上下文暂不可用"); } }).finally(() => { if (!cancelled && version === requestVersion.current) setLoading(false); });
+    request.then((value) => {
+      if (cancelled || version !== requestVersion.current) return;
+      if (typeof value === "string") setContext(value);
+      else {
+        setContext(value.text);
+        setWorkspaceTitle(value.title);
+      }
+    }).catch((reason) => {
+      if (!cancelled && version === requestVersion.current) {
+        if (!eventId || !storySnapshot) setContext(`来源：${sourceLabel[source]}\n上下文暂不可用。`);
+        setError(reason instanceof Error ? reason.message : "上下文暂不可用");
+      }
+    }).finally(() => { if (!cancelled && version === requestVersion.current) setLoading(false); });
     return () => { cancelled = true; };
   };
 
@@ -78,15 +123,18 @@ export function AiConversationWorkspace() {
 
   const conversationKey = source === "ai-news" ? `ai:ai-news:${eventId || "latest"}` : `ai:${source}:${date || "latest"}`;
   const session = useAiChatSession({ conversationKey, conversationId, context, contextReady: !loading && !error, analysisScope: "general", source: { type: source, ...(source === "ai-news" && eventId ? { eventId } : {}), date } });
-  const stateFrom = (location.state as { from?: string } | null)?.from;
-  const returnTo = () => navigate(stateFrom || (source === "ai-daily" ? "/ai/daily" : "/ai/news"), { replace: true });
+  const stateFrom = routeState.from;
+  const returnTo = () => navigate(
+    stateFrom || (source === "ai-daily" ? "/ai/daily" : "/ai/news"),
+    routeState.returnState === undefined ? { replace: true } : { replace: true, state: routeState.returnState },
+  );
   const startNew = () => { session.clearChat(); const next = new URLSearchParams(params); next.delete("conversationId"); navigate(`/ai/conversations?${next}`); };
   const suggestions = source === "ai-news"
     ? ["今天最重要的三件事是什么", "这些热点有哪些共同趋势", "哪些信息还需要进一步核实"]
     : ["总结本期 AI 日报", "本期最值得关注的主题是什么", "列出需要继续验证的问题"];
 
   return <div className="flex h-[calc(100dvh-1.5rem)] flex-col overflow-hidden">
-    <GlassCard glow className="mb-3 shrink-0 p-4"><div className="grid grid-cols-[auto_1fr_auto] items-center gap-3"><button type="button" onClick={returnTo} className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 px-3 py-2 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /><span className="hidden sm:inline">返回</span></button><div className="min-w-0 text-center"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">AI CONVERSATION WORKSPACE</p><h1 className="truncate text-lg font-bold sm:text-xl">{sourceLabel[source]}</h1><p className="text-xs text-muted-foreground">来源 {source}{loading ? " · 读取上下文…" : error ? " · 数据缺失" : ""}</p></div><div className="flex items-center justify-end gap-2"><span className={cn("hidden text-[10px] sm:block", error ? "text-warning" : "text-success")}>{error ? "上下文异常" : "AI 对话"}</span>{session.messages.length > 0 && <button type="button" onClick={startNew} aria-label="清空对话" title="清空对话" className="rounded-lg border border-border/70 p-2 text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>}<button type="button" onClick={load} disabled={loading} aria-label="刷新上下文" title="刷新上下文" className="rounded-lg border border-border/70 p-2 text-muted-foreground hover:text-primary disabled:opacity-50"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button></div></div></GlassCard>
+    <GlassCard glow className="mb-3 shrink-0 p-4"><div className="grid grid-cols-[auto_1fr_auto] items-center gap-3"><button type="button" onClick={returnTo} className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 px-3 py-2 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /><span className="hidden sm:inline">返回</span></button><div className="min-w-0 text-center"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">AI CONVERSATION WORKSPACE</p><h1 className="truncate text-lg font-bold sm:text-xl">{workspaceTitle}</h1><p className="text-xs text-muted-foreground">来源 {source}{loading ? " · 读取上下文…" : error ? " · 数据缺失" : ""}</p></div><div className="flex items-center justify-end gap-2"><span className={cn("hidden text-[10px] sm:block", error ? "text-warning" : "text-success")}>{error ? "上下文异常" : "AI 对话"}</span>{session.messages.length > 0 && <button type="button" onClick={startNew} aria-label="清空对话" title="清空对话" className="rounded-lg border border-border/70 p-2 text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>}<button type="button" onClick={load} disabled={loading} aria-label="刷新上下文" title="刷新上下文" className="rounded-lg border border-border/70 p-2 text-muted-foreground hover:text-primary disabled:opacity-50"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button></div></div></GlassCard>
     <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[15rem_minmax(0,1fr)]"><ConversationRail activeId={session.conversationId || conversationId} onNew={startNew} /><GlassCard className="flex min-h-0 min-w-0 flex-col overflow-hidden p-0"><div className="flex items-center gap-2 border-b border-border/60 px-4 py-3 text-xs text-muted-foreground"><Bot className="h-4 w-4 text-primary" /><span>AI 流式对话</span><span className="ml-auto rounded-full bg-primary/10 px-2 py-0.5 text-primary">AI 对话记录</span></div><AiConversation session={session} mode="workspace" placeholder="针对 AI 热点或日报提出一个具体问题…" suggestions={suggestions} /></GlassCard></div>
   </div>;
 }

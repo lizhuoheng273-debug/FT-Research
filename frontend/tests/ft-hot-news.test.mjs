@@ -7,6 +7,7 @@ const sharedFeed = await readFile(new URL("../src/components/ai/AIHotFeed.tsx", 
 const router = await readFile(new URL("../src/router.tsx", import.meta.url), "utf8");
 const layout = await readFile(new URL("../src/components/layout/Layout.tsx", import.meta.url), "utf8");
 const detail = await readFile(new URL("../src/pages/AINewsDetail.tsx", import.meta.url), "utf8");
+const askAi = await readFile(new URL("../src/components/ui/AskAiButton.tsx", import.meta.url), "utf8");
 
 test("AI hotspot page uses a 5-to-10 expandable board and detail cards", () => {
   assert.match(layout, /AI 热点资讯/);
@@ -23,6 +24,10 @@ test("AI hotspot detail route is registered", () => {
 
 test("AI hotspot follow-up opens the full workspace for the selected story", () => {
   assert.match(detail, /<AskAiButton[\s\S]*workspaceSource="ai-news"[\s\S]*workspaceEventId=\{storyId\}/);
+  assert.match(detail, /workspaceSnapshot=\{\{/);
+  assert.match(detail, /workspaceReturnState=\{location\.state/);
+  assert.match(askAi, /storySnapshot:\s*workspaceSnapshot/);
+  assert.match(askAi, /returnState:\s*workspaceReturnState/);
   assert.doesNotMatch(detail, /<AskAiButton[^>]*workspaceSource=\{undefined\}/);
 });
 
