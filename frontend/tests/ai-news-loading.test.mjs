@@ -37,7 +37,11 @@ function mount(fetch, createRefresher = () => ({ refresh: async () => {}, isRefr
       if (name === "react/jsx-runtime") return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
       if (name === "react-router-dom") return { useNavigate: () => () => {} };
       if (name === "@/lib/api") return { apiUrl: (path) => `/api${path}`, authHeaders: () => ({}) };
-      if (name === "@/lib/rssSubscriptions") return { readRssSubscriptionState: () => ({ custom: [] }) };
+      if (name === "@/lib/rssSubscriptions") return {
+        readRssSubscriptionState: () => ({ version: 2, order: [], pinned: [], custom: [], trash: [] }),
+        filterRssSourcesForSubscriptions: (sources) => sources,
+        removeRssSourcesById: (sources, ids) => sources.filter((source) => !ids.includes(source.id)),
+      };
       if (name === "@/lib/rssRefresh") return { createRssRefresher: createRefresher };
       return new Proxy({}, { get: (_target, key) => key });
     },

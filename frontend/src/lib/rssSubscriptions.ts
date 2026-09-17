@@ -208,6 +208,18 @@ export function removeRssSourcesById<T extends Pick<RssSource, "id">>(sources: T
   return sources.filter((source) => !removedIds.has(source.id));
 }
 
+export function customSubscriptionIds(state: RssSubscriptionState): string[] {
+  return [...new Set([
+    ...state.custom.map((source) => source.id),
+    ...state.trash.filter((entry) => entry.kind === "custom").map((entry) => entry.id),
+  ])];
+}
+
+export function filterRssSourcesForSubscriptions<T extends Pick<RssSource, "id" | "region">>(sources: T[], state: RssSubscriptionState): T[] {
+  const activeCustomIds = new Set(state.custom.map((source) => source.id));
+  return sources.filter((source) => source.region !== "custom" || activeCustomIds.has(source.id));
+}
+
 export function trashSubscriptions(state: RssSubscriptionState, sourceIds: string[]): RssSubscriptionState {
   const order = uniqueStrings(state.order);
   const pinned = uniqueStrings(state.pinned);

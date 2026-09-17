@@ -6,7 +6,7 @@ import { AskAiButton } from "@/components/ui/AskAiButton";
 import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/AIHotFeed";
 import { AISubscriptionFeed } from "@/components/ai/AISubscriptionFeed";
 import { apiUrl, authHeaders } from "@/lib/api";
-import { readRssSubscriptionState, removeRssSourcesById, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
+import { filterRssSourcesForSubscriptions, readRssSubscriptionState, removeRssSourcesById, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
 import { createRssRefresher, type RssRefreshResult } from "@/lib/rssRefresh";
 import { findStoryFallback, prefetchAiNewsStory, storyPublicId } from "@/lib/aiNewsStory";
 
@@ -36,6 +36,7 @@ export function AINews() {
   const [refreshMessages, setRefreshMessages] = useState<Record<string, string>>({});
   const activeLoad = useRef<AbortController | null>(null);
   const rssRefresher = useRef<ReturnType<typeof createRssRefresher> | null>(null);
+  const rssSubscriptionState = useRef<RssSubscriptionState>(readRssSubscriptionState());
   const mounted = useRef(true);
 
   const load = async (subscriptionStateOverride?: RssSubscriptionState) => {
@@ -71,10 +72,11 @@ export function AINews() {
     };
     const loadRss = async () => {
       try {
-        const customUrls = (subscriptionStateOverride ?? readRssSubscriptionState()).custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
+        const customUrls = (subscriptionStateOverride ?? rssSubscriptionState.current).custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
         const rssBody = await read(`/ai/rss/sources${customUrls ? `?${customUrls}` : ""}`);
         if (isCurrent()) {
-          setRssSources((current) => mergeRssSources(current, (rssBody.sources || []) as RssSource[]));
+          const incoming = filterRssSourcesForSubscriptions((rssBody.sources || []) as RssSource[], rssSubscriptionState.current);
+          setRssSources((current) => mergeRssSources(current, incoming));
           setRssBulkRefreshing(Boolean(rssBody.refreshing));
         }
       } catch (e) { if (isCurrent()) setRssError(message(e, "媒体订阅暂不可用")); }
@@ -86,7 +88,7 @@ export function AINews() {
   useEffect(() => {
     mounted.current = true;
     rssRefresher.current = createRssRefresher(async (source, signal) => {
-      const custom = readRssSubscriptionState().custom.find((item) => item.id === source.id);
+      const custom = rssSubscriptionState.current.custom.find((item) => item.id === source.id);
       const response = await fetch(apiUrl("/ai/rss/refresh"), {
         method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, signal,
         body: JSON.stringify(custom ? { sourceId: source.id, url: custom.url } : { sourceId: source.id }),
@@ -102,6 +104,7 @@ export function AINews() {
       return result;
     }, (result) => {
       if (!mounted.current) return;
+      if (filterRssSourcesForSubscriptions([result.source], rssSubscriptionState.current).length === 0) return;
       const message = result.outcome === "updated"
         ? `已更新，共新增 ${result.addedCount} 条`
         : result.outcome === "current" ? "已是最新内容" : "更新未完成，当前显示最近一次成功内容";
@@ -124,12 +127,13 @@ export function AINews() {
     const controller = new AbortController();
     const poll = async () => {
       try {
-        const customUrls = readRssSubscriptionState().custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
+        const customUrls = rssSubscriptionState.current.custom.map((source) => `urls=${encodeURIComponent(source.url)}`).join("&");
         const response = await fetch(apiUrl(`/ai/rss/sources${customUrls ? `?${customUrls}` : ""}`), { headers: authHeaders(), signal: controller.signal });
         const rssBody = await response.json();
         if (!response.ok) throw new Error(rssBody.detail || `HTTP ${response.status}`);
         if (!mounted.current) return;
-        setRssSources((current) => mergeRssSources(current, (rssBody.sources || []) as RssSource[]));
+        const incoming = filterRssSourcesForSubscriptions((rssBody.sources || []) as RssSource[], rssSubscriptionState.current);
+        setRssSources((current) => mergeRssSources(current, incoming));
         setRssBulkRefreshing(Boolean(rssBody.refreshing));
       } catch (error) {
         if (!controller.signal.aborted && mounted.current) setRssError(error instanceof Error ? error.message : "RSS 状态更新失败");
@@ -163,7 +167,7 @@ export function AINews() {
     try {
       await refresher.refresh(source);
     } catch (error) {
-      if (mounted.current) setRefreshMessages((current) => ({ ...current, [source.id]: error instanceof Error && /timeout/i.test(error.message) ? "刷新超时，请稍后重试。" : "刷新失败，请稍后重试。" }));
+      if (mounted.current && filterRssSourcesForSubscriptions([source], rssSubscriptionState.current).length > 0) setRefreshMessages((current) => ({ ...current, [source.id]: error instanceof Error && /timeout/i.test(error.message) ? "刷新超时，请稍后重试。" : "刷新失败，请稍后重试。" }));
     } finally {
       if (mounted.current) setRefreshingIds((current) => current.filter((id) => id !== source.id));
     }
@@ -189,7 +193,7 @@ export function AINews() {
     {stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">AI HOT 暂时不可用，当前显示本地缓存。</p>}
     {error && <p className="mb-3 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
     <AIHotFeed topics={topics} items={items} loading={loading} onOpenStory={openStory} onPrefetchStory={prefetchStory} showEvents={false} />
-    <AISubscriptionFeed sources={rssSources} loading={rssLoading} error={rssError} refreshingIds={refreshingIds} refreshMessages={refreshMessages} onRefreshSource={refreshSource} onSourcesChanged={(source) => setRssSources((current) => mergeRssSource(current, source))} onSubscriptionSourcesChanged={(state, change) => { const removedSourceIds = change?.removedSourceIds || []; if (removedSourceIds.length > 0) setRssSources((current) => removeRssSourcesById(current, removedSourceIds)); void load(state); }} />
+    <AISubscriptionFeed sources={rssSources} loading={rssLoading} error={rssError} refreshingIds={refreshingIds} refreshMessages={refreshMessages} onRefreshSource={refreshSource} onSourcesChanged={(source, state) => { rssSubscriptionState.current = state; setRssSources((current) => mergeRssSource(current, source)); }} onSubscriptionSourcesChanged={(state, change) => { rssSubscriptionState.current = state; const removedSourceIds = change?.removedSourceIds || []; if (removedSourceIds.length > 0) { rssRefresher.current?.invalidate(removedSourceIds); setRssSources((current) => removeRssSourcesById(current, removedSourceIds)); setRefreshMessages((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !removedSourceIds.includes(id)))); setRefreshingIds((current) => current.filter((id) => !removedSourceIds.includes(id))); } void load(state); }} />
     {!loading && topics.length === 0 && <p className="mt-4 text-sm text-muted-foreground">暂无热点资讯。</p>}
     {itemById.size === 0 && !loading && topics.length > 0 && <p className="mt-2 text-xs text-muted-foreground">部分事件暂未返回摘要，将在详情页补充。</p>}
   </div>;

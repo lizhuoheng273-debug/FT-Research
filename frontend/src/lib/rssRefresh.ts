@@ -37,6 +37,12 @@ export function createRssRefresher(request: RefreshRequest, onResult: (result: R
   return {
     refresh,
     isRefreshing: (id: string) => active.has(id),
+    invalidate: (sourceIds: string[]) => {
+      for (const sourceId of sourceIds) {
+        active.get(sourceId)?.controller.abort();
+        active.delete(sourceId);
+      }
+    },
     dispose: () => {
       disposed = true;
       for (const entry of active.values()) entry.controller.abort();

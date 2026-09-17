@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { closestCenter, DndContext, DragOverlay, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors, type DragCancelEvent, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
+import { closestCenter, DndContext, DragOverlay, KeyboardSensor, MouseSensor, TouchSensor, useSensor, useSensors, type DragCancelEvent, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { Check, Loader2, Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { RssSortableCard, RssSortableCardOverlay } from "@/components/ai/RssSortableCard";
 import { RssTrashDialog } from "@/components/ai/RssTrashDialog";
 import { apiUrl, authHeaders } from "@/lib/api";
 import { restoreFocusOnNextFrame } from "@/lib/rssInteractions";
-import { addCustomSubscription, moveSubscription, orderRssSources, readRssSubscriptionState, removeCustomSource, resetSubscriptions, restoreAllSubscriptions, restoreSubscriptions, trashSubscriptions, toggleSubscriptionFlag, writeRssSubscriptionState, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
+import { addCustomSubscription, customSubscriptionIds, moveSubscription, orderRssSources, readRssSubscriptionState, removeCustomSource, resetSubscriptions, restoreAllSubscriptions, restoreSubscriptions, trashSubscriptions, toggleSubscriptionFlag, writeRssSubscriptionState, type RssSource, type RssSubscriptionState } from "@/lib/rssSubscriptions";
 
 interface Props {
   sources: RssSource[];
@@ -15,7 +15,7 @@ interface Props {
   refreshingIds?: string[];
   refreshMessages?: Record<string, string>;
   onRefreshSource?: (source: RssSource) => void;
-  onSourcesChanged?: (source: RssSource) => void;
+  onSourcesChanged?: (source: RssSource, state: RssSubscriptionState) => void;
   onSubscriptionSourcesChanged?: (state: RssSubscriptionState, change?: { removedSourceIds?: string[] }) => void | Promise<void>;
 }
 
@@ -54,7 +54,7 @@ export function AISubscriptionFeed({ sources, loading = false, error, refreshing
   const visibleSources = useMemo(() => orderRssSources(sources, subscriptionState), [sources, subscriptionState]);
   const customIds = useMemo(() => new Set(subscriptionState.custom.map((source) => source.id)), [subscriptionState.custom]);
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
@@ -124,14 +124,15 @@ export function AISubscriptionFeed({ sources, loading = false, error, refreshing
   };
   const saveRss = () => {
     if (!previewSource) return;
-    updateState(addCustomSubscription(subscriptionState, { id: previewSource.id, name: previewSource.name, url: previewSource.url || addUrl.trim() }));
-    onSourcesChanged?.(previewSource);
+    const nextState = addCustomSubscription(subscriptionState, { id: previewSource.id, name: previewSource.name, url: previewSource.url || addUrl.trim() });
+    updateState(nextState);
+    onSourcesChanged?.(previewSource, nextState);
     setAddUrl(""); closeAdd();
   };
 
   const restore = () => {
     if (!window.confirm("确定恢复默认 RSS 设置吗？这会重置本机排序、置顶、自定义订阅和回收站。")) return;
-    const removedSourceIds = subscriptionState.custom.map((source) => source.id);
+    const removedSourceIds = customSubscriptionIds(subscriptionState);
     const nextState = resetSubscriptions();
     updateState(nextState);
     void onSubscriptionSourcesChanged?.(nextState, { removedSourceIds });

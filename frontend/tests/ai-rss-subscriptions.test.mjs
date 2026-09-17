@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { MouseSensor } from "@dnd-kit/core";
 
 const page = await readFile(new URL("../src/pages/AINews.tsx", import.meta.url), "utf8");
 const feed = await readFile(new URL("../src/components/ai/AISubscriptionFeed.tsx", import.meta.url), "utf8");
@@ -64,10 +65,11 @@ test("subscription feed has search targeting and accessible fallback reorder con
   assert.match(feed, /POST|\/ai\/rss\/resolve/);
 });
 
-test("subscription feed uses dnd-kit for pointer, touch and keyboard sorting", () => {
-  for (const token of ["DndContext", "SortableContext", "PointerSensor", "TouchSensor", "KeyboardSensor", "DragOverlay", "useSortable", "activationConstraint", "autoScroll", "sortableKeyboardCoordinates", "verticalListSortingStrategy", "arrayMove"]) {
+test("subscription feed uses mouse-only, delayed touch and keyboard sorting", () => {
+  for (const token of ["DndContext", "SortableContext", "MouseSensor", "TouchSensor", "KeyboardSensor", "DragOverlay", "useSortable", "activationConstraint", "autoScroll", "sortableKeyboardCoordinates", "verticalListSortingStrategy", "arrayMove"]) {
     assert.match(feedAndCard, new RegExp(token));
   }
+  assert.doesNotMatch(feed, /useSensor\(PointerSensor/);
   assert.match(feedAndCard, /distance:\s*6/);
   assert.match(feedAndCard, /delay:\s*200/);
   assert.match(feedAndCard, /tolerance:\s*8/);
@@ -76,6 +78,17 @@ test("subscription feed uses dnd-kit for pointer, touch and keyboard sorting", (
   assert.match(feedAndCard, /data-no-drag/);
   assert.doesNotMatch(feedAndCard, /\bdraggable\b/);
   assert.doesNotMatch(feedAndCard, /onPointerUp/);
+});
+
+test("the configured mouse sensor accepts mouse activation but has no touch activator", () => {
+  const activate = (eventName, nativeEvent) => {
+    const activator = MouseSensor.activators.find((candidate) => candidate.eventName === eventName);
+    if (!activator) return false;
+    return activator.handler({ nativeEvent }, { onActivation() {} }, {});
+  };
+
+  assert.equal(activate("onMouseDown", { button: 0 }), true);
+  assert.equal(activate("onTouchStart", { touches: [{}] }), false);
 });
 
 test("interactive RSS controls stop touch activation before it reaches TouchSensor", () => {
@@ -306,7 +319,7 @@ test("restore and reset notify the parent to refetch sources from the updated lo
   assert.match(feed, /const nextState = resetSubscriptions\(\)/);
   assert.equal(feed.match(/onSubscriptionSourcesChanged\?\.\(nextState/g)?.length, 3);
   assert.match(page, /const load = async \(subscriptionStateOverride\?: RssSubscriptionState\)/);
-  assert.match(page, /subscriptionStateOverride \?\? readRssSubscriptionState\(\)/);
+  assert.match(page, /subscriptionStateOverride \?\? rssSubscriptionState\.current/);
   assert.match(page, /onSubscriptionSourcesChanged=\{\(state, change\) =>/);
   assert.match(page, /void load\(state\)/);
 });
@@ -317,10 +330,32 @@ test("reset synchronously removes pre-reset custom cards before the parent refet
 
   assert.equal(typeof api.removeRssSourcesById, "function");
   assert.deepEqual(plain(api.removeRssSourcesById(sources, ["custom-x"])), [sources[1]]);
-  assert.match(feed, /const removedSourceIds = subscriptionState\.custom\.map\(\(source\) => source\.id\)/);
+  assert.match(feed, /const removedSourceIds = customSubscriptionIds\(subscriptionState\)/);
   assert.match(feed, /onSubscriptionSourcesChanged\?\.\(nextState, \{ removedSourceIds \}\)/);
 
   const parentSync = page.slice(page.indexOf("<AISubscriptionFeed"));
   assert.match(parentSync, /removeRssSourcesById\(current, removedSourceIds\)/);
   assert.ok(parentSync.indexOf("setRssSources((current) => removeRssSourcesById") < parentSync.indexOf("void load(state)"));
+});
+
+test("reset cleanup includes active and trashed custom IDs and rejects stale custom snapshots", () => {
+  const { api } = loadStateModule();
+  const state = {
+    version: 2,
+    order: ["ithome", "custom-active"],
+    pinned: [],
+    custom: [{ id: "custom-active", name: "Active", url: "https://active.test/rss" }],
+    trash: [{ id: "custom-trashed", kind: "custom", previousIndex: 1, wasPinned: false, custom: { id: "custom-trashed", name: "Trashed", url: "https://trashed.test/rss" } }],
+  };
+  const snapshots = [
+    { id: "ithome", region: "cn" },
+    { id: "custom-active", region: "custom" },
+    { id: "custom-trashed", region: "custom" },
+  ];
+
+  assert.deepEqual(plain(api.customSubscriptionIds(state).sort()), ["custom-active", "custom-trashed"]);
+  assert.deepEqual(
+    plain(api.filterRssSourcesForSubscriptions(snapshots, api.resetSubscriptions()).map((item) => item.id)),
+    ["ithome"],
+  );
 });

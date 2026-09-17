@@ -402,6 +402,78 @@ def test_refresh_source_counts_all_new_items_beyond_display_cap(tmp_path):
     assert len(refreshed["source"]["items"]) == 3
 
 
+def test_concurrent_refresh_count_and_snapshot_share_the_url_lock(tmp_path, monkeypatch):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: feed(["old"]), validate_dns=False)
+    catalog.refresh_source("solidot")
+
+    class TrackingLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.owner = None
+
+        def __enter__(self):
+            self.lock.acquire()
+            self.owner = threading.get_ident()
+
+        def __exit__(self, *_args):
+            self.owner = None
+            self.lock.release()
+
+        def held_by_current_thread(self):
+            return self.owner == threading.get_ident()
+
+    url_lock = TrackingLock()
+    monkeypatch.setattr(catalog, "_source_lock", lambda _url: url_lock)
+    original_read_cache = catalog._read_cache
+    reads_by_thread = {}
+    first_fetched = threading.Event()
+    second_finished = threading.Event()
+
+    def fetch(_url):
+        if threading.current_thread().name == "first-refresh":
+            first_fetched.set()
+            return feed(["old", "first"])
+        return feed(["old", "first", "second"])
+
+    def read_cache(url):
+        name = threading.current_thread().name
+        reads_by_thread[name] = reads_by_thread.get(name, 0) + 1
+        if name == "first-refresh" and reads_by_thread[name] == 2 and not url_lock.held_by_current_thread():
+            assert second_finished.wait(1)
+        return original_read_cache(url)
+
+    catalog.fetcher = fetch
+    monkeypatch.setattr(catalog, "_read_cache", read_cache)
+    results = {}
+
+    def run(name):
+        results[name] = catalog.refresh_source("solidot")
+        if name == "second":
+            second_finished.set()
+
+    first = threading.Thread(target=lambda: run("first"), name="first-refresh")
+    second = threading.Thread(target=lambda: run("second"), name="second-refresh")
+    first.start()
+    assert first_fetched.wait(1)
+    second.start()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results["first"]["addedCount"] == 1
+    assert [item["title"] for item in results["first"]["source"]["items"]] == ["old", "first"]
+    assert results["second"]["addedCount"] == 1
+
+
 def test_expired_cache_is_distinguished_from_fetch_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(rss, "_now", lambda: "2026-09-02T10:00:00+00:00")
     catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: RSS, validate_dns=False)
