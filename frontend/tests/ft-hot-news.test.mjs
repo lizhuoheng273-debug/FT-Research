@@ -36,3 +36,26 @@ test("AI hotspot page uses the shared story identity, fallback and prefetch help
   assert.match(news, /prefetchAiNewsStory\(/);
   assert.match(news, /links:\s*\{\s*original:[\s\S]*story:/);
 });
+
+test("AI hotspot detail uses prefetched stories and abortable two-retry loading", () => {
+  assert.match(detail, /import\s*\{[^}]*loadAiNewsStory[^}]*takePrefetchedAiNewsStory[^}]*\}\s*from\s*["']@\/lib\/aiNewsStory["']/);
+  assert.match(detail, /takePrefetchedAiNewsStory\(storyId\)/);
+  assert.match(detail, /loadAiNewsStory\(storyId,\s*\{\s*signal:\s*controller\.signal,\s*retries:\s*2\s*\}\)/s);
+  assert.match(detail, /new AbortController\(\)/);
+  assert.match(detail, /return\s*\(\)\s*=>\s*\{[\s\S]{0,240}controller\.abort\(\)/);
+});
+
+test("AI hotspot detail keeps fallback visible and skeletonizes only missing sections", () => {
+  assert.match(detail, /fallback\?\.title/);
+  assert.match(detail, /fallback\?\.summary/);
+  assert.match(detail, /fallback\?\.source/);
+  assert.match(detail, /fallback\?\.links\?\.original/);
+  assert.match(detail, /!digest\s*&&\s*loading[\s\S]*?animate-pulse/);
+  assert.doesNotMatch(detail, /详情暂不可用/);
+});
+
+test("AI hotspot detail offers final recovery and an original-story link", () => {
+  assert.match(detail, /完整详情暂时未加载成功/);
+  assert.match(detail, /重新加载/);
+  assert.match(detail, /查看原文/);
+});

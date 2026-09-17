@@ -33,6 +33,8 @@ const topic = (overrides = {}) => ({
   ...overrides,
 });
 
+const detailPage = await readFile(new URL("../src/pages/AINewsDetail.tsx", import.meta.url), "utf8");
+
 const item = (overrides = {}) => ({
   id: "item-1",
   title: "条目标题",
@@ -147,4 +149,8 @@ test("prefetchAiNewsStory removes rejected entries so a later interaction can re
   assert.equal(api.takePrefetchedAiNewsStory("public-2"), undefined);
   assert.equal((await api.prefetchAiNewsStory("public-2", { fetcher, retries: 0, retryDelayMs: 0 })).title, "第二次成功");
   assert.equal(calls, 2);
+});
+
+test("AI detail consumes a cached story before calling the shared retrying loader", () => {
+  assert.match(detailPage, /const prefetched = takePrefetchedAiNewsStory\(storyId\);[\s\S]{0,220}const request = prefetched \?\? loadAiNewsStory\(storyId,\s*\{\s*signal:\s*controller\.signal,\s*retries:\s*2\s*\}\)/);
 });
