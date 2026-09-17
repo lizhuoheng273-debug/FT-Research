@@ -474,6 +474,99 @@ def test_concurrent_refresh_count_and_snapshot_share_the_url_lock(tmp_path, monk
     assert results["second"]["addedCount"] == 1
 
 
+def test_resolve_cannot_replace_cache_between_refresh_snapshot_and_count(tmp_path, monkeypatch):
+    def feed(ids):
+        entries = "".join(
+            f"<item><guid>{item_id}</guid><title>{item_id}</title>"
+            f"<link>https://example.com/{item_id}</link></item>"
+            for item_id in ids
+        )
+        return f"<rss><channel><title>测试媒体</title>{entries}</channel></rss>".encode()
+
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: feed(["old"]), validate_dns=False)
+    catalog.refresh_source("solidot")
+    source = dict(next(item for item in catalog.source_defs if item["id"] == "solidot"))
+
+    resolver_positioned = threading.Event()
+    resolver_fetch_started = threading.Event()
+    refresh_wrote = threading.Event()
+    resolver_finished = threading.Event()
+
+    class TrackingLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if self.lock.locked() and threading.current_thread().name == "resolve-race":
+                resolver_positioned.set()
+            self.lock.acquire()
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    url_lock = TrackingLock()
+    monkeypatch.setattr(catalog, "_source_lock", lambda _url: url_lock)
+    original_read_cache = catalog._read_cache
+    original_write_cache = catalog._write_cache
+    refresh_reads = 0
+
+    def fetch(_url):
+        if threading.current_thread().name == "refresh-race":
+            assert resolver_positioned.wait(1)
+            return feed(["old", "refresh"])
+        resolver_fetch_started.set()
+        resolver_positioned.set()
+        assert refresh_wrote.wait(1)
+        return feed(["old", "resolve-a", "resolve-b"])
+
+    def write_cache(url, value):
+        original_write_cache(url, value)
+        if threading.current_thread().name == "refresh-race":
+            refresh_wrote.set()
+
+    def read_cache(url):
+        nonlocal refresh_reads
+        if threading.current_thread().name == "refresh-race":
+            refresh_reads += 1
+            if refresh_reads == 2 and resolver_fetch_started.is_set():
+                assert resolver_finished.wait(1)
+        return original_read_cache(url)
+
+    catalog.fetcher = fetch
+    monkeypatch.setattr(catalog, "_write_cache", write_cache)
+    monkeypatch.setattr(catalog, "_read_cache", read_cache)
+    results = {}
+    errors = []
+
+    def refresh():
+        try:
+            results["refresh"] = catalog.refresh_source("solidot")
+        except Exception as exc:  # noqa: BLE001 - surfaced in the main test thread
+            errors.append(exc)
+
+    def resolve():
+        try:
+            results["resolve"] = catalog.resolve(str(source["url"]), source=source)
+        except Exception as exc:  # noqa: BLE001 - surfaced in the main test thread
+            errors.append(exc)
+        finally:
+            resolver_finished.set()
+
+    refresh_thread = threading.Thread(target=refresh, name="refresh-race")
+    resolve_thread = threading.Thread(target=resolve, name="resolve-race")
+    refresh_thread.start()
+    resolve_thread.start()
+    refresh_thread.join(2)
+    resolve_thread.join(2)
+
+    assert not refresh_thread.is_alive()
+    assert not resolve_thread.is_alive()
+    assert errors == []
+    assert results["refresh"]["addedCount"] == 1
+    assert [item["title"] for item in results["refresh"]["source"]["items"]] == ["old", "refresh"]
+    assert [item["title"] for item in results["resolve"]["items"]] == ["old", "resolve-a", "resolve-b"]
+
+
 def test_expired_cache_is_distinguished_from_fetch_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(rss, "_now", lambda: "2026-09-02T10:00:00+00:00")
     catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: RSS, validate_dns=False)

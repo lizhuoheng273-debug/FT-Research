@@ -567,12 +567,14 @@ class RssCatalog:
         base.setdefault("region", "custom")
         base.setdefault("priority", 100)
         base.setdefault("homepage", f"{urlsplit(normalized).scheme}://{urlsplit(normalized).netloc}")
-        raw = self.fetcher(normalized)
-        parsed = parse_feed(raw, source_url=normalized)
-        base["name"] = parsed.name
-        now = _now()
-        self._write_cache(normalized, {"source": base, "lastSuccessAt": now, "items": [item.as_dict() for item in parsed.items]})
-        return self._public_snapshot(base, items=[item.as_dict() for item in parsed.items], last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
+        with self._source_lock(normalized):
+            raw = self.fetcher(normalized)
+            parsed = parse_feed(raw, source_url=normalized)
+            base["name"] = parsed.name
+            now = _now()
+            items = [item.as_dict() for item in parsed.items]
+            self._write_cache(normalized, {"source": base, "lastSuccessAt": now, "items": items})
+            return self._public_snapshot(base, items=items, last_success=now, last_attempt=now, stale=False, stale_reason=None, error=None, error_code=None)
 
     def sources(self, urls: Iterable[str] | None = None) -> list[dict[str, object]]:
         sources = [self._read_snapshot(source) for source in self.source_defs]
