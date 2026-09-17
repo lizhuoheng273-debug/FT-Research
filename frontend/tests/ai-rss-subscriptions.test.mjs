@@ -68,6 +68,10 @@ test("subscription feed uses dnd-kit for pointer, touch and keyboard sorting", (
   assert.doesNotMatch(feedAndCard, /onPointerUp/);
 });
 
+test("interactive RSS controls stop touchstart before it reaches TouchSensor", () => {
+  assert.match(sortableCard, /const noDragProps = \{[^}]*onPointerDown:\s*stopDrag,[^}]*onTouchStart:\s*stopDrag/s);
+});
+
 test("subscription cards keep actions below content on narrow screens", () => {
   assert.match(feedAndCard, /grid-cols-\[auto_minmax\(0,1fr\)\]/);
   assert.match(feedAndCard, /col-span-2[^\"]*flex-wrap/);
@@ -227,6 +231,22 @@ test("batch RSS management and recycle bin expose the restore-only accessible co
   }
   assert.match(feedAndTrash, /aria-modal="true"/);
   assert.doesNotMatch(feedAndTrash, /永久删除/);
+});
+
+test("RSS recycle-bin dialog traps Tab and Shift+Tab within its controls", () => {
+  assert.match(trash, /querySelectorAll<HTMLElement>/);
+  assert.match(trash, /event\.key !== "Tab"/);
+  assert.match(trash, /event\.shiftKey/);
+  assert.match(trash, /!dialog\.contains\(document\.activeElement\)/);
+  assert.match(trash, /firstFocusable\.focus\(\)/);
+  assert.match(trash, /lastFocusable\.focus\(\)/);
+});
+
+test("batch management removes drag semantics and cursor affordances from cards", () => {
+  assert.match(sortableCard, /const dragProps = dragDisabled \? \{\} : \{[\s\S]*?"aria-roledescription": "可排序订阅"/);
+  assert.match(sortableCard, /\{\.\.\.dragProps\}/);
+  assert.match(sortableCard, /\{!dragDisabled && \([\s\S]*?cursor-grab[\s\S]*?\)\}/);
+  assert.match(feed, /managing \? "批量管理中：勾选需要移入回收站的订阅。" : "拖动卡片头部/);
 });
 
 test("restore and reset notify the parent to refetch sources from the updated local state", () => {

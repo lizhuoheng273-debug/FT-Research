@@ -188,7 +188,7 @@ export function AISubscriptionFeed({ sources, loading = false, error, refreshing
       {managing && <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border/80 bg-background/95 px-4 py-3 shadow-[0_-8px_30px_hsl(var(--foreground)/0.08)] backdrop-blur sm:px-6"><div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3"><span className="text-sm text-muted-foreground">已选择 {selectedIds.length} 个订阅</span><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={cancelBatchManagement} className="h-10 rounded-full border border-border px-4 text-sm">取消</button><button type="button" onClick={moveSelectedToTrash} disabled={selectedIds.length === 0} className="h-10 rounded-full bg-destructive px-4 text-sm text-destructive-foreground disabled:cursor-not-allowed disabled:opacity-40">移入回收站</button></div></div></div>}
       <RssTrashDialog open={trashOpen} entries={subscriptionState.trash} sources={sources} selectedIds={trashSelectedIds} onSelectedIdsChange={setTrashSelectedIds} onClose={closeTrash} onRestoreSelected={restoreSelectedTrash} onRestoreAll={restoreAllTrash} />
       {query && filtered.length === 1 && <button type="button" onClick={() => { setQuery(""); setHighlightedId(null); }} className="mt-2 text-xs text-muted-foreground hover:text-foreground"><X className="mr-1 inline h-3 w-3" />清除搜索</button>}
-      <p className="mt-3 text-xs text-muted-foreground"><Check className="mr-1 inline h-3 w-3 text-success" />拖动卡片头部或空白区域可排序；也可使用每张卡片的上移/下移按钮。</p>
+      <p className="mt-3 text-xs text-muted-foreground"><Check className="mr-1 inline h-3 w-3 text-success" />{managing ? "批量管理中：勾选需要移入回收站的订阅。" : "拖动卡片头部或空白区域可排序；也可使用每张卡片的上移/下移按钮。"}</p>
     </section>
   );
 }

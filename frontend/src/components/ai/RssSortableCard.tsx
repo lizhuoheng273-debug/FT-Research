@@ -66,19 +66,22 @@ export function RssSortableCard({
     transition,
     zIndex: isDragging ? 1 : undefined,
   };
-  const noDragProps = { "data-no-drag": true, onPointerDown: stopDrag, onKeyDown: stopDrag };
+  const noDragProps = { "data-no-drag": true, onPointerDown: stopDrag, onTouchStart: stopDrag, onKeyDown: stopDrag };
+  const dragProps = dragDisabled ? {} : {
+    ...attributes,
+    ...listeners,
+    "data-sortable-card": true,
+    "data-drag-activator": true,
+    "data-sortable-state": isDragging ? "dragging" : isSorting ? "sorting" : "idle",
+    "aria-label": `拖动${source.name}排序`,
+    "aria-roledescription": "可排序订阅",
+  };
 
   return (
     <article
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
-      data-sortable-card
-      data-drag-activator
-      data-sortable-state={isDragging ? "dragging" : isSorting ? "sorting" : "idle"}
-      aria-label={`拖动${source.name}排序`}
-      aria-roledescription="可排序订阅"
+      {...dragProps}
       id={`rss-source-${source.id}`}
       className={`touch-pan-y transition-all ${highlighted ? "rounded-xl ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}
     >
@@ -94,9 +97,11 @@ export function RssSortableCard({
               className="mt-1 h-4 w-4 accent-primary"
             />
           )}
-          <span className="mt-1 shrink-0 cursor-grab touch-none text-muted-foreground" aria-hidden="true" title="拖动排序">
-            <GripVertical className="h-5 w-5" />
-          </span>
+          {!dragDisabled && (
+            <span className="mt-1 shrink-0 cursor-grab touch-none text-muted-foreground" aria-hidden="true" title="拖动排序">
+              <GripVertical className="h-5 w-5" />
+            </span>
+          )}
           <div className="min-w-0 sm:flex-1">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">

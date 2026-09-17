@@ -457,7 +457,9 @@ def test_custom_dns_validation_happens_only_inside_refresh_admission(tmp_path, m
 
 
 def test_catalog_exposes_timeout_code_for_bounded_fetch_timeout(tmp_path):
-    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: (_ for _ in ()).throw(rss.RssTimeoutError("RSS 下载总时限已到")), validate_dns=False)
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: RSS, validate_dns=False)
+    catalog.refresh_source("solidot")
+    catalog.fetcher = lambda _url: (_ for _ in ()).throw(rss.RssTimeoutError("RSS 下载总时限已到"))
     result = catalog.refresh_source("solidot")
     assert result["source"]["errorCode"] == "timeout"
 
@@ -479,7 +481,15 @@ def test_same_url_refresh_serializes_failure_before_later_success(tmp_path):
         return RSS
 
     catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=fetch, validate_dns=False)
-    first = threading.Thread(target=lambda: catalog.refresh_source("solidot"))
+    first_errors = []
+
+    def refresh_first():
+        try:
+            catalog.refresh_source("solidot")
+        except Exception as exc:  # noqa: BLE001 - a first-ever failure is an HTTP error
+            first_errors.append(exc)
+
+    first = threading.Thread(target=refresh_first)
     second = threading.Thread(target=lambda: catalog.refresh_source("solidot"))
     first.start()
     assert first_started.wait(1)
@@ -488,6 +498,8 @@ def test_same_url_refresh_serializes_failure_before_later_success(tmp_path):
     first.join(1); second.join(1)
     snapshot = catalog.sources()[7]
     assert calls == [1, 1]
+    assert len(first_errors) == 1
+    assert first_errors[0].status_code == 502
     assert snapshot["error"] is None
     assert snapshot["stale"] is False
 

@@ -94,6 +94,27 @@ def test_rss_refresh_preserves_cached_outcome(monkeypatch):
     assert body["addedCount"] == 0
 
 
+def test_rss_refresh_returns_http_failure_when_first_fetch_fails(monkeypatch, tmp_path):
+    import rss
+
+    catalog = rss.RssCatalog(
+        cache_dir=tmp_path,
+        fetcher=lambda _url: (_ for _ in ()).throw(OSError("upstream offline")),
+        validate_dns=False,
+    )
+    monkeypatch.setattr(app, "rss_catalog", catalog)
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {}, raising=False)
+
+    response = TestClient(app.app, raise_server_exceptions=False).post(
+        "/api/ai/rss/refresh", json={"sourceId": "solidot"}
+    )
+
+    assert response.status_code == 502
+    assert "cached" not in response.text
+
+
 def test_rss_refresh_normalizes_undocumented_catalog_fields(monkeypatch):
     monkeypatch.setattr(app, "_rss_refresh_attempts", {})
     monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
@@ -124,8 +145,8 @@ def test_rss_refresh_reports_private_redirect_as_security_failure(monkeypatch, t
     monkeypatch.setattr(app, "rss_catalog", catalog)
     monkeypatch.setattr(app, "_rss_refresh_attempts", {})
     response = TestClient(app.app).post("/api/ai/rss/refresh", json={"sourceId": "solidot"})
-    assert response.status_code == 200
-    assert response.json()["source"]["errorCode"] == "security"
+    assert response.status_code == 502
+    assert response.json()["detail"] == "刷新失败，请稍后重试。"
 
 
 def test_authenticated_guest_can_start_whitelisted_bulk_rss_refresh(monkeypatch):

@@ -24,20 +24,46 @@ export function RssTrashDialog({
   onRestoreAll,
 }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const sourceNames = new Map(sources.map((source) => [source.id, source.name]));
   const selected = new Set(selectedIds);
 
   useEffect(() => {
     if (!open) return;
     closeButtonRef.current?.focus();
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusableElements = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ));
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const firstFocusable = focusableElements[0]!;
+      const lastFocusable = focusableElements[focusableElements.length - 1]!;
+      const focusOutsideDialog = !dialog.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === firstFocusable || focusOutsideDialog)) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusOutsideDialog)) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
     };
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", handleKeyDown);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = previousOverflow;
     };
   }, [open]);
@@ -57,6 +83,7 @@ export function RssTrashDialog({
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="rss-trash-title"

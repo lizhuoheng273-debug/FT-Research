@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlsplit, urlunparse, urlunsplit
 
+from fastapi import HTTPException
+
 from data_paths import cache_path
 
 
@@ -545,6 +547,8 @@ class RssCatalog:
             added_ids = refreshed_ids - cached_ids
             added_count = len(added_ids)
         else:
+            if not snapshot["lastSuccessAt"]:
+                raise HTTPException(status_code=502, detail="刷新失败，请稍后重试。")
             added_count = 0
         outcome = "cached" if snapshot["error"] is not None else ("updated" if added_count > 0 else "current")
         return {"source": snapshot, "outcome": outcome, "addedCount": added_count}
