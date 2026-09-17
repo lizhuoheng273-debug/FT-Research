@@ -6,12 +6,10 @@ import { ConversationRail } from "@/components/ai/ConversationRail";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { useAiChatSession } from "@/hooks/useAiChatSession";
 import { apiUrl, authHeaders } from "@/lib/api";
+import { buildAiNewsStoryContext, type AiNewsStorySnapshot, type Story as AiNewsStory } from "@/lib/aiNewsStory";
 import { cn } from "@/lib/utils";
 
 type HotTopic = { rank?: number; title?: string; source?: string };
-type AiNewsReport = { title?: string; summary?: string; source?: string | { name?: string }; publishedAt?: string; links?: { original?: string } };
-type AiNewsStory = { title?: string; digest?: string; latest?: string; links?: { original?: string }; reports?: AiNewsReport[] };
-type StorySnapshot = { title?: string; summary?: string; latest?: string; originalUrl?: string };
 type WorkspaceRouteState = { from?: string; returnState?: unknown; storySnapshot?: unknown };
 
 const sourceLabel: Record<"ai-news" | "ai-daily", string> = {
@@ -23,41 +21,18 @@ function parseSource(value: string | null): "ai-news" | "ai-daily" {
   return value === "ai-daily" ? "ai-daily" : "ai-news";
 }
 
-function readStorySnapshot(value: unknown): StorySnapshot | undefined {
+function readStorySnapshot(value: unknown): AiNewsStorySnapshot | undefined {
   if (!value || typeof value !== "object") return undefined;
   const candidate = value as Record<string, unknown>;
-  const snapshot: StorySnapshot = {};
+  const snapshot: AiNewsStorySnapshot = {};
   for (const key of ["title", "summary", "latest", "originalUrl"] as const) {
-    if (typeof candidate[key] === "string" && candidate[key]) snapshot[key] = candidate[key];
+    if (typeof candidate[key] === "string" && candidate[key]) snapshot[key] = candidate[key].slice(0, 6_000);
   }
   return Object.keys(snapshot).length ? snapshot : undefined;
 }
 
-function hasMeaningfulStorySnapshot(snapshot?: StorySnapshot): boolean {
+function hasMeaningfulStorySnapshot(snapshot?: AiNewsStorySnapshot): boolean {
   return Boolean(snapshot?.title?.trim() && (snapshot.summary?.trim() || snapshot.originalUrl?.trim()));
-}
-
-function storyContext(story: AiNewsStory = {}, snapshot?: StorySnapshot): { title: string; text: string } {
-  const reports = Array.isArray(story.reports) ? story.reports : [];
-  const reportContext = reports.map((report, index) => {
-    const reportSource = typeof report.source === "string" ? report.source : report.source?.name;
-    return [`${index + 1}. ${report.title || "未命名报道"}`, report.summary, reportSource, report.publishedAt].filter(Boolean).join("｜");
-  }).join("\n");
-  const title = story.title || snapshot?.title || "未命名热点";
-  const digest = story.digest || snapshot?.summary || "暂无";
-  const latest = story.latest || snapshot?.latest || "暂无";
-  const originalLinks = [...new Set([story.links?.original, ...reports.map((report) => report.links?.original), snapshot?.originalUrl].filter((link): link is string => Boolean(link)))];
-  return {
-    title,
-    text: [
-      "来源：AI 热点资讯",
-      `标题：${title}`,
-      `AI 摘要：${digest}`,
-      `最新进展：${latest}`,
-      `来源报道：${reportContext || "暂无"}`,
-      `原文链接：${originalLinks.join("\n") || "暂无"}`,
-    ].join("\n"),
-  };
 }
 
 export function AiConversationWorkspace() {
@@ -70,7 +45,7 @@ export function AiConversationWorkspace() {
   const eventId = source === "ai-news" ? params.get("eventId") || "" : "";
   const routeState = (location.state || {}) as WorkspaceRouteState;
   const storySnapshot = readStorySnapshot(routeState.storySnapshot);
-  const initialStoryContext = eventId && storySnapshot ? storyContext({}, storySnapshot) : undefined;
+  const initialStoryContext = eventId && storySnapshot ? buildAiNewsStoryContext({}, storySnapshot) : undefined;
   const requestVersion = useRef(0);
   const [context, setContext] = useState(initialStoryContext?.text || "正在读取 AI 板块上下文…");
   const [workspaceTitle, setWorkspaceTitle] = useState(initialStoryContext?.title || sourceLabel[source]);
@@ -83,7 +58,7 @@ export function AiConversationWorkspace() {
     setLoading(true);
     setError(null);
     if (eventId && storySnapshot) {
-      const immediate = storyContext({}, storySnapshot);
+      const immediate = buildAiNewsStoryContext({}, storySnapshot);
       setContext(immediate.text);
       setWorkspaceTitle(immediate.title);
     } else {
@@ -99,7 +74,7 @@ export function AiConversationWorkspace() {
       ? eventId
         ? read(`/ai/news/stories/${encodeURIComponent(eventId)}`).then((body) => {
           const story = (body.story && typeof body.story === "object" ? body.story : body) as AiNewsStory;
-          return storyContext(story, storySnapshot);
+          return buildAiNewsStoryContext(story, storySnapshot);
         })
         : Promise.all([read("/ai/news/hot-topics"), read("/ai/news?mode=selected&window=24h&limit=50")]).then(([hot, feed]) => {
         const topics = ((hot.items || []) as HotTopic[]).sort((a, b) => (a.rank || 0) - (b.rank || 0)).slice(0, 10);
@@ -133,7 +108,17 @@ export function AiConversationWorkspace() {
     stateFrom || (source === "ai-daily" ? "/ai/daily" : "/ai/news"),
     routeState.returnState === undefined ? { replace: true } : { replace: true, state: routeState.returnState },
   );
-  const startNew = () => { session.clearChat(); const next = new URLSearchParams(params); next.delete("conversationId"); navigate(`/ai/conversations?${next}`); };
+  const startNew = () => {
+    session.clearChat();
+    const next = new URLSearchParams(params);
+    next.delete("conversationId");
+    const nextState: WorkspaceRouteState = {
+      ...(typeof routeState.from === "string" ? { from: routeState.from } : {}),
+      ...(routeState.returnState === undefined ? {} : { returnState: routeState.returnState }),
+      ...(storySnapshot ? { storySnapshot } : {}),
+    };
+    navigate(`/ai/conversations?${next}`, Object.keys(nextState).length ? { state: nextState } : undefined);
+  };
   const suggestions = source === "ai-news"
     ? ["今天最重要的三件事是什么", "这些热点有哪些共同趋势", "哪些信息还需要进一步核实"]
     : ["总结本期 AI 日报", "本期最值得关注的主题是什么", "列出需要继续验证的问题"];

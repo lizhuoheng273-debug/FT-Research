@@ -151,6 +151,69 @@ test("prefetchAiNewsStory removes rejected entries so a later interaction can re
   assert.equal(calls, 2);
 });
 
+test("successful prefetched stories expire and refetch with an injected clock", async () => {
+  const api = await loadApi();
+  let now = 1_000;
+  let calls = 0;
+  const clock = () => now;
+  const fetcher = async () => ({ title: `版本 ${++calls}` });
+
+  const first = api.prefetchAiNewsStory("expiring-story", { fetcher, retries: 0, retryDelayMs: 0, now: clock, prefetchTtlMs: 100 });
+  assert.equal((await first).title, "版本 1");
+  now = 1_099;
+  assert.strictEqual(api.takePrefetchedAiNewsStory("expiring-story", { now: clock }), first);
+  assert.strictEqual(api.prefetchAiNewsStory("expiring-story", { fetcher, retries: 0, retryDelayMs: 0, now: clock, prefetchTtlMs: 100 }), first);
+
+  now = 1_101;
+  assert.equal(api.takePrefetchedAiNewsStory("expiring-story", { now: clock }), undefined);
+  const second = api.prefetchAiNewsStory("expiring-story", { fetcher, retries: 0, retryDelayMs: 0, now: clock, prefetchTtlMs: 100 });
+  assert.notStrictEqual(second, first);
+  assert.equal((await second).title, "版本 2");
+  assert.equal(calls, 2);
+});
+
+test("prefetch cache keeps its ten-story size bound", async () => {
+  const api = await loadApi();
+  const promises = [];
+  for (let index = 0; index < 11; index += 1) {
+    promises.push(api.prefetchAiNewsStory(`bounded-${index}`, { fetcher: async () => ({ title: String(index) }), retries: 0 }));
+  }
+  await Promise.all(promises);
+  assert.equal(api.takePrefetchedAiNewsStory("bounded-0"), undefined);
+  assert.ok(api.takePrefetchedAiNewsStory("bounded-10"));
+});
+
+test("AI story context is deterministically bounded below the conversation payload limit", async () => {
+  const api = await loadApi();
+  const repeated = "长内容".repeat(4_000);
+  const story = {
+    title: `关键标题 ${repeated}`,
+    digest: `关键摘要 ${repeated}`,
+    latest: `关键进展 ${repeated}`,
+    links: { original: `https://example.com/main?payload=${"x".repeat(2_000)}` },
+    reports: Array.from({ length: 40 }, (_, index) => ({
+      title: `报道 ${index + 1} ${repeated}`,
+      summary: `报道摘要 ${index + 1} ${repeated}`,
+      source: { name: `来源 ${index + 1}` },
+      publishedAt: `2026-09-${String(index + 1).padStart(2, "0")}`,
+      links: { original: `https://example.com/report-${index + 1}?payload=${"y".repeat(2_000)}` },
+    })),
+  };
+
+  const built = api.buildAiNewsStoryContext(story);
+  assert.ok(built.text.length <= 18_000, `context length was ${built.text.length}`);
+  assert.ok(JSON.stringify({ text: built.text, analysisScope: "general" }).length < 24_000);
+  assert.match(built.text, /关键标题/);
+  assert.match(built.text, /关键摘要/);
+  assert.match(built.text, /关键进展/);
+  assert.match(built.text, /1\. 报道 1/);
+  assert.match(built.text, /https:\/\/example\.com\/main/);
+  assert.ok(built.text.indexOf("标题：") < built.text.indexOf("AI 摘要："));
+  assert.ok(built.text.indexOf("AI 摘要：") < built.text.indexOf("最新进展："));
+  assert.ok(built.text.indexOf("最新进展：") < built.text.indexOf("来源报道："));
+  assert.ok(built.text.indexOf("来源报道：") < built.text.indexOf("原文链接："));
+});
+
 test("AI detail consumes a cached story before calling the shared retrying loader", () => {
   assert.match(detailPage, /const prefetched = takePrefetchedAiNewsStory\(storyId\);[\s\S]{0,220}const request = prefetched \?\? loadAiNewsStory\(storyId,\s*\{\s*signal:\s*controller\.signal,\s*retries:\s*2\s*\}\)/);
 });

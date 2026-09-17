@@ -17,6 +17,22 @@ const watchlist = await readFile(new URL("pages/Watchlist.tsx", root), "utf8");
 const stockData = await readFile(new URL("pages/StockData.tsx", root), "utf8");
 const stockDetail = await readFile(new URL("pages/StockDetail.tsx", root), "utf8");
 const aiWorkspace = await readFile(new URL("pages/AiConversationWorkspace.tsx", root), "utf8");
+const aiNewsStory = await readFile(new URL("lib/aiNewsStory.ts", root), "utf8");
+
+function loadAiNewsStoryApi() {
+  const compiled = ts.transpileModule(aiNewsStory, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  new Function("require", "module", "exports", compiled)(
+    (name) => name === "@/lib/api" ? { apiUrl: (path) => `/api${path}`, authHeaders: () => ({}) } : {},
+    module,
+    module.exports,
+  );
+  return module.exports;
+}
+
+const aiNewsStoryApi = loadAiNewsStoryApi();
 
 async function loadFinanceAiApi() {
   const compiled = ts.transpileModule(financeAi, {
@@ -77,6 +93,7 @@ function mountAiWorkspace({ query = "source=ai-news", from = "/ai/news", locatio
       return { messages: [], conversationId: undefined, clearChat() {} };
     } };
     if (name === "@/lib/api") return { apiUrl: (path) => `/api${path}`, authHeaders: () => ({}) };
+    if (name === "@/lib/aiNewsStory") return aiNewsStoryApi;
     if (name === "@/lib/utils") return { cn: (...classes) => classes.filter(Boolean).join(" ") };
     return new Proxy({}, { get: (_target, key) => key });
   };
@@ -150,6 +167,13 @@ function nodeText(node) {
   if (Array.isArray(node)) return node.map(nodeText).join(" ");
   if (typeof node !== "object") return String(node);
   return nodeText(node.props?.children);
+}
+
+function findNodeByType(node, type) {
+  if (Array.isArray(node)) return node.map((child) => findNodeByType(child, type)).find(Boolean);
+  if (!node || typeof node !== "object") return undefined;
+  if (node.type === type) return node;
+  return findNodeByType(node.props?.children, type);
 }
 
 test("finance AI workspace exposes the shared route and all source keys", async () => {
@@ -332,6 +356,71 @@ test("failed story fetch keeps its warning but enables meaningful fallback conte
   assert.equal(missing.navigations[0].to, "/ai/news/story/missing-story");
   assert.equal(missing.navigations[0].options.replace, true);
   assert.deepEqual(missing.navigations[0].options.state, returnState);
+});
+
+test("new conversation preserves story fallback and return state after a failed reload", async () => {
+  const storySnapshot = { title: "跨会话备用标题", summary: "跨会话备用摘要", originalUrl: "https://example.com/preserved" };
+  const returnState = { fallback: { title: "详情备用标题", summary: "详情备用摘要" } };
+  const locationState = { from: "/ai/news/story/reopen-story", returnState, storySnapshot };
+  const responses = { "/ai/news/stories/reopen-story": { body: { detail: "Not Found" }, ok: false, status: 404 } };
+  const current = mountAiWorkspace({
+    query: "source=ai-news&eventId=reopen-story&conversationId=old-conversation",
+    locationState,
+    responses,
+  });
+  await flush();
+  await flush();
+  const rail = findNodeByType(current.render(), "ConversationRail");
+  rail.props.onNew();
+
+  assert.equal(current.navigations[0].to, "/ai/conversations?source=ai-news&eventId=reopen-story");
+  assert.deepEqual(current.navigations[0].options.state, locationState);
+
+  const reopened = mountAiWorkspace({
+    query: "source=ai-news&eventId=reopen-story",
+    locationState: current.navigations[0].options.state,
+    responses,
+  });
+  assert.equal(reopened.sessionOptions.contextReady, true);
+  await flush();
+  await flush();
+  reopened.render();
+  assert.equal(reopened.sessionOptions.contextReady, true);
+  assert.match(reopened.sessionOptions.context, /跨会话备用摘要/);
+  assert.match(nodeText(reopened.render()), /上下文异常/);
+
+  findButton(reopened.render(), "返回").onClick();
+  assert.equal(reopened.navigations[0].to, "/ai/news/story/reopen-story");
+  assert.deepEqual(reopened.navigations[0].options.state, returnState);
+});
+
+test("large fetched stories keep bounded context ready for submission", async () => {
+  const repeated = "超长内容".repeat(4_000);
+  const story = {
+    title: `可提交标题 ${repeated}`,
+    digest: `可提交摘要 ${repeated}`,
+    latest: `可提交进展 ${repeated}`,
+    links: { original: "https://example.com/large-story" },
+    reports: Array.from({ length: 40 }, (_, index) => ({
+      title: `报道 ${index + 1} ${repeated}`,
+      summary: `摘要 ${index + 1} ${repeated}`,
+      links: { original: `https://example.com/report-${index + 1}` },
+    })),
+  };
+  const app = mountAiWorkspace({
+    query: "source=ai-news&eventId=large-story",
+    responses: { "/ai/news/stories/large-story": { body: { story } } },
+  });
+  await flush();
+  await flush();
+  app.render();
+
+  assert.equal(app.sessionOptions.contextReady, true);
+  assert.ok(app.sessionOptions.context.length <= 18_000, `context length was ${app.sessionOptions.context.length}`);
+  assert.ok(JSON.stringify({ text: app.sessionOptions.context, analysisScope: "general" }).length < 24_000);
+  assert.match(app.sessionOptions.context, /可提交标题/);
+  assert.match(app.sessionOptions.context, /可提交摘要/);
+  assert.match(app.sessionOptions.context, /可提交进展/);
 });
 
 test("failed story fetch blocks sending when route state has no meaningful context", async () => {
