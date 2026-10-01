@@ -56,7 +56,7 @@ jobs:
             echo "Decoded DEPLOY_SSH_KEY is not a readable, unencrypted OpenSSH private key." >&2
             exit 1
           fi
-          ssh -i "$key_file" \
+          remote_output="$(ssh -i "$key_file" \
             -o IdentitiesOnly=yes \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
@@ -66,12 +66,18 @@ jobs:
           set -euo pipefail
           expected_sha="$1"
           repo=/opt/ft-research
-          sudo -n python3 "$repo/scripts/lighthouse_ops.py" backup
-          sudo -n python3 "$repo/scripts/lighthouse_ops.py" update
-          deployed_sha="$(sudo -n git -C "$repo" rev-parse HEAD)"
-          sudo -n git -C "$repo" merge-base --is-ancestor "$expected_sha" "$deployed_sha"
-          echo "Deployed commit: $deployed_sha"
+          sudo -n python3 "$repo/scripts/lighthouse_ops.py" backup </dev/null
+          sudo -n python3 "$repo/scripts/lighthouse_ops.py" update </dev/null
+          deployed_sha="$(sudo -n git -C "$repo" rev-parse HEAD </dev/null)"
+          sudo -n git -C "$repo" merge-base --is-ancestor "$expected_sha" "$deployed_sha" </dev/null
+          echo "DEPLOY_COMPLETED:$expected_sha:$deployed_sha"
           REMOTE
+          )"
+          printf '%s\n' "$remote_output"
+          if [[ "$remote_output" != *"DEPLOY_COMPLETED:$GITHUB_SHA:"* ]]; then
+            echo "Remote deployment did not reach its commit verification step." >&2
+            exit 1
+          fi
 
       - name: Check public health endpoint
         shell: bash
