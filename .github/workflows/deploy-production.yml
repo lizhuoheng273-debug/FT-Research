@@ -47,10 +47,13 @@ jobs:
           key_file="$(mktemp)"
           hosts_file="$(mktemp)"
           trap 'rm -f "$key_file" "$hosts_file"' EXIT
-          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$key_file"
+          if ! printf '%s' "$DEPLOY_SSH_KEY" | base64 --decode > "$key_file"; then
+            echo "DEPLOY_SSH_KEY must contain the base64-encoded private key file." >&2
+            exit 1
+          fi
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$hosts_file"
           if ! ssh-keygen -y -f "$key_file" >/dev/null 2>&1; then
-            echo "DEPLOY_SSH_KEY is not a readable, unencrypted OpenSSH private key." >&2
+            echo "Decoded DEPLOY_SSH_KEY is not a readable, unencrypted OpenSSH private key." >&2
             exit 1
           fi
           ssh -i "$key_file" \
