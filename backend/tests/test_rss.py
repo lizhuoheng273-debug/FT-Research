@@ -7,6 +7,13 @@ import pytest
 import rss
 
 
+@pytest.fixture(autouse=True)
+def fixture_clock(monkeypatch):
+    # Keep the legacy September feed fixtures recent; individual freshness
+    # tests override this clock explicitly.
+    monkeypatch.setattr(rss, "_now", lambda: "2026-09-02T10:00:00+00:00")
+
+
 RSS = '''<?xml version="1.0"?><rss><channel><title>测试媒体</title>
 <item><guid>one</guid><title>第一条</title><link>https://example.com/one</link>
 <pubDate>Tue, 02 Sep 2026 10:00:00 +0800</pubDate><description><![CDATA[<p>摘要 <b>一</b> &amp; 继续</p>]]></description></item>
@@ -577,6 +584,63 @@ def test_expired_cache_is_distinguished_from_fetch_failure(tmp_path, monkeypatch
     catalog.fetcher = lambda _url: (_ for _ in ()).throw(OSError("offline"))
     failed = catalog.refresh_source("solidot")
     assert failed["source"]["staleReason"] == "fetch_failed"
+
+
+def test_recent_fetch_of_old_articles_is_not_healthy(tmp_path, monkeypatch):
+    monkeypatch.setattr(rss, "_now", lambda: "2026-10-01T14:00:00+00:00")
+    catalog = rss.RssCatalog(cache_dir=tmp_path, fetcher=lambda _url: RSS, validate_dns=False)
+    result = catalog.refresh_source("solidot")["source"]
+    assert result["lastSuccessAt"] == "2026-10-01T14:00:00+00:00"
+    assert result["latestPublishedAt"] == "2026-09-02T02:00:00+00:00"
+    assert result["stale"] is True
+    assert result["staleReason"] == "content_old"
+    assert catalog.sources()[7]["staleReason"] == "content_old"
+
+
+def test_baijing_uses_current_official_article_list_instead_of_frozen_rss(tmp_path, monkeypatch):
+    calls = []
+
+    def official_fetch(url, *, data=None, extra_headers=None):
+        calls.append((url, data))
+        if data is not None:
+            return b'{"success":true,"data":{"article_list":[{"id":56884,"title":"Latest story","synopsis":"Current news"}]}}'
+        return b'<time class="timeago">2026-09-30 19:20</time>'
+
+    monkeypatch.setattr(rss, "fetch_url", official_fetch)
+    monkeypatch.setattr(rss, "_now", lambda: "2026-10-01T14:00:00+00:00")
+    catalog = rss.RssCatalog(cache_dir=tmp_path, validate_dns=False)
+    result = catalog.refresh_source("baijingapp")
+    assert result["source"]["items"][0]["originalUrl"] == "https://www.baijing.cn/article/56884"
+    assert result["source"]["items"][0]["publishedAt"] == "2026-09-30T11:20:00+00:00"
+    assert result["source"]["stale"] is False
+    assert calls[0][0] == "https://www.baijing.cn/index/ajax/get_article/"
+    assert calls[0][1] == b"type=0&pn=1"
+
+
+def test_baijing_rejects_unverifiable_article_list(monkeypatch):
+    monkeypatch.setattr(rss, "fetch_url", lambda _url, **_kwargs: b'{"success":true,"data":{"article_list":[]}}')
+    with pytest.raises(rss.RssFetchError, match="列表为空"):
+        rss.fetch_baijing_articles()
+
+
+def test_fetch_url_preserves_trailing_slash_for_post_endpoints(monkeypatch):
+    import io
+
+    seen = []
+    class FakeSocket:
+        def settimeout(self, _timeout): pass
+    class Response(io.BytesIO):
+        headers = {"Content-Length": "2"}
+        fp = type("Fp", (), {"raw": type("Raw", (), {"_sock": FakeSocket()})()})()
+    class Opener:
+        def open(self, request, timeout):
+            seen.append((request.full_url, request.data))
+            return Response(b"{}")
+
+    monkeypatch.setattr(rss, "validate_public_url", lambda url: url.rstrip("/"))
+    monkeypatch.setattr(rss.urllib.request, "build_opener", lambda *handlers: Opener())
+    assert rss.fetch_url("https://example.com/api/", data=b"x=1") == b"{}"
+    assert seen == [("https://example.com/api/", b"x=1")]
 
 
 def test_custom_refresh_requires_id_from_normalized_url(tmp_path):

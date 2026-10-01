@@ -28,6 +28,7 @@ interface Props {
 function sourceStatus(source: RssSource) {
   if (source.error && !source.lastSuccessAt) return { label: "暂不可用", className: "text-destructive" };
   if (source.staleReason === "fetch_failed") return { label: "更新失败 · 使用缓存", className: "text-warning" };
+  if (source.staleReason === "content_old") return { label: "内容较旧 · 已抓取", className: "text-warning" };
   if (source.staleReason === "ttl" || source.stale) return { label: "待更新", className: "text-warning" };
   return { label: "健康", className: "text-success" };
 }

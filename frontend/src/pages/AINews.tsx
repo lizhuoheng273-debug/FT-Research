@@ -107,7 +107,7 @@ export function AINews() {
       if (filterRssSourcesForSubscriptions([result.source], rssSubscriptionState.current).length === 0) return;
       const message = result.outcome === "updated"
         ? `已更新，共新增 ${result.addedCount} 条`
-        : result.outcome === "current" ? "已是最新内容" : "更新未完成，当前显示最近一次成功内容";
+        : result.outcome === "current" ? (result.source.staleReason === "content_old" ? "源站暂未提供更新的文章" : "已是最新内容") : "更新未完成，当前显示最近一次成功内容";
       setRssSources((current) => mergeRssSource(current, result.source));
       setRefreshMessages((current) => ({ ...current, [result.source.id]: message }));
     });
@@ -167,7 +167,7 @@ export function AINews() {
     try {
       await refresher.refresh(source);
     } catch (error) {
-      if (mounted.current && filterRssSourcesForSubscriptions([source], rssSubscriptionState.current).length > 0) setRefreshMessages((current) => ({ ...current, [source.id]: error instanceof Error && /timeout/i.test(error.message) ? "刷新超时，请稍后重试。" : "刷新失败，请稍后重试。" }));
+      if (mounted.current && filterRssSourcesForSubscriptions([source], rssSubscriptionState.current).length > 0) setRefreshMessages((current) => ({ ...current, [source.id]: error instanceof Error && /仅管理员/.test(error.message) ? "自定义订阅仅管理员可手动刷新。" : error instanceof Error && /timeout/i.test(error.message) ? "刷新超时，请稍后重试。" : "刷新失败，请稍后重试。" }));
     } finally {
       if (mounted.current) setRefreshingIds((current) => current.filter((id) => id !== source.id));
     }

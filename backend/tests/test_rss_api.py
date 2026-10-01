@@ -164,6 +164,25 @@ def test_authenticated_guest_can_start_whitelisted_bulk_rss_refresh(monkeypatch)
     assert response.json() == expected
 
 
+def test_authenticated_guest_can_refresh_builtin_but_not_custom_source(monkeypatch):
+    monkeypatch.setenv("FT_PUBLIC_DEMO", "true")
+    monkeypatch.setattr(app, "_rss_refresh_attempts", {})
+    monkeypatch.setattr(app, "_rss_refresh_results", {}, raising=False)
+    monkeypatch.setattr(app, "_rss_refresh_inflight", {}, raising=False)
+    monkeypatch.setattr(app.rss_catalog, "refresh_source", lambda *_args, **_kwargs: {
+        "source": {"id": "solidot", "items": []}, "outcome": "current", "addedCount": 0,
+    })
+    client = TestClient(app.app)
+    guest = client.post("/api/auth/guest").json()
+    headers = {"Authorization": f"Bearer {guest['token']}"}
+    assert client.post("/api/ai/rss/refresh", headers=headers, json={"sourceId": "solidot"}).status_code == 200
+    custom_url = "https://example.com/feed"
+    import rss
+    custom_id = f"custom-{rss.hashlib.sha256(rss.normalize_url(custom_url).encode()).hexdigest()[:16]}"
+    response = client.post("/api/ai/rss/refresh", headers=headers, json={"sourceId": custom_id, "url": custom_url})
+    assert response.status_code == 403
+
+
 def test_rss_sources_exposes_bulk_refresh_progress(monkeypatch):
     monkeypatch.setattr(app.rss_catalog, "sources", lambda urls=None: [])
     monkeypatch.setattr(app.rss_catalog, "is_refreshing_builtins", lambda: True)

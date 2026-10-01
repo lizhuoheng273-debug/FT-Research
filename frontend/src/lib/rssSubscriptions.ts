@@ -22,8 +22,9 @@ export interface RssSource {
   homepage: string;
   lastSuccessAt?: string | null;
   lastAttemptAt?: string | null;
+  latestPublishedAt?: string | null;
   stale: boolean;
-  staleReason?: "ttl" | "fetch_failed" | null;
+  staleReason?: "ttl" | "fetch_failed" | "content_old" | null;
   error?: string | null;
   errorCode?: "timeout" | "http" | "parse" | "security" | "unknown" | null;
   items: RssItem[];

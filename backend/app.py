@@ -306,11 +306,11 @@ def ai_rss_resolve(request: RssResolveReq):
 
 
 @app.post("/api/ai/rss/refresh")
-def ai_rss_refresh(request: RssRefreshReq):
+def ai_rss_refresh(request: RssRefreshReq, http_request: Request):
     """Fetch exactly one whitelisted built-in or id-verified custom RSS URL.
 
-    This keeps the existing unauthenticated API policy. A later owner/guest
-    subsystem must restrict this active network write to owners.
+    Public-demo guests may refresh the fixed built-in allowlist, as they can
+    already do with refresh-all. Custom network URLs remain owner-only.
     """
     try:
         source_id = rss_catalog.refresh_identity(request.sourceId, request.url)
@@ -318,6 +318,9 @@ def ai_rss_refresh(request: RssRefreshReq):
         raise HTTPException(404, "RSS 信源不存在") from exc
     except (RssSecurityError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
+
+    if request.url is not None and os.environ.get("FT_PUBLIC_DEMO", "false").lower() in {"1", "true", "yes"}:
+        require_owner(http_request)
 
     now = _rss_refresh_clock()
     with _rss_refresh_attempts_lock:

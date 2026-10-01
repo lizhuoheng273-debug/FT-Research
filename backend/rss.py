@@ -21,7 +21,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -41,6 +41,7 @@ CONNECT_TIMEOUT = 8
 READ_TIMEOUT = 12
 MAX_ITEMS = 50
 CACHE_TTL_SECONDS = 1800
+CONTENT_STALE_SECONDS = 14 * 24 * 60 * 60
 MAX_CONCURRENT_REFRESHES = 4
 TOTAL_FETCH_TIMEOUT = CONNECT_TIMEOUT + READ_TIMEOUT
 logger = logging.getLogger(__name__)
@@ -346,12 +347,19 @@ def _bounded_response_read(response: object, reader: Callable[[int], bytes], siz
         raise RssTimeoutError("RSS 响应读取超时") from exc
 
 
-def fetch_url(url: str) -> bytes:
+def fetch_url(url: str, *, data: bytes | None = None, extra_headers: dict[str, str] | None = None) -> bytes:
     deadline = time.monotonic() + TOTAL_FETCH_TIMEOUT
-    normalized = validate_public_url(url)
+    validate_public_url(url)
     if deadline - time.monotonic() <= 0:
         raise RssTimeoutError("RSS DNS 校验总时限已到")
-    request = urllib.request.Request(normalized, headers={"User-Agent": "FT-Research RSS Reader/1.0", "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1"})
+    headers = {"User-Agent": "FT-Research RSS Reader/1.0", "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, application/json;q=0.8, */*;q=0.1"}
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    if extra_headers:
+        headers.update(extra_headers)
+    # Cache identity normalizes trailing slashes, but request paths must not:
+    # some publishers (including Baijing's POST API) treat them differently.
+    request = urllib.request.Request(url.strip(), data=data, headers=headers)
     opener = urllib.request.build_opener(SafeRedirectHandler(deadline))
     try:
         with opener.open(request, timeout=min(CONNECT_TIMEOUT, max(0.01, deadline - time.monotonic()))) as response:
@@ -387,6 +395,62 @@ def fetch_url(url: str) -> bytes:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class _BaijingArticleTime(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_time = False
+        self.value = ""
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "time" and "timeago" in dict(attrs).get("class", "").split():
+            self.in_time = True
+
+    def handle_data(self, data):
+        if self.in_time and not self.value:
+            self.value = data.strip()
+
+    def handle_endtag(self, tag):
+        if tag == "time":
+            self.in_time = False
+
+
+def fetch_baijing_articles() -> ParsedFeed:
+    """Use Baijing's public article list; its /feed has stopped updating."""
+    api_url = "https://www.baijing.cn/index/ajax/get_article/"
+    try:
+        payload = json.loads(fetch_url(api_url, data=b"type=0&pn=1", extra_headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36",
+            "Referer": "https://www.baijing.cn/article/",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+        }))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RssFetchError("白鲸出海文章列表解析失败") from exc
+    data = payload.get("data") if isinstance(payload, dict) and payload.get("success") is True else None
+    rows = data.get("article_list") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise RssFetchError("白鲸出海文章列表为空或格式变更")
+    items: list[RssItem] = []
+    for row in rows[:3]:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), int) or not row.get("title"):
+            continue
+        url = f"https://www.baijing.cn/article/{row['id']}"
+        published = None
+        try:
+            parser = _BaijingArticleTime()
+            parser.feed(fetch_url(url).decode("utf-8", errors="replace"))
+            local_time = datetime.strptime(parser.value, "%Y-%m-%d %H:%M")
+            published = local_time.replace(tzinfo=timezone(timedelta(hours=8))).astimezone(timezone.utc).isoformat()
+        except (RssFetchError, RssSecurityError, ValueError):
+            logger.warning("Could not verify Baijing publication date for %s", url)
+        title = clean_summary(str(row["title"]), 220)
+        items.append(RssItem(_item_id(title, url, published, str(row["id"])), title,
+                             clean_summary(str(row.get("synopsis") or "")), published, url))
+    if not items or not items[0].publishedAt:
+        raise RssFetchError("白鲸出海最新文章发布时间无法核实")
+    return ParsedFeed("白鲸出海", tuple(items))
 
 
 class RssCatalog:
@@ -456,7 +520,12 @@ class RssCatalog:
 
     @staticmethod
     def _public_snapshot(source: dict[str, object], *, items: Iterable[dict[str, object]], last_success: str | None, last_attempt: str | None, stale: bool, stale_reason: str | None, error: str | None, error_code: str | None) -> dict[str, object]:
-        return {"id": source["id"], "name": source["name"], "category": source.get("category", "tech"), "region": source.get("region", "custom"), "priority": source.get("priority", 100), "homepage": source.get("homepage", ""), "lastSuccessAt": last_success, "lastAttemptAt": last_attempt, "stale": stale, "staleReason": stale_reason, "error": error, "errorCode": error_code, "items": list(items)[:3]}
+        visible_items = list(items)[:3]
+        latest_published = max((str(item.get("publishedAt")) for item in visible_items if item.get("publishedAt")), default=None, key=_date_key)
+        content_old = bool(latest_published and _date_key(_now()) - _date_key(latest_published) >= CONTENT_STALE_SECONDS)
+        if content_old and not stale_reason:
+            stale_reason = "content_old"
+        return {"id": source["id"], "name": source["name"], "category": source.get("category", "tech"), "region": source.get("region", "custom"), "priority": source.get("priority", 100), "homepage": source.get("homepage", ""), "lastSuccessAt": last_success, "lastAttemptAt": last_attempt, "latestPublishedAt": latest_published, "stale": stale or content_old, "staleReason": stale_reason, "error": error, "errorCode": error_code, "items": visible_items}
 
     def _read_snapshot(self, source: dict[str, object], *, stale: bool = False, error: str | None = None) -> dict[str, object]:
         cached = self._read_cache(str(source["url"]))
@@ -478,7 +547,7 @@ class RssCatalog:
         url = str(source["url"])
         try:
             validate_public_url(url, resolve_dns=self.validate_dns)
-            parsed = parse_feed(self.fetcher(url), source_url=url)
+            parsed = fetch_baijing_articles() if source["id"] == "baijingapp" and self.fetcher is fetch_url else parse_feed(self.fetcher(url), source_url=url)
             now = _now()
             cache_value = {"source": {key: source.get(key) for key in ("id", "name", "category", "region", "priority", "homepage", "url")}, "lastSuccessAt": now, "lastAttemptAt": now, "items": [item.as_dict() for item in parsed.items]}
             self._write_cache(url, cache_value)
