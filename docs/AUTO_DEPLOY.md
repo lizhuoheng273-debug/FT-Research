@@ -22,8 +22,8 @@
    | `DEPLOY_SSH_KEY` | 本机 `ft-research-actions` 私钥文件的完整内容，包含 BEGIN/END 行 |
    | `DEPLOY_KNOWN_HOSTS` | 第 3 步形成的完整一行 |
 
-5. 服务器终端运行 `sudo -n docker ps`，确认无需交互输入 sudo 密码；自动任务采用无交互 SSH。服务器上的 `/opt/ft-research` 应保持在干净的 `main` 分支。
-6. 在腾讯云轻量服务器防火墙允许 TCP 22 从 GitHub 托管运行器访问。运行器 IP 会变化；若使用 `0.0.0.0/0`，应确保 SSH 只允许密钥登录，并保留独立密钥。开放端口只是允许连接尝试，不会绕过 SSH 身份验证。
+5. 服务器终端运行 `sudo -n docker ps`，确认无需交互输入 sudo 密码；自动任务采用无交互 SSH。再运行 `sudo sshd -T | grep -E '^(passwordauthentication|pubkeyauthentication|permitrootlogin) '`，确认 `pubkeyauthentication yes`、`passwordauthentication no`。服务器上的 `/opt/ft-research` 应保持在干净的 `main` 分支。
+6. 在仍只允许个人 IP 的状态下，从自己的电脑用新密钥测试 SSH 登录和 `sudo -n docker ps`。连接成功后，在腾讯云轻量服务器防火墙允许 TCP 22 从 GitHub 托管运行器访问。运行器 IP 会变化；若使用 `0.0.0.0/0`，应先确保密码登录已关闭。开放端口只是允许连接尝试，不会绕过 SSH 身份验证。
 7. 完成以上设置后合并自动部署 PR。合并本身会触发第一次部署；到 GitHub Actions → Deploy production 查看结果。
 
 ## 发布行为与排障
