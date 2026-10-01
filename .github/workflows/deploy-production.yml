@@ -1,0 +1,78 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ft-research-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: Validate connection settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing production secret: $name" >&2
+              exit 1
+            fi
+          done
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          if [[ "$DEPLOY_USER" == root ]]; then
+            echo "Direct root SSH deployment is disabled; use ubuntu with sudo -n." >&2
+            exit 1
+          fi
+
+      - name: Back up and deploy on Lighthouse
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          key_file="$(mktemp)"
+          hosts_file="$(mktemp)"
+          trap 'rm -f "$key_file" "$hosts_file"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$hosts_file"
+          ssh-keygen -y -f "$key_file" >/dev/null
+          ssh -i "$key_file" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$hosts_file" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "bash -se -- $GITHUB_SHA" <<'REMOTE'
+          set -euo pipefail
+          expected_sha="$1"
+          repo=/opt/ft-research
+          sudo -n python3 "$repo/scripts/lighthouse_ops.py" backup
+          sudo -n python3 "$repo/scripts/lighthouse_ops.py" update
+          deployed_sha="$(sudo -n git -C "$repo" rev-parse HEAD)"
+          sudo -n git -C "$repo" merge-base --is-ancestor "$expected_sha" "$deployed_sha"
+          echo "Deployed commit: $deployed_sha"
+          REMOTE
+
+      - name: Check public health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20 \
+            --retry 6 --retry-delay 5 --retry-all-errors \
+            https://research.vincentli-website.com/api/health \
+            | python3 -c 'import json,sys; assert json.load(sys.stdin).get("ok") is True'
+
