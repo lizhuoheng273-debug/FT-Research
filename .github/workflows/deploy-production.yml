@@ -34,6 +34,10 @@ jobs:
           done
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
           [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          if [[ "$DEPLOY_USER" == root ]]; then
+            echo "Direct root SSH deployment is disabled; use ubuntu with sudo -n." >&2
+            exit 1
+          fi
 
       - name: Back up and deploy on Lighthouse
         shell: bash
