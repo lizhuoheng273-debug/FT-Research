@@ -19,12 +19,18 @@
    | --- | --- |
    | `DEPLOY_HOST` | 服务器公网 IP，不带 `https://` |
    | `DEPLOY_USER` | `ubuntu` |
-   | `DEPLOY_SSH_KEY` | 本机 `ft-research-actions` 私钥文件的完整内容，包含 BEGIN/END 行 |
+   | `DEPLOY_SSH_KEY` | 本机 `ft-research-actions` 私钥文件的 Base64 编码，生成方法见下方 |
    | `DEPLOY_KNOWN_HOSTS` | 第 3 步形成的完整一行 |
 
-5. **保持当前只允许个人 IP 的防火墙规则。**从自己电脑用新密钥测试 SSH 登录 `ubuntu@服务器公网IP`，并在该连接里运行 `sudo -n docker ps`，确认无需交互密码。若测试失败，先修复密钥配置，不改 SSH 服务设置。
+   在本机 Windows PowerShell 运行以下命令，将私钥文件直接编码到剪贴板；命令不会在终端显示密钥。随后粘贴到 `DEPLOY_SSH_KEY` 的 Secret 输入框。该编码仍属于敏感凭据，不要发到聊天或提交到仓库。
+
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:USERPROFILE\.ssh\ft-research-actions")) | Set-Clipboard
+   ```
+
+5. 从自己电脑用新密钥测试 SSH 登录 `ubuntu@服务器公网IP`，并在该连接里运行 `sudo -n docker ps`，确认无需交互密码。若测试失败，先修复密钥配置，不改 SSH 服务设置。
 6. 密钥登录测试成功后，在腾讯云网页终端创建 `/etc/ssh/sshd_config.d/00-ft-research-hardening.conf`，内容为 `PasswordAuthentication no`、`KbdInteractiveAuthentication no`、`PermitRootLogin no`、`PubkeyAuthentication yes`，每项单独一行。运行 `sudo sshd -t` 确认配置有效，再运行 `sudo systemctl reload ssh`。重新开一个终端再次用密钥登录 `ubuntu`，确认成功；`sudo sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication|permitrootlogin) '` 应显示 `passwordauthentication no`、`kbdinteractiveauthentication no`、`pubkeyauthentication yes`、`permitrootlogin no`。若结果不符，先不要开放防火墙。
-7. 完成以上测试后，在腾讯云轻量服务器防火墙允许 TCP 22 从 GitHub 托管运行器访问。运行器 IP 会变化；如使用 `0.0.0.0/0`，密钥登录和禁用密码登录的核对必须先完成。开放端口只允许连接尝试，不会绕过 SSH 身份验证。
+7. 完成以上测试后，确认腾讯云轻量服务器防火墙允许 TCP 22 从 GitHub 托管运行器访问。运行器 IP 会变化；如使用 `0.0.0.0/0`，密钥登录和禁用密码登录的核对必须先完成。开放端口只允许连接尝试，不会绕过 SSH 身份验证。
 8. 完成以上设置后合并自动部署 PR。合并本身会触发第一次部署；到 GitHub Actions → Deploy production 查看结果。
 
 ## 发布行为与排障
