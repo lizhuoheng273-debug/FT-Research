@@ -703,6 +703,46 @@ def test_scheduler_uses_single_process_leader_and_contains_refresh_errors(tmp_pa
     second.stop()
 
 
+def test_scheduler_watchdog_recovers_a_blocked_refresh(tmp_path):
+    blocked = threading.Event()
+    restarted = threading.Event()
+
+    class Calendar:
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    class Service:
+        cache_dir = tmp_path
+        calendar = Calendar()
+
+        def refresh_hotlists(self):
+            blocked.wait(1)
+
+        def refresh_due_market_checks(self):
+            pass
+
+        def refresh_rss(self):
+            pass
+
+        def refresh_quick(self):
+            pass
+
+    scheduler = FinancialNewsScheduler(
+        Service(), lock_file=tmp_path / "watchdog.lock",
+        watchdog_seconds=0.05, watchdog_poll_seconds=0.01,
+        exit_fn=lambda code: restarted.set(),
+    )
+    try:
+        scheduler.start()
+        assert restarted.wait(0.5)
+    finally:
+        blocked.set()
+        scheduler.stop()
+
+
 def test_financial_news_endpoints_expose_overview_feed_detail_and_status(monkeypatch):
     payload = {
         "generatedAt": NOW.isoformat(),

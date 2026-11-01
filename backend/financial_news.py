@@ -1374,11 +1374,18 @@ class FinancialNewsService:
 
 
 class FinancialNewsScheduler:
-    def __init__(self, service: FinancialNewsService, *, lock_file: str | Path | None = None):
+    def __init__(self, service: FinancialNewsService, *, lock_file: str | Path | None = None,
+                 watchdog_seconds: int = 1800, watchdog_poll_seconds: int = 60,
+                 exit_fn: Callable[[int], Any] = os._exit):
         self.service = service
         self._started = False
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._watchdog_thread: threading.Thread | None = None
+        self._last_cycle_finished = time.monotonic()
+        self._watchdog_seconds = watchdog_seconds
+        self._watchdog_poll_seconds = watchdog_poll_seconds
+        self._exit_fn = exit_fn
         self._lease = None
         self.lock_file = Path(lock_file or service.cache_dir / "scheduler.lock")
 
@@ -1438,7 +1445,19 @@ class FinancialNewsScheduler:
             return
         self._started = True
         self._stop_event.clear()
+        self._last_cycle_finished = time.monotonic()
         self.service.calendar.start()
+
+        def watch() -> None:
+            # Docker only restarts an exited process. A blocked daemon thread
+            # otherwise leaves /api/health green while news stays frozen.
+            while not self._stop_event.wait(self._watchdog_poll_seconds):
+                elapsed = time.monotonic() - self._last_cycle_finished
+                if elapsed <= self._watchdog_seconds:
+                    continue
+                logger.critical("financial news scheduler made no progress for %.0f seconds; restarting container", elapsed)
+                self._exit_fn(1)
+                return
 
         def run() -> None:
             next_quick = next_rss = next_market = next_hotlist = 0.0
@@ -1458,16 +1477,22 @@ class FinancialNewsScheduler:
                 if current >= next_quick:
                     next_quick = current + QUICK_INTERVAL_SECONDS
                     self._refresh_safely(self.service.refresh_quick)
+                self._last_cycle_finished = time.monotonic()
                 self._stop_event.wait(5)
 
         self._thread = threading.Thread(target=run, name="financial-news-scheduler", daemon=True)
         self._thread.start()
+        self._watchdog_thread = threading.Thread(target=watch, name="financial-news-watchdog", daemon=True)
+        self._watchdog_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
         self.service.calendar.stop()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=6)
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=1)
         self._thread = None
+        self._watchdog_thread = None
         self._started = False
         self._release_leader()
