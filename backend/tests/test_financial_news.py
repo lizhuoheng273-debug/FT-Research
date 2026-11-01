@@ -13,11 +13,11 @@ NOW = datetime(2026, 8, 31, 8, 0, tzinfo=timezone.utc)
 def _item(**overrides):
     item = {
         "id": "x",
-        "title": "��ܲ��ŷ����ʱ��г��¹�",
-        "summary": "������ʽ����",
+        "title": "监管部门发布资本市场新规",
+        "summary": "政策正式发布",
         "publishedAt": "2026-08-31T07:55:00+00:00",
-        "category": "�������",
-        "source": "������",
+        "category": "宏观政策",
+        "source": "财联社",
         "sourceTier": 35,
         "originalUrl": "https://example.test/x",
         "sourceLevel": "A",
@@ -29,7 +29,7 @@ def _item(**overrides):
 def test_overview_exposes_platform_hot_rank_and_event_detail(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     ranked = {
-        "id": "ranked-1", "rank": 1, "title": "��ƽ̨�ƾ��ȵ�", "platformCount": 3,
+        "id": "ranked-1", "rank": 1, "title": "多平台财经热点", "platformCount": 3,
         "rankScore": 27, "bestSourceRank": 1, "publishedAt": NOW.isoformat(),
         "originalUrl": "https://example.test/hot", "placements": [],
         "aiDigestStatus": "pending", "stale": False,
@@ -37,7 +37,7 @@ def test_overview_exposes_platform_hot_rank_and_event_detail(tmp_path):
     service.hotlist._write({
         "generatedAt": NOW.isoformat(),
         "sources": {"cls": {"entries": [{
-            "sourceId": "cls", "sourceName": "������", "listKind": "popularity",
+            "sourceId": "cls", "sourceName": "财联社", "listKind": "popularity",
             "sourceRank": 1, "title": ranked["title"], "originalUrl": ranked["originalUrl"],
             "fetchedAt": NOW.isoformat(), "publishedAt": NOW.isoformat(),
         }], "lastSuccessAt": NOW.isoformat(), "lastAttemptAt": NOW.isoformat()}},
@@ -47,8 +47,8 @@ def test_overview_exposes_platform_hot_rank_and_event_detail(tmp_path):
     event = service.event(overview["hotRank"][0]["id"])
 
     assert overview["hotRankGeneratedAt"] == NOW.isoformat()
-    assert overview["hotRank"][0]["title"] == "��ƽ̨�ƾ��ȵ�"
-    assert event["placements"][0]["sourceName"] == "������"
+    assert overview["hotRank"][0]["title"] == "多平台财经热点"
+    assert event["placements"][0]["sourceName"] == "财联社"
 
 
 def test_refresh_hotlists_keeps_existing_financial_news_snapshot(tmp_path):
@@ -56,7 +56,7 @@ def test_refresh_hotlists_keeps_existing_financial_news_snapshot(tmp_path):
     service.save_payload({"generatedAt": NOW.isoformat(), "feed": [_item()], "globalHighlights": [_item()]})
     service.hotlist.fetch_fn = lambda source_id: [{
         "sourceId": source_id, "sourceName": source_id, "listKind": "popularity",
-        "sourceRank": 1, "title": "���з�����Ҫ��������", "originalUrl": f"https://{source_id}.test/policy",
+        "sourceRank": 1, "title": "央行发布重要货币政策", "originalUrl": f"https://{source_id}.test/policy",
         "fetchedAt": NOW.isoformat(),
     }]
 
@@ -84,13 +84,13 @@ def test_hotlist_ai_digest_is_generated_once_per_event_content_hash(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     service.hotlist.fetch_fn = lambda source_id: [{
         "sourceId": source_id, "sourceName": source_id, "listKind": "popularity",
-        "sourceRank": 1, "title": "OpenAI����GPT-6ģ�ͣ����������ǿ",
-        "summary": "����ƾ�ƽ̨���������ȵ��",
+        "sourceRank": 1, "title": "OpenAI发布GPT-6模型，软件板块走强",
+        "summary": "多个财经平台将其列入热点榜。",
         "originalUrl": f"https://{source_id}.test/gpt", "fetchedAt": NOW.isoformat(),
     }]
     calls = []
     service.hotlist_digest_provider = lambda events: calls.append(events) or {
-        events[0]["id"]: "OpenAI����GPT-6ģ�ͣ�����ƾ�ƽ̨ͬ����ע���г��ص���������������Ʒ�����˹����ܲ�ҵ����Ӱ�졣"
+        events[0]["id"]: "OpenAI发布GPT-6模型，多个财经平台同步关注，市场重点讨论其对软件、云服务和人工智能产业链的影响。"
     }
 
     service.refresh_hotlists(force=True)
@@ -108,8 +108,8 @@ def test_hotlist_ai_digest_is_generated_once_per_event_content_hash(tmp_path):
 def test_hotlist_ai_failure_has_backoff_for_unchanged_events(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     service.hotlist.fetch_fn = lambda source_id: [{
-        "sourceId": source_id, "sourceName": "��Դ", "listKind": "editorial", "sourceRank": 1,
-        "title": "OpenAI����GPT��ģ��", "summary": "ģ�ͷ���", "publishedAt": NOW.isoformat(),
+        "sourceId": source_id, "sourceName": "来源", "listKind": "editorial", "sourceRank": 1,
+        "title": "OpenAI发布GPT新模型", "summary": "模型发布", "publishedAt": NOW.isoformat(),
         "originalUrl": f"https://{source_id}.test/story", "fetchedAt": NOW.isoformat(),
     }]
     calls = []
@@ -126,11 +126,11 @@ def test_hotlist_ai_failure_has_backoff_for_unchanged_events(tmp_path):
 def test_partial_hotlist_ai_response_backs_off_only_missing_digests(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     events = [
-        {"id": "one", "eventDay": "2026-09-04", "placements": [{"sourceId": "ths", "title": "���з�������", "fetchedAt": NOW.isoformat(), "originalUrl": "https://news.10jqka.com.cn/one"}]},
-        {"id": "two", "eventDay": "2026-09-04", "placements": [{"sourceId": "sina", "title": "�������������ʾ���", "fetchedAt": NOW.isoformat(), "originalUrl": "https://finance.sina.com.cn/two"}]},
+        {"id": "one", "eventDay": "2026-09-04", "placements": [{"sourceId": "ths", "title": "央行发布政策", "fetchedAt": NOW.isoformat(), "originalUrl": "https://news.10jqka.com.cn/one"}]},
+        {"id": "two", "eventDay": "2026-09-04", "placements": [{"sourceId": "sina", "title": "美联储发布利率决议", "fetchedAt": NOW.isoformat(), "originalUrl": "https://finance.sina.com.cn/two"}]},
     ]
     calls = []
-    service.hotlist_digest_provider = lambda requested: calls.append([event["id"] for event in requested]) or {"one": "���й����������ߣ��г���ע�����������Ȩ���ʲ���ֵ��Ӱ�졣"}
+    service.hotlist_digest_provider = lambda requested: calls.append([event["id"] for event in requested]) or {"one": "央行公布最新政策，市场关注其对流动性与权益资产估值的影响。"}
 
     service._apply_hotlist_digests(events)
     service._apply_hotlist_digests(events)
@@ -145,7 +145,7 @@ def test_hotlist_digest_fingerprint_ignores_refresh_time_but_changes_across_even
     base = {
         "eventDay": "2026-09-04",
         "placements": [{
-            "sourceId": "ths", "sourceRank": 1, "title": "���з�������", "summary": "����ժҪ",
+            "sourceId": "ths", "sourceRank": 1, "title": "央行发布政策", "summary": "政策摘要",
             "originalUrl": "https://news.10jqka.com.cn/one", "fetchedAt": "2026-09-04T08:00:00+00:00",
         }],
     }
@@ -165,12 +165,12 @@ def test_hotlist_digest_batch_gets_a_background_only_extended_timeout(tmp_path, 
     monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test", "baseURL": "https://example.com/v4", "model": "test"})
     def fake_call(_config, _messages, use_tools, **kwargs):
         captured.update(kwargs)
-        return {"choices": [{"message": {"content": '[{"id":"one","digest":"�Ѻ˶�ԭʼ�����Ĳƾ��¼�������"}]'}}]}
+        return {"choices": [{"message": {"content": '[{"id":"one","digest":"已核对原始报道的财经事件导读。"}]'}}]}
     monkeypatch.setattr(chat, "_call_llm", fake_call)
 
     result = service._generate_hotlist_digests([{"id": "one", "placements": []}])
 
-    assert result == {"one": "�Ѻ˶�ԭʼ�����Ĳƾ��¼�������"}
+    assert result == {"one": "已核对原始报道的财经事件导读。"}
     assert captured["timeout_seconds"] == 240
 
 
@@ -178,7 +178,7 @@ def test_hotlist_refresh_returns_before_slow_digest_generation(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     service.hotlist.fetch_fn = lambda source_id: [{
         "sourceId": source_id, "sourceName": source_id, "listKind": "popularity",
-        "sourceRank": 1, "title": "���з�����Ҫ��������",
+        "sourceRank": 1, "title": "央行发布重要货币政策",
         "originalUrl": f"https://{source_id}.test/policy", "fetchedAt": NOW.isoformat(),
     }]
     entered = threading.Event()
@@ -200,8 +200,8 @@ def test_hotlist_refresh_returns_before_slow_digest_generation(tmp_path):
 def test_urgency_score_is_quantified_and_explainable():
     score, reasons = urgency_score(_item(), now=NOW, related_source_count=3)
     assert score == 100
-    assert any("3 ��������Դ" in reason for reason in reasons)
-    assert any("���" in reason for reason in reasons)
+    assert any("3 个独立来源" in reason for reason in reasons)
+    assert any("监管" in reason for reason in reasons)
 
 
 def test_hot_score_uses_sources_authority_recency_breadth_and_continuity():
@@ -209,107 +209,107 @@ def test_hot_score_uses_sources_authority_recency_breadth_and_continuity():
         _item(), now=NOW, related_source_count=5, category_count=2, update_count=3
     )
     assert score == 100
-    assert "5 ��������Դ" in reasons[0]
-    assert "10 �����ڸ���" in reasons
+    assert "5 个独立来源" in reasons[0]
+    assert "10 分钟内更新" in reasons
 
 
 def test_future_dated_rss_is_not_treated_as_just_published():
     future = _item(publishedAt="2026-11-13T00:00:00+00:00")
     urgency, reasons = urgency_score(future, now=NOW, related_source_count=1)
     assert urgency == 55
-    assert not any("10 ������" in reason for reason in reasons)
+    assert not any("10 分钟内" in reason for reason in reasons)
 
 
 def test_company_announcement_is_company_news_not_macro_policy(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
-    assert service.classify("�����ɷݣ��ع��ӹ�˾�б���Ŀ16��Ԫ", "��˾����") == "��˾"
+    assert service.classify("中来股份：控股子公司中标项目16亿元", "公司公告") == "公司"
 
 
 def test_future_dated_rss_items_are_excluded_from_news_feed(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     radar = {
         "industries": [{
-            "name": "�뵼��",
+            "name": "半导体",
             "items": [
-                {"zh": "δ���Ԥ��", "ts": datetime(2026, 11, 13, tzinfo=timezone.utc).timestamp()},
-                {"zh": "���ղ�ҵ����", "ts": datetime(2026, 8, 31, 7, 50, tzinfo=timezone.utc).timestamp()},
+                {"zh": "未来活动预告", "ts": datetime(2026, 11, 13, tzinfo=timezone.utc).timestamp()},
+                {"zh": "今日产业新闻", "ts": datetime(2026, 8, 31, 7, 50, tzinfo=timezone.utc).timestamp()},
             ],
         }],
     }
 
     items = service.normalize_radar(radar)
 
-    assert [item["title"] for item in items] == ["���ղ�ҵ����"]
+    assert [item["title"] for item in items] == ["今日产业新闻"]
 
 
 def test_undated_items_keep_unknown_time_and_receive_no_recency_boost(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
-    item = service.normalize_quick_rows([{"����": "û�з���ʱ��ľ���Ϣ"}], source="���˲ƾ���Ѷ")[0]
+    item = service.normalize_quick_rows([{"标题": "没有发布时间的旧消息"}], source="新浪财经快讯")[0]
     events = service.cluster_items([item])
 
     assert item["publishedAt"] is None
     assert events[0]["urgencyScore"] == 22
-    assert "����ʱ��δ֪" in events[0]["urgencyReasons"]
+    assert "发布时间未知" in events[0]["urgencyReasons"]
     overview = service._compose([item], [], [])
     assert overview["urgent"] == []
     assert overview["hot"] == []
 
-    corroborated = {**item, "title": "��ܲ��ŷ����ʱ��г��¹�", "summary": "������ʽ����", "sourceTier": 35}
-    corroborated_event = service.cluster_items([corroborated, {**corroborated, "source": "��һȨ����Դ"}])[0]
+    corroborated = {**item, "title": "监管部门发布资本市场新规", "summary": "政策正式发布", "sourceTier": 35}
+    corroborated_event = service.cluster_items([corroborated, {**corroborated, "source": "另一权威来源"}])[0]
     assert corroborated_event["urgencyScore"] >= 60
-    assert service._compose([corroborated, {**corroborated, "source": "��һȨ����Դ"}], [], [])["urgent"] == []
+    assert service._compose([corroborated, {**corroborated, "source": "另一权威来源"}], [], [])["urgent"] == []
 
 
 def test_sina_content_only_schema_is_normalized(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     items = service.normalize_quick_rows(
-        [{"ʱ��": "2026-08-31 15:59:00", "����": "���˿�Ѷ���Ŀ���Ϊ����"}],
-        source="���˲ƾ���Ѷ",
+        [{"时间": "2026-08-31 15:59:00", "内容": "新浪快讯正文可作为标题"}],
+        source="新浪财经快讯",
     )
 
     assert len(items) == 1
-    assert items[0]["title"] == "���˿�Ѷ���Ŀ���Ϊ����"
+    assert items[0]["title"] == "新浪快讯正文可作为标题"
 
 
 def test_content_only_quick_news_uses_a_concise_headline_and_preserves_body(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     body = (
-        "OpenAI������һ��GPTģ�ͣ������������������"
-        "�ܴ�Ӱ�죬A��������AIӦ�÷�����ǿ����ֻ�������ͣ��"
-        "���������עģ�͵�ʵ�ʷ���ʱ������й�˾���档"
+        "OpenAI发布新一代GPT模型，多项能力获得提升。"
+        "受此影响，A股软件与AI应用方向走强，多只概念股涨停。"
+        "后续仍需关注模型的实际发布时间和上市公司公告。"
     )
 
     item = service.normalize_quick_rows(
-        [{"ʱ��": "2026-08-31 15:59:00", "����": body}],
-        source="���˲ƾ���Ѷ",
+        [{"时间": "2026-08-31 15:59:00", "内容": body}],
+        source="新浪财经快讯",
     )[0]
 
-    assert item["title"] == "OpenAI������һ��GPTģ�ͣ����������������"
+    assert item["title"] == "OpenAI发布新一代GPT模型，多项能力获得提升"
     assert item["summary"] == body
     assert len(item["title"]) <= 64
 
 
 def test_existing_cached_long_title_gets_a_safe_display_title(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
-    long_title = "�����������������ʾ��鲢�ͷ������źš�" + "��������" * 30
+    long_title = "美联储公布最新利率决议并释放政策信号。" + "后续正文" * 30
     event = {
         **_item(title=long_title, id="long"), "independentSourceCount": 2,
-        "independentSources": ["�»���", "·͸��"], "relatedSourceCount": 2,
-        "relatedSources": ["�»���", "·͸��"], "globalScore": 90,
+        "independentSources": ["新华社", "路透社"], "relatedSourceCount": 2,
+        "relatedSources": ["新华社", "路透社"], "globalScore": 90,
         "importanceType": "policy_decision", "latestAt": NOW.isoformat(),
     }
     service.save_payload({"editorialVersion": 4, "globalHighlights": [event], "feed": [event]})
 
     result = service.overview()["globalHighlights"][0]
 
-    assert result["displayTitle"] == "�����������������ʾ��鲢�ͷ������ź�"
+    assert result["displayTitle"] == "美联储公布最新利率决议并释放政策信号"
     assert result["title"] == long_title
 
 
 def test_external_urls_accept_only_http_protocols(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     items = service.normalize_quick_rows(
-        [{"����": "����ȫ����", "����": "javascript:alert(1)"}], source="���˲ƾ���Ѷ"
+        [{"标题": "不安全链接", "链接": "javascript:alert(1)"}], source="新浪财经快讯"
     )
     assert items[0]["originalUrl"] == ""
 
@@ -317,17 +317,17 @@ def test_external_urls_accept_only_http_protocols(tmp_path):
 def test_service_normalizes_ths_and_cls_and_clusters_same_event(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     ths = service.normalize_quick_rows(
-        [{"����": "�߲��ŷ�������֧������", "ժҪ": "�������", "����ʱ��": "2026-08-31 15:56:00", "����": "https://ths/x"}],
-        source="ͬ��˳��Ѷ",
+        [{"标题": "七部门发布消费支持政策", "摘要": "政策落地", "发布时间": "2026-08-31 15:56:00", "链接": "https://ths/x"}],
+        source="同花顺快讯",
     )
     cls = service.normalize_quick_rows(
-        [{"����": "�߲��ŷ�������֧�����ߣ�", "����": "������ʽ���", "��������": "2026-08-31", "����ʱ��": "15:55:00", "�ȼ�": "A"}],
-        source="������籨",
+        [{"标题": "七部门发布消费支持政策！", "内容": "政策正式落地", "发布日期": "2026-08-31", "发布时间": "15:55:00", "等级": "A"}],
+        source="财联社电报",
     )
     events = service.cluster_items(ths + cls)
     assert len(events) == 1
     assert events[0]["relatedSourceCount"] == 2
-    assert events[0]["source"] in {"������籨", "ͬ��˳��Ѷ"}
+    assert events[0]["source"] in {"财联社电报", "同花顺快讯"}
 
 
 def test_cached_overview_is_returned_stale_when_all_sources_fail(tmp_path):
@@ -349,16 +349,16 @@ def test_rss_cycle_does_not_clear_quick_source_outage(tmp_path, monkeypatch):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     monkeypatch.setattr(newsradar, "get_radar", lambda force=False: {"industries": []})
     monkeypatch.setattr(newsradar, "fetch_radar", lambda: {"industries": []})
-    service.quick_fetchers = {"ͬ��˳��Ѷ": lambda: [{"����": "�ѻ����Ѷ", "����ʱ��": "2026-08-31 15:58:00"}]}
+    service.quick_fetchers = {"同花顺快讯": lambda: [{"标题": "已缓存快讯", "发布时间": "2026-08-31 15:58:00"}]}
     service.refresh_quick()
-    service.quick_fetchers = {"ͬ��˳��Ѷ": lambda: (_ for _ in ()).throw(RuntimeError("offline"))}
+    service.quick_fetchers = {"同花顺快讯": lambda: (_ for _ in ()).throw(RuntimeError("offline"))}
     service.refresh_quick()
 
     result = service.refresh_rss()
 
     assert result["stale"] is True
     assert result["staleComponents"]["quick"] is True
-    assert any(row["source"] == "ͬ��˳��Ѷ" and row["ok"] is False for row in result["sourceStatus"])
+    assert any(row["source"] == "同花顺快讯" and row["ok"] is False for row in result["sourceStatus"])
 
 
 def test_successful_empty_quick_cycle_does_not_relabel_old_items_as_fresh(tmp_path, monkeypatch):
@@ -367,10 +367,10 @@ def test_successful_empty_quick_cycle_does_not_relabel_old_items_as_fresh(tmp_pa
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     monkeypatch.setattr(newsradar, "get_radar", lambda force=False: {"industries": []})
     service._write(service.quick_file, {
-        "items": [_item(title="�ɿ�Ѷ")], "sourceStatus": [], "stale": False,
+        "items": [_item(title="旧快讯")], "sourceStatus": [], "stale": False,
         "lastSuccessAt": "2026-08-30T08:00:00+00:00",
     })
-    service.quick_fetchers = {"ͬ��˳��Ѷ": lambda: []}
+    service.quick_fetchers = {"同花顺快讯": lambda: []}
 
     result = service.refresh_quick()
 
@@ -406,19 +406,19 @@ def test_empty_rss_failure_persists_degraded_snapshot_and_last_success(tmp_path,
 def test_event_recency_and_order_use_latest_report_not_authoritative_lead(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     authoritative = _item(
-        title="ͬһ�¼�ȡ�ý�չ", source="������籨", sourceTier=35,
+        title="同一事件取得进展", source="财联社电报", sourceTier=35,
         publishedAt="2026-08-31T06:00:00+00:00",
     )
     latest = _item(
-        title="ͬһ�¼�ȡ�ý�չ��", source="�����Ƹ���Ѷ", sourceTier=24,
+        title="同一事件取得进展！", source="东方财富快讯", sourceTier=24,
         publishedAt="2026-08-31T07:58:00+00:00",
     )
 
     event = service.cluster_items([authoritative, latest])[0]
 
-    assert event["source"] == "������籨"
+    assert event["source"] == "财联社电报"
     assert event["publishedAt"] == latest["publishedAt"]
-    assert "10 �����ڸ���" in event["urgencyReasons"]
+    assert "10 分钟内更新" in event["urgencyReasons"]
     assert event["urgencyReasons"] != event["hotReasons"]
 
 
@@ -433,7 +433,7 @@ def test_glm_refinement_is_batched_and_cached_by_event_content(tmp_path, monkeyp
     def fake_call(_cfg, messages, use_tools):
         calls.append(messages[-1]["content"])
         event_id = "event-1"
-        return {"choices": [{"message": {"content": json.dumps([{"id": event_id, "digest": "��������", "impactTags": ["����"]}], ensure_ascii=False)}}]}
+        return {"choices": [{"message": {"content": json.dumps([{"id": event_id, "digest": "精炼导读", "impactTags": ["政策"]}], ensure_ascii=False)}}]}
 
     import json
     monkeypatch.setattr(chat, "_call_llm", fake_call)
@@ -441,9 +441,9 @@ def test_glm_refinement_is_batched_and_cached_by_event_content(tmp_path, monkeyp
     service._apply_ai_refinements([event])
     service._apply_ai_refinements([event])
     assert len(calls) == 1
-    assert event["aiDigest"] == "��������"
+    assert event["aiDigest"] == "精炼导读"
 
-    changed = {**event, "summary": "�¼�������Ҫ��չ"}
+    changed = {**event, "summary": "事件新增重要进展"}
     service._apply_ai_refinements([changed])
     assert len(calls) == 2
 
@@ -538,11 +538,11 @@ def test_post_close_review_does_not_wait_for_candidate_coalescing(tmp_path):
 def test_ai_candidate_discovery_includes_major_model_launch_for_market_linkage(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     model_release = {
-        **_item(id="gpt", title="OpenAI����GPT-6��ģ��", summary="��һ����ģ������ʽ����"),
+        **_item(id="gpt", title="OpenAI发布GPT-6新模型", summary="新一代大模型已正式发布"),
         "globalScore": 55, "independentSourceCount": 1,
     }
     unrelated = {
-        **_item(id="show", title="���ǲμӻ���������", summary="��ĿԤ��"),
+        **_item(id="show", title="明星参加互联网综艺", summary="节目预告"),
         "globalScore": 55, "independentSourceCount": 1,
     }
 
@@ -559,24 +559,24 @@ def test_ai_semantic_links_merge_independent_evidence_for_the_hot_list(tmp_path,
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test"})
     monkeypatch.setattr(chat, "_call_llm", lambda *_args, **_kwargs: {"choices": [{"message": {"content": json.dumps([{
-        "id": "release", "displayTitle": "GPT��ģ�ͷ�������A�����������ǿ",
-        "digest": "ģ�ͷ�����A����������춯�γ��¼�����", "impactTags": ["AIӦ��", "A������"],
+        "id": "release", "displayTitle": "GPT新模型发布带动A股软件板块走强",
+        "digest": "模型发布与A股软件板块异动形成事件链。", "impactTags": ["AI应用", "A股软件"],
         "importanceScore": 92, "relatedEventIds": ["market-reaction"],
     }], ensure_ascii=False)}}]})
     base = {
-        "summary": "", "publishedAt": NOW.isoformat(), "category": "��ҵ", "sourceTier": 35,
+        "summary": "", "publishedAt": NOW.isoformat(), "category": "产业", "sourceTier": 35,
         "sourceLevel": "A", "originalUrl": "https://example.test/news", "relatedStocks": [],
         "stale": False, "relatedSourceCount": 1, "independentSourceCount": 1,
         "hotScore": 70, "globalScore": 75, "importanceType": "industry_update",
     }
-    release = {**base, "id": "release", "title": "OpenAI��������GPT��ģ��", "source": "�»���", "relatedSources": ["�»���"], "reports": [{**base, "title": "OpenAI��������GPT��ģ��", "source": "�»���"}]}
-    reaction = {**base, "id": "market-reaction", "title": "A�������ɼ������", "source": "֤ȯʱ��", "relatedSources": ["֤ȯʱ��"], "reports": [{**base, "title": "A�������ɼ������", "source": "֤ȯʱ��"}]}
+    release = {**base, "id": "release", "title": "OpenAI即将发布GPT新模型", "source": "新华社", "relatedSources": ["新华社"], "reports": [{**base, "title": "OpenAI即将发布GPT新模型", "source": "新华社"}]}
+    reaction = {**base, "id": "market-reaction", "title": "A股软件股集体大涨", "source": "证券时报", "relatedSources": ["证券时报"], "reports": [{**base, "title": "A股软件股集体大涨", "source": "证券时报"}]}
 
     service._apply_ai_refinements([release, reaction])
     merged = service._merge_ai_related_events([release, reaction])
 
     assert len(merged) == 1
-    assert merged[0]["displayTitle"] == "GPT��ģ�ͷ�������A�����������ǿ"
+    assert merged[0]["displayTitle"] == "GPT新模型发布带动A股软件板块走强"
     assert merged[0]["independentSourceCount"] == 2
     assert merged[0]["aiImportance"] == 92
 
@@ -594,7 +594,7 @@ def test_scheduled_ai_reviews_preserve_the_accumulated_daily_budget(tmp_path, mo
         payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
         return {"choices": [{"message": {"content": json.dumps([{
             "id": payload[0]["id"], "displayTitle": payload[0]["title"],
-            "digest": "Ȩ���¼��ѽ�����ˡ�", "impactTags": [],
+            "digest": "权威事件已进入审核。", "impactTags": [],
             "importanceScore": 90, "relatedEventIds": [],
         }], ensure_ascii=False)}}]}
 
@@ -602,11 +602,11 @@ def test_scheduled_ai_reviews_preserve_the_accumulated_daily_budget(tmp_path, mo
     base = {
         **_item(sourceLevel="S", official=True), "globalScore": 95,
         "independentSourceCount": 1, "relatedSourceCount": 1,
-        "relatedSources": ["�»���"], "independentSources": ["�»���"],
+        "relatedSources": ["新华社"], "independentSources": ["新华社"],
     }
-    service._review_ai_if_due([{**base, "id": "first", "title": "���з������ʾ���"}])
+    service._review_ai_if_due([{**base, "id": "first", "title": "央行发布利率决议"}])
     clock[0] += __import__("datetime").timedelta(minutes=20)
-    service._review_ai_if_due([{**base, "id": "second", "title": "��ܲ��ŷ����ʱ��г��¹�"}])
+    service._review_ai_if_due([{**base, "id": "second", "title": "监管部门发布资本市场新规"}])
 
     assert service._read(service.ai_file)["_meta"]["candidateCount"] == 2
 
@@ -623,7 +623,7 @@ def test_glm_refinement_rejects_ungrounded_numbers_and_prompt_instructions(tmp_p
     def fake_call(_cfg, messages, use_tools):
         captured.extend(messages)
         return {"choices": [{"message": {"content": json.dumps([{
-            "id": "event-1", "digest": "��˾ȷ��ӯ��9999��Ԫ", "impactTags": ["��˾", {"bad": True}],
+            "id": "event-1", "digest": "公司确认盈利9999亿元", "impactTags": ["公司", {"bad": True}],
         }], ensure_ascii=False)}}]}
 
     monkeypatch.setattr(chat, "_call_llm", fake_call)
@@ -631,7 +631,7 @@ def test_glm_refinement_rejects_ungrounded_numbers_and_prompt_instructions(tmp_p
     service._apply_ai_refinements([event])
 
     assert captured[0]["role"] == "system"
-    assert "������" in captured[0]["content"]
+    assert "不可信" in captured[0]["content"]
     assert "aiDigest" not in event
 
 
@@ -648,7 +648,7 @@ def test_glm_failure_does_not_consume_budget_or_make_candidate_permanently_cache
         calls.append(use_tools)
         if len(calls) == 1:
             raise RuntimeError("temporary outage")
-        return {"choices": [{"message": {"content": json.dumps([{"id": "event-1", "digest": "�ָ���ĵ���", "impactTags": []},], ensure_ascii=False)}}]}
+        return {"choices": [{"message": {"content": json.dumps([{"id": "event-1", "digest": "恢复后的导读", "impactTags": []},], ensure_ascii=False)}}]}
 
     monkeypatch.setattr(chat, "_call_llm", fake_call)
     first = {**_item(id="event-1"), "relatedSourceCount": 2, "relatedSources": ["A", "B"], "hotScore": 80}
@@ -657,19 +657,19 @@ def test_glm_failure_does_not_consume_budget_or_make_candidate_permanently_cache
     service._apply_ai_refinements([second])
 
     assert len(calls) == 2
-    assert second["aiDigest"] == "�ָ���ĵ���"
+    assert second["aiDigest"] == "恢复后的导读"
 
 
 def test_sqlite_failure_keeps_last_snapshot_and_ai_cache_failure_is_non_fatal(tmp_path, monkeypatch):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
-    original = service.normalize_quick_rows([{"����": "�����е������¼�", "����ʱ��": "2026-08-31 15:55:00"}], source="���˲ƾ���Ѷ")[0]
+    original = service.normalize_quick_rows([{"标题": "缓存中的政策事件", "发布时间": "2026-08-31 15:55:00"}], source="新浪财经快讯")[0]
     service._compose([original], [], [])
     monkeypatch.setattr(service.store, "load_reports", lambda hours: (_ for _ in ()).throw(RuntimeError("db offline")))
     monkeypatch.setattr(service.store, "get_ai_cache", lambda key: (_ for _ in ()).throw(RuntimeError("cache offline")))
 
     result = service._compose([], [], [])
 
-    assert result["feed"][0]["title"] == "�����е������¼�"
+    assert result["feed"][0]["title"] == "缓存中的政策事件"
 
 
 def test_due_market_check_reenriches_event_and_marks_checkpoint(tmp_path):
@@ -808,21 +808,21 @@ def test_successive_quick_refreshes_accumulate_a_rolling_event_library(tmp_path,
 
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     monkeypatch.setattr(newsradar, "get_radar", lambda force=False: {"industries": []})
-    batches = [[{"����": "������߿�Ѷ", "����ʱ��": "2026-08-31 15:01:00"}], [{"����": "������߿�Ѷ", "����ʱ��": "2026-08-31 15:55:00"}]]
-    service.quick_fetchers = {"ͬ��˳��Ѷ": lambda: batches.pop(0)}
+    batches = [[{"标题": "早间政策快讯", "发布时间": "2026-08-31 15:01:00"}], [{"标题": "午间政策快讯", "发布时间": "2026-08-31 15:55:00"}]]
+    service.quick_fetchers = {"同花顺快讯": lambda: batches.pop(0)}
 
     service.refresh_quick()
     result = service.refresh_quick()
 
-    assert {report["title"] for item in result["feed"] for report in item["reports"]} == {"������߿�Ѷ", "������߿�Ѷ"}
+    assert {report["title"] for item in result["feed"] for report in item["reports"]} == {"早间政策快讯", "午间政策快讯"}
     assert result["eventLibraryHours"] >= 24
 
 
 def test_reposts_are_visible_in_timeline_but_do_not_count_as_independent_sources(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
     rows = [
-        service.normalize_quick_rows([{"����": "ͬһ�г�����", "����ʱ��": "2026-08-31 15:55:00", "����": "https://a.test/1"}], source="ͬ��˳��Ѷ")[0],
-        service.normalize_quick_rows([{"����": "ͬһ�г����ţ�", "����ʱ��": "2026-08-31 15:56:00", "����": "https://b.test/1"}], source="�����Ƹ���Ѷ")[0],
+        service.normalize_quick_rows([{"标题": "同一市场传闻", "发布时间": "2026-08-31 15:55:00", "链接": "https://a.test/1"}], source="同花顺快讯")[0],
+        service.normalize_quick_rows([{"标题": "同一市场传闻！", "发布时间": "2026-08-31 15:56:00", "链接": "https://b.test/1"}], source="东方财富快讯")[0],
     ]
 
     event = service.cluster_items(rows)[0]
@@ -837,9 +837,9 @@ def test_reposts_are_visible_in_timeline_but_do_not_count_as_independent_sources
 
 def test_overseas_event_without_linkage_is_capped_in_global_observation(tmp_path):
     service = FinancialNewsService(cache_dir=tmp_path, now_fn=lambda: NOW)
-    titles = ["�������з��������¼�", "ŷ����Դ��Ӧ���������¼�", "�ձ��г����ֺ����¼�", "�۹��г����ֺ����¼�", "���ɹ�˾���������¼�", "��˹��˳��ֺ����¼�"]
+    titles = ["美国央行发布海外事件", "欧洲能源供应发生海外事件", "日本市场出现海外事件", "港股市场出现海外事件", "美股公司发布海外事件", "纳斯达克出现海外事件"]
     rows = [service.normalize_quick_rows([{
-        "����": title, "����ʱ��": "2026-08-31 15:55:00"
+        "标题": title, "发布时间": "2026-08-31 15:55:00"
     }], source="Federal Reserve")[0] for title in titles]
     result = service._compose(rows, [], [])
 
@@ -855,8 +855,8 @@ def test_glm_failure_does_not_stop_objective_event_composition(tmp_path, monkeyp
     monkeypatch.setattr(glm_config, "load_glm_config", lambda: {"apiKey": "test"})
     monkeypatch.setattr(chat, "_call_llm", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("glm offline")))
     row = service.normalize_quick_rows([{
-        "����": "��ܲ��ŷ����ʱ��г�����", "����ʱ��": "2026-08-31 15:55:00"
-    }], source="������籨")[0]
+        "标题": "监管部门发布资本市场政策", "发布时间": "2026-08-31 15:55:00"
+    }], source="财联社电报")[0]
 
     result = service._compose([row], [], [])
 
