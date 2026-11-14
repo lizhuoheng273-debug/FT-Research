@@ -127,10 +127,75 @@
       radial-gradient(ellipse at 76% 42%, hsl(var(--primary) / 0.12), transparent 48%);
   }
 
-  /* AI HOT 风格的周期报告双栏布局：固定归档栏，内容栏自适应。 */
-  .report-layout { grid-template-columns: minmax(0, 1fr); }
-  @media (min-width: 768px) {
-    .report-layout { grid-template-columns: 250px minmax(0, 1fr); }
+  .ai-report-paper {
+    --edition-surface: hsl(var(--card));
+    --edition-line: hsl(var(--border));
+    --edition-muted: hsl(var(--muted-foreground));
+    --edition-accent: hsl(var(--primary));
+    --edition-tint: hsl(var(--primary) / 0.1);
+    color: hsl(var(--foreground));
+    min-height: 100dvh;
+    display: grid;
+    grid-template-areas: "reading";
+  }
+  .edition-reading-area { grid-area: reading; padding: 20px 16px 48px; }
+  .edition-reading-inner { width: 100%; max-width: 640px; margin-inline: auto; }
+  .edition-report { container: edition / inline-size; overflow-wrap: anywhere; }
+  .edition-archive-rail { grid-area: rail; display: none; }
+  .edition-headline-title { font-size: 32px; line-height: 1.28; letter-spacing: -0.03em; text-wrap: balance; }
+  .edition-feature { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .edition-headline-split { grid-template-columns: minmax(0, 1fr); }
+  .edition-section { padding-top: 48px; }
+  .edition-section-title { font-size: 24px; line-height: 1.25; letter-spacing: -0.02em; }
+  .edition-story h3 { font-size: 19px; letter-spacing: -0.01em; }
+  @media (min-width: 941px) {
+    .edition-reading-area { padding: 36px 40px 64px; }
+    .edition-reading-inner { max-width: 1160px; }
+  }
+  @media (min-width: 1180px) {
+    .ai-report-paper { grid-template: "rail reading" / 280px minmax(0, 1fr); }
+    .edition-archive-rail {
+      display: block;
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100dvh;
+      padding: 24px 12px 12px 20px;
+      border-right: 1px solid var(--edition-line);
+      background: color-mix(in srgb, var(--edition-surface) 60%, transparent);
+    }
+    .edition-reading-archive { display: none; }
+    .edition-archive-rail .edition-archive-entries { max-height: calc(100dvh - 125px); }
+  }
+  @container edition (min-width: 520px) {
+    .edition-headline-title { font-size: 40px; }
+  }
+  @container edition (min-width: 560px) {
+    .edition-headline-top > .edition-headline-picture { order: -1; }
+  }
+  @container edition (min-width: 640px) {
+    .edition-headline-split:has(> p) { grid-template-columns: minmax(0, 1fr) minmax(0, 38%); gap: 24px; }
+  }
+  @container edition (min-width: 760px) {
+    .edition-section-stories { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .edition-story:nth-child(odd) { padding-right: 40px; }
+    .edition-story:nth-child(even) { padding-left: 40px; border-left: 1px solid var(--edition-line); }
+  }
+  @container edition (min-width: 880px) {
+    .edition-feature { grid-template-columns: minmax(0, 1fr) 300px; }
+    .edition-headline-column { padding: 40px 40px 40px 0; border-right: 1px solid var(--edition-line); }
+    .edition-picks { border-top: 0; padding: 40px 0 40px 32px; }
+    .edition-masthead-content { padding-block: 32px; }
+    .edition-masthead-title { font-size: 48px; }
+    .edition-section { padding-top: 64px; }
+    .edition-section-title { font-size: 28px; }
+    .edition-story h3 { font-size: 20px; }
+  }
+  @container edition (min-width: 1040px) {
+    .edition-feature { grid-template-columns: minmax(0, 1fr) 340px; }
+    .edition-headline-title { font-size: 48px; line-height: 1.22; }
+    .edition-story:nth-child(odd) { padding-right: 48px; }
+    .edition-story:nth-child(even) { padding-left: 48px; }
   }
 
   /* 玻璃卡：半透明填充 + 发丝边框 + 柔投影 + 顶部内高光（EP26 高级感配方） */

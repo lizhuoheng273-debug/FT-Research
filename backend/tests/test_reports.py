@@ -4,9 +4,53 @@ from fastapi.testclient import TestClient
 
 import app
 from aihot_report_parser import parse_report_html
+from aihot_api import AihotClient, report_headline_image
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
 from report_scheduler import snapshot_previous_day
+
+
+def test_edition_image_requires_matching_headline_and_signed_public_picture():
+    from time import time
+
+    src = f"/api/img-proxy?sig=abc&exp={int(time() + 600)}"
+    html = f'<h1 id="report-start">AI 日报</h1><div><h2>本期头条</h2><picture><img src="{src}" width="800"></picture><img src="/avatar.png"></div>'.encode()
+    page = "https://aihot.news/daily/2026-11-13"
+    assert report_headline_image(html, page, "本期头条") == {"url": "https://aihot.news" + src, "alt": "", "width": 800}
+    assert report_headline_image(html, page, "别期头条") is None
+    assert report_headline_image(html.replace(b"/api/img-proxy", b"https://elsewhere.example/api/img-proxy"), page, "本期头条") is None
+
+
+def test_headline_picture_uses_edition_frame_instead_of_original_dimensions():
+    from time import time
+
+    src = f"/api/img-proxy?sig=abc&exp={int(time() + 600)}"
+    page = "https://aihot.news/daily/2026-11-14"
+    picture = f'<figure><div style="aspect-ratio:4 / 5"><picture><img src="{src}" width="696" height="979"></picture></div></figure>'
+    base = '<h1 id="report-start">AI 日报</h1><div><h2>本期头条</h2>{}</div>'
+    portrait = report_headline_image(base.format(f'<div class="grid"><p>摘要</p>{picture}</div>').encode(), page, "本期头条")
+    banner = report_headline_image(base.format(picture.replace("4 / 5", "2")).encode(), page, "本期头条")
+    assert (portrait["layout"], portrait["aspectRatio"]) == ("inline", 0.8)
+    assert (banner["layout"], banner["aspectRatio"]) == ("banner", 2)
+
+
+def test_public_edition_reports_keep_canonical_links_and_validate_period(monkeypatch, tmp_path):
+    import pytest
+
+    client = AihotClient(cache_dir=str(tmp_path))
+    canonical = "https://aihot.news/weekly/2026-W45"
+    calls = []
+    def get(path, params=None, **kwargs):
+        calls.append(path)
+        if params is not None:
+            return {"items": [{"week": "2026-W45", "links": {"aihot": canonical}}, {"week": "invalid"}]}
+        return {"report": {"week": "2026-W45", "links": {"aihot": canonical}}}
+    monkeypatch.setattr(client, "_get", get)
+    assert client.report_editions("weekly")["items"] == [{"week": "2026-W45", "period": "2026-W45", "links": {"aihot": canonical}}]
+    assert client.report_edition("weekly")["report"]["links"]["aihot"] == canonical
+    assert calls == ["/api/v1/weeklies", "/api/v1/weeklies/latest"]
+    with pytest.raises(ValueError):
+        client.report_edition("weekly", "2026-W44")
 
 
 def test_daily_archive_roundtrip_and_index(tmp_path):

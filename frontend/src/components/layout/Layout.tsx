@@ -33,11 +33,21 @@ export function Layout() {
   const { pathname } = useLocation();
   const { identity, signOut } = useAuth();
   const stockAiWorkspace = /^\/finance\/stocks\/\d{6}\/ai$/.test(pathname);
+  const reportPage = pathname === "/ai/daily";
   const { dark, toggle } = useDarkMode();
-  const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
+  const [sidebarPreference, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
+  const [narrowScreen, setNarrowScreen] = useState(() => window.matchMedia("(max-width: 639px)").matches);
+  const compactReport = reportPage && narrowScreen;
+  const collapsed = sidebarPreference || compactReport;
   useEffect(() => {
-    storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
-  }, [collapsed]);
+    storageSet("vr-sidebar", sidebarPreference ? "collapsed" : "expanded");
+  }, [sidebarPreference]);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 639px)");
+    const onChange = () => setNarrowScreen(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   if (!identity) return <AuthGate>{null}</AuthGate>;
   return (
@@ -45,7 +55,7 @@ export function Layout() {
       {/* Sidebar */}
       <aside className={cn(
         "glass z-10 m-2 flex shrink-0 flex-col rounded-2xl transition-all duration-200",
-        collapsed ? "w-14" : "w-60",
+        collapsed ? "w-14" : reportPage ? "w-[179px]" : "w-60",
       )}>
         {/* Brand */}
         <div className={cn("border-b border-border/50", collapsed ? "flex justify-center p-3" : "p-4")}>
@@ -96,9 +106,9 @@ export function Layout() {
               <a href={WEBSITE_URL} target="_blank" rel="noreferrer" className="rounded p-1.5 text-muted-foreground transition-colors hover:text-foreground" title="个人网站 · vincentli-website">
                 <UserRound className="h-4 w-4" />
               </a>
-              <button onClick={() => setCollapsed(false)} className="rounded p-1.5 text-muted-foreground transition-colors hover:text-foreground" title="展开">
+              {!compactReport && <button onClick={() => setCollapsed(false)} className="rounded p-1.5 text-muted-foreground transition-colors hover:text-foreground" title="展开">
                 <ChevronsRight className="h-4 w-4" />
-              </button>
+              </button>}
             </>
           ) : (
             <>
@@ -138,7 +148,7 @@ export function Layout() {
 
       {/* Main */}
       <main className="flex-1 overflow-auto">
-        <div className={cn("mx-auto", stockAiWorkspace ? "max-w-none px-3 py-3" : "max-w-6xl px-6 py-6")}>
+        <div className={cn("mx-auto", stockAiWorkspace ? "max-w-none px-3 py-3" : reportPage ? "max-w-none" : "max-w-6xl px-6 py-6")}>
           <Outlet />
         </div>
       </main>

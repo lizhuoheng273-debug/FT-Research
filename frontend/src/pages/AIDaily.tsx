@@ -1,140 +1,234 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, RefreshCw } from "lucide-react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { GlassCard } from "@/components/ui/GlassCard";
-import { AIHotFeed, type HotFeedItem, type HotFeedTopic } from "@/components/ai/AIHotFeed";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowUpRight, BookOpen, ChevronDown } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { apiUrl, authHeaders } from "@/lib/api";
 
-type ReportKind = "daily" | "weekly" | "monthly";
-interface ArchiveItem { kind: ReportKind; period: string; title?: string; hotCount?: number; headline?: string }
-interface DailyReport { kind: "daily"; period: string; generatedAt?: string; windowStart?: string; windowEnd?: string; hotTopics?: HotFeedTopic[]; items?: HotFeedItem[] }
-interface PeriodStory { title?: string; summary?: string; source?: string; publishedAt?: string; links?: { original?: string; aihot?: string }; storyId?: string }
-interface PeriodTheme { title: string; summary?: string; stories?: PeriodStory[] }
-interface PeriodReport { kind: "weekly" | "monthly"; period: string; title?: string; lead?: string; stats?: Record<string, number>; themes?: PeriodTheme[]; source?: { url?: string } }
+type Kind = "daily" | "weekly" | "monthly";
+type Links = { aihot?: string; original?: string };
+type Story = { title: string; summary?: string; publishedAt?: string; source?: { name?: string }; links?: Links };
+type Section = { label: string; summary?: string; items?: Story[] };
+type Edition = { period: string; periodStart?: string; leadTitle?: string; headline?: string; links?: Links };
+type HeadlineImage = {url: string; alt?: string; width?: number; height?: number; layout?: "banner" | "inline"; aspectRatio?: number};
+type Report = {
+  date?: string; week?: string; month?: string; periodStart?: string; periodEnd?: string;
+  lead?: { title?: string; leadParagraph?: string }; headline?: string; overview?: string;
+  sections?: Section[]; flashes?: Story[]; highlights?: Story[]; links?: Links; attribution?: { name?: string; url?: string };
+};
 
-const validKind = (value: string | null): ReportKind => value === "weekly" || value === "monthly" ? value : "daily";
-const storyId = (story: PeriodStory) => story.storyId || story.links?.aihot?.split("/").pop() || "";
-const reportArchives = new Map<ReportKind, ArchiveItem[]>();
-const reportCache = new Map<string, { report: DailyReport | PeriodReport; stale: boolean; fetchedAt?: string }>();
+const LABELS: Record<Kind, string> = { daily: "日报", weekly: "周报", monthly: "月报" };
+const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
+const safe = (value?: string) => {
+  try {
+    const url = new URL(value || "");
+    return ["https:", "http:"].includes(url.protocol) ? url.href : undefined;
+  } catch { return undefined; }
+};
 
-function dailyMonth(period: string) {
-  const [year, month] = period.split("-");
-  return year && month ? `${year} 年 ${Number(month)} 月` : period;
+async function request<T>(path: string, signal: AbortSignal): Promise<T> {
+  const response = await fetch(apiUrl(path), { headers: authHeaders(), signal });
+  if (!response.ok) throw new Error(response.status === 404 ? "该期暂无报告" : "报告暂不可用");
+  return response.json() as Promise<T>;
 }
 
-function dailyDay(period: string) {
-  const day = period.split("-")[2];
-  return day ? `${Number(day)} 日` : period;
+function dateText(day?: string, withYear = false) {
+  const match = day?.match(/^(\d{4})-(\d{2})(?:-(\d{2}))?/);
+  return match ? `${withYear ? match[1] + " 年 " : ""}${Number(match[2])} 月${match[3] ? ` ${Number(match[3])} 日` : ""}` : day || "";
 }
 
-function ArchiveRail({ kind, items, period, onSelect, onKindSelect }: { kind: ReportKind; items: ArchiveItem[]; period: string; onSelect: (value: string) => void; onKindSelect: (value: ReportKind) => void }) {
-  const monthGroups = kind === "daily" ? items.reduce<{ label: string; items: ArchiveItem[] }[]>((groups, item) => {
-    const label = dailyMonth(item.period);
-    const group = groups.find((entry) => entry.label === label);
-    if (group) group.items.push(item); else groups.push({ label, items: [item] });
-    return groups;
-  }, []) : [];
-  const archiveItems = kind === "daily" ? monthGroups.flatMap((group) => [
-    <div key={`month-${group.label}`} className="flex items-center justify-between px-2 pb-1 pt-4 first:pt-0"><span className="text-sm font-semibold text-foreground">{group.label}</span><span className="font-mono text-xs text-muted-foreground">{group.items.length}</span></div>,
-    ...group.items.map((item) => <button key={item.period} onClick={() => onSelect(item.period)} title={item.headline || item.period} className={`flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors ${item.period === period ? "border-primary/50 bg-primary/10 text-primary" : "border-transparent hover:border-border/70 hover:bg-muted/30"}`}><span className="w-10 shrink-0 font-mono text-xs text-muted-foreground">{dailyDay(item.period)}</span><span className="min-w-0 flex-1 truncate text-sm">{item.headline || "AI 热点快照"}</span><span className="shrink-0 font-mono text-[10px] text-muted-foreground">{item.hotCount ?? 0}</span></button>),
-  ]) : items.map((item) => <button key={item.period} onClick={() => onSelect(item.period)} title={item.title || item.period} className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${item.period === period ? "border-primary/50 bg-primary/10 text-primary" : "border-transparent hover:border-border/70 hover:bg-muted/30"}`}><span className="block font-mono text-sm">{item.period}</span>{item.title && <span className="block truncate text-xs text-muted-foreground">{item.title}</span>}</button>);
-  return <aside className="overflow-hidden rounded-xl border border-border/60 bg-muted/10 lg:sticky lg:top-5 lg:self-start"><div className="border-b border-border/60 p-3"><p className="mb-2 px-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">报告周期</p><div className="grid grid-cols-3 rounded-lg border border-border/60 bg-background/50 p-0.5">{(["daily", "weekly", "monthly"] as ReportKind[]).map((value) => <button key={value} onClick={() => onKindSelect(value)} className={`rounded-md px-2 py-2 text-xs font-medium transition-colors ${kind === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{value === "daily" ? "日报" : value === "weekly" ? "周报" : "月报"}</button>)}</div></div><div className="max-h-[calc(100vh-220px)] overflow-y-auto p-3"><p className="mb-3 px-1 text-xs font-semibold uppercase tracking-[0.16em] text-primary">{kind === "daily" ? "按月份归档" : kind === "weekly" ? "周报周期" : "月报周期"}</p>{items.length === 0 ? <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">暂无归档</p> : <div className="space-y-1">{archiveItems}</div>}</div></aside>;
+function editionPeriod(report: Report, kind: Kind, period: string) {
+  if (kind === "daily") return dateText(report.date || period, true);
+  if (kind === "monthly") return dateText(report.month || period, true);
+  return report.periodStart && report.periodEnd
+    ? `${dateText(report.periodStart, true)} — ${dateText(report.periodEnd)}` : period;
 }
 
-function PeriodReport({ report }: { report: PeriodReport }) {
-  const navigate = useNavigate();
-  return <div className="space-y-4"><GlassCard glow><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">AI HOT {report.kind === "weekly" ? "WEEKLY" : "MONTHLY"}</p><h2 className="mt-1 text-xl font-bold">{report.title || (report.kind === "weekly" ? "AI 周报" : "AI 月报")}</h2><p className="mt-1 text-sm text-muted-foreground">{report.period}</p></div>{report.source?.url && <a href={report.source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">打开 AI HOT 原文报告 <ExternalLink className="h-3.5 w-3.5" /></a>}</div>{report.lead && <div className="mt-5 border-t border-border/50 pt-4"><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">本期主线</p><p className="leading-relaxed">{report.lead}</p></div>}{report.stats && <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">{Object.entries(report.stats).map(([key, value]) => <div key={key} className="rounded-lg bg-muted/30 p-3"><p className="text-xl font-bold text-primary">{value}</p><p className="text-xs text-muted-foreground">{key}</p></div>)}</div>}</GlassCard>{(report.themes || []).map((theme) => <GlassCard key={theme.title}><p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">主题</p><h3 className="text-lg font-semibold">{theme.title}</h3>{theme.summary && <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{theme.summary}</p>}<div className="mt-4 space-y-3">{(theme.stories || []).map((story, index) => { const summary = story.summary?.trim(); return <article key={`${story.title}-${index}`} className="rounded-lg border border-border/50 p-3"><div className="flex items-start justify-between gap-3"><div><h4 className="font-medium">{story.title || "未命名事件"}</h4>{summary && <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{summary}</p>}</div>{story.links?.original && <a href={story.links.original} target="_blank" rel="noreferrer" className="shrink-0 text-xs text-primary hover:underline">原文</a>}</div><p className="mt-2 text-xs text-muted-foreground/70"><span className="sr-only">媒体：</span>{story.source || "AI HOT"}{story.publishedAt ? ` · ${story.publishedAt}` : ""}</p><button onClick={() => storyId(story) && navigate(`/ai/news/story/${storyId(story)}`, { state: { fallback: { title: story.title, summary: story.summary, source: story.source, publishedAt: story.publishedAt, links: story.links } } })} className="mt-2 text-xs text-primary hover:underline">查看事件详情</button></article>; })}</div></GlassCard>)}</div>;
+function Archive({ entries, kind, active, choose, compact = false }: { entries: Edition[]; kind: Kind; active: string; choose: (period: string) => void; compact?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const groups = useMemo(() => {
+    const result = new Map<string, Edition[]>();
+    for (const row of entries) {
+      const start = row.periodStart || row.period;
+      const label = kind === "monthly" ? `${start.slice(0, 4)} 年` : dateText(start.slice(0, 7), true);
+      result.set(label, [...(result.get(label) || []), row]);
+    }
+    return [...result];
+  }, [entries, kind]);
+  return <aside className="edition-archive min-w-0">
+      {!compact && <div className="px-2 py-3 text-sm font-semibold">往期</div>}
+      {compact && <button type="button" aria-expanded={expanded} aria-controls="edition-archive-entries" onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between border-b border-[var(--edition-line)] px-2 py-2 text-sm font-semibold">
+        往期 <ChevronDown className={`h-4 w-4 ${expanded ? "rotate-180" : ""}`} />
+      </button>}
+      <div id={compact ? "edition-archive-entries" : undefined} hidden={compact && !expanded}
+        className="edition-archive-entries max-h-36 overflow-y-auto pt-2">
+        {groups.map(([label, items], index) => <details key={label} open={index === 0 || items.some(item => item.period === active)} className="mb-1">
+          <summary className="flex cursor-pointer list-none justify-between rounded-md px-2 py-2 text-xs text-[var(--edition-muted)]"><span>{label}</span><span>{items.length}</span></summary>
+          <div className="space-y-0.5">{items.map(item => <button type="button" key={item.period} onClick={() => { choose(item.period); setExpanded(false); }} title={item.leadTitle || item.headline || item.period}
+            aria-current={item.period === active ? "date" : undefined}
+            className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-[var(--edition-tint)] ${item.period === active ? "bg-[var(--edition-tint)] text-[var(--edition-accent)]" : ""}`}>
+            <span className="w-6 shrink-0 text-center font-mono text-base font-semibold">{item.period.slice(-2)}</span>
+            {kind === "daily" && <span className="shrink-0 text-xs text-[var(--edition-muted)]">周{WEEKDAYS[new Date(`${item.period}T12:00:00Z`).getUTCDay()]}</span>}
+            <span className="min-w-0 truncate text-xs">{item.leadTitle || item.headline || item.period}</span>
+          </button>)}</div>
+        </details>)}
+      </div>
+  </aside>;
+}
+
+function StoryTitle({ story }: { story: Story }) {
+  const href = safe(story.links?.aihot) || safe(story.links?.original);
+  return href ? <a href={href} rel="noreferrer" target="_blank" className="hover:text-[var(--edition-accent)]">{story.title}</a> : <>{story.title}</>;
+}
+
+function Origin({ story }: { story: Story }) {
+  const href = safe(story.links?.original);
+  return href ? <a href={href} rel="noreferrer" target="_blank" className="mt-3 inline-flex items-center gap-0.5 text-xs font-medium text-[var(--edition-accent)] hover:underline">原文 <ArrowUpRight className="h-3 w-3" /></a> : null;
+}
+
+function HeadlinePicture({ image, onError }: { image: HeadlineImage; onError: () => void }) {
+  const url = safe(image.url);
+  if (!url) return null;
+  return <figure className="edition-headline-picture m-0 overflow-hidden rounded-lg bg-[var(--edition-surface)]"
+    style={{ aspectRatio: image.aspectRatio ?? (image.width && image.height ? image.width / image.height : 16 / 9) }}>
+    <a href={url} target="_blank" rel="noreferrer" aria-label="查看头条原图" className="block h-full w-full focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary">
+      <img src={url} alt={image.alt || ""} width={image.width} height={image.height}
+        referrerPolicy="no-referrer" decoding="async" className="block h-full w-full object-cover" onError={onError} />
+    </a>
+  </figure>;
+}
+
+function EditionArticle({ report, kind, period }: { report: Report; kind: Kind; period: string }) {
+  const [image, setImage] = useState<HeadlineImage>();
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: number | undefined;
+    let checks = 0;
+    const load = () => {
+      void request<{image?: HeadlineImage; pending?: boolean}>(`/ai/reports/editions/${kind}/${encodeURIComponent(period)}/headline-image`, controller.signal)
+        .then(payload => {
+          if (controller.signal.aborted) return;
+          if (payload.image) setImage(payload.image);
+          else if (payload.pending && ++checks < 12) timer = window.setTimeout(load, 1000);
+        }).catch(() => undefined);
+    };
+    load();
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [kind, period]);
+  const sections = (report.sections || []).filter(section => section.items?.length);
+  const stories = sections.flatMap(section => section.items || []);
+  const flashes = report.flashes || [];
+  const headline = report.headline || report.lead?.title;
+  const leadStory = [...stories, ...(report.highlights || [])].find(story => story.title === headline);
+  const picks = (report.highlights || stories).filter(story => story.title !== headline).slice(0, 3);
+  const periodLabel = editionPeriod(report, kind, period);
+  const dayNumber = kind === "weekly" ? period.slice(-2) : (kind === "daily" ? report.date || period : report.month || period).slice(-2);
+  const weekDay = kind === "daily" ? WEEKDAYS[new Date(`${report.date || period}T12:00:00Z`).getUTCDay()] : undefined;
+  const canonical = safe(report.links?.aihot || report.attribution?.url);
+  const inlineCover = image?.layout === "inline" || (image?.layout == null && Boolean(image?.width && image.height && image.width / image.height < 1.2));
+  const cover = image ? <HeadlinePicture image={image} onError={() => setImage(undefined)} /> : null;
+  return <article className="edition-report min-w-0">
+    <header className="edition-masthead">
+      <p className="text-xs text-[var(--edition-muted)]">{periodLabel}{weekDay ? ` · 星期${weekDay}` : ""}</p>
+      <div className="edition-masthead-content flex items-center justify-between gap-4 py-5">
+        <div>
+          <h1 className="edition-masthead-title text-3xl font-black tracking-tight">AI {LABELS[kind]}</h1>
+          {canonical && <a href={canonical} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--edition-muted)] hover:text-[var(--edition-accent)]">{report.attribution?.name || "AIHOT"} 原刊 <ArrowUpRight className="h-3 w-3" /></a>}
+        </div>
+        <div className="flex shrink-0 items-baseline gap-1 border-l border-[var(--edition-line)] pl-2 font-mono text-[var(--edition-accent)] sm:pl-6"><span className="text-3xl font-semibold leading-none sm:text-7xl">{dayNumber}</span><span className="text-xs">{kind === "weekly" ? "周" : kind === "monthly" ? "月" : "日"}</span></div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 border-y border-[var(--edition-line)] py-3 text-xs text-[var(--edition-muted)]"><BookOpen className="h-3.5 w-3.5" /><span>{stories.length} 件大事</span>{flashes.length > 0 && <span>· {flashes.length} 条快讯</span>}</div>
+    </header>
+    {report.overview && <section className="mt-4 border-l-2 border-[var(--edition-accent)] bg-[var(--edition-tint)] px-4 py-3"><h2 className="text-xs font-bold text-[var(--edition-accent)]">本期导读</h2><p className="mt-1 text-sm leading-7">{report.overview}</p></section>}
+    <section className="edition-feature border-b border-[var(--edition-line)]">
+      <div className="edition-headline-column min-w-0 py-7">
+        {headline && <>
+          <p className="text-xs font-bold tracking-wide text-[var(--edition-accent)]">头条</p>
+          <div className="edition-headline-top mt-3 flex min-w-0 flex-col gap-4">
+            <h2 className="edition-headline-title break-words font-black">{leadStory ? <StoryTitle story={leadStory} /> : headline}</h2>
+            {!inlineCover && cover}
+          </div>
+          <div className={inlineCover && cover ? "edition-headline-split mt-4 grid items-start gap-4" : "mt-3"}>
+            {(report.lead?.leadParagraph || leadStory?.summary) &&
+              <p className="min-w-0 break-words text-[15px] leading-[1.85]">{report.lead?.leadParagraph || leadStory?.summary}</p>}
+            {inlineCover && cover}
+          </div>
+          {leadStory && <Origin story={leadStory} />}
+        </>}
+      </div>
+      <aside className="edition-picks min-w-0 border-t border-[var(--edition-line)] py-7">
+        {picks.length > 0 && <><h2 className="font-semibold">{kind === "daily" ? "今日看点" : kind === "weekly" ? "本周看点" : "本月看点"}</h2>
+          <ol className="mt-1 divide-y divide-[var(--edition-line)]">{picks.map((story, i) => <li key={`${i}:${story.title}`} className="flex items-baseline gap-2 py-2 text-sm"><span className="font-mono text-[var(--edition-accent)]">{i + 1}</span><StoryTitle story={story} /></li>)}</ol></>}
+        {(sections.length > 0 || flashes.length > 0) && <><h2 className="mt-4 font-semibold">本期版面</h2><ol className="mt-1 text-sm">
+          {sections.map((section, i) => <li key={i}><a href={`#report-section-${i}`} className="flex gap-2 py-1.5 hover:text-[var(--edition-accent)]"><span className="font-mono text-[var(--edition-accent)]">{String(i + 1).padStart(2, "0")}</span><span className="flex-1">{section.label}</span><span className="text-[var(--edition-muted)]">{section.items?.length} 件</span></a></li>)}
+          {flashes.length > 0 && <li><a href="#report-flashes" className="flex justify-between py-1.5 hover:text-[var(--edition-accent)]"><span>快讯</span><span className="text-[var(--edition-muted)]">{flashes.length} 条</span></a></li>}
+        </ol></>}
+      </aside>
+    </section>
+    {sections.map((section, i) => <section id={`report-section-${i}`} key={`${i}:${section.label}`} className="edition-section scroll-mt-4">
+      <h2 className="edition-section-title flex items-baseline gap-3 border-b border-[var(--edition-line)] pb-3 font-black"><span className="font-mono text-[var(--edition-accent)]">{String(i + 1).padStart(2, "0")}</span>{section.label}</h2>
+      {section.summary && <p className="mt-3 bg-[var(--edition-tint)] px-3 py-2 text-sm leading-6">{section.summary}</p>}
+      <div className="edition-section-stories grid">{section.items?.map((story, j) => <article key={`${j}:${story.title}`} className="edition-story min-w-0 border-b border-[var(--edition-line)] py-6">
+        {story.source?.name && <p className="truncate text-xs text-[var(--edition-muted)]">{story.source.name}</p>}
+        <h3 className="mt-2 break-words font-bold leading-normal"><StoryTitle story={story} /></h3>
+        {story.summary && <p className="mt-2 break-words text-[15px] leading-[1.85]">{story.summary}</p>}
+        <Origin story={story} />
+      </article>)}</div>
+    </section>)}
+    {flashes.length > 0 && <section id="report-flashes" className="edition-section scroll-mt-4"><h2 className="edition-section-title border-b border-[var(--edition-line)] pb-3 font-black">快讯</h2>
+      <ul className="divide-y divide-[var(--edition-line)]">{flashes.map((story, i) => <li key={i} className="flex items-baseline gap-3 py-2.5 text-sm"><span className="font-mono text-xs text-[var(--edition-accent)]">{String(i + 1).padStart(2, "0")}</span><StoryTitle story={story} /></li>)}</ul>
+    </section>}
+  </article>;
 }
 
 export function AIDaily() {
-  const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const kind = validKind(searchParams.get("kind"));
-  const requestedPeriod = searchParams.get("period") || "";
-  const [archive, setArchive] = useState<ArchiveItem[]>([]);
-  const [period, setPeriod] = useState(requestedPeriod);
-  const [report, setReport] = useState<DailyReport | PeriodReport | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [stale, setStale] = useState(false);
-  const [fetchedAt, setFetchedAt] = useState<string | undefined>();
-  const [error, setError] = useState<string | null>(null);
-  const requestRef = useRef<{ id: number; controller: AbortController } | null>(null);
-  const skipNextUrlLoad = useRef<string | null>(null);
-
-  const load = async (targetKind: ReportKind, targetPeriod = "", force = false) => {
-    requestRef.current?.controller.abort();
-    const requestId = (requestRef.current?.id || 0) + 1;
-    const controller = new AbortController();
-    requestRef.current = { id: requestId, controller };
-    const isCurrent = () => requestRef.current?.id === requestId;
-    setLoading(true); setError(null);
-    try {
-      const headers = authHeaders();
-      let entries = force ? undefined : reportArchives.get(targetKind);
-      if (!entries) {
-        const refreshQuery = force && targetKind !== "daily" ? "&refresh=true" : "";
-        const indexResponse = await fetch(apiUrl(`/ai/reports/index?kind=${targetKind}${refreshQuery}`), { headers, signal: controller.signal });
-        const indexBody = await indexResponse.json();
-        if (!indexResponse.ok) throw new Error(indexBody.detail || "报告索引暂不可用");
-        entries = (indexBody.items || []) as ArchiveItem[];
-        reportArchives.set(targetKind, entries);
-      }
-      if (!isCurrent()) return;
-      setArchive(entries);
-      const selected = targetPeriod || entries[0]?.period || "";
-      setPeriod(selected);
-      const cacheKey = `${targetKind}:${selected}`;
-      const cached = force ? undefined : reportCache.get(cacheKey);
-      if (cached) {
-        setReport(cached.report);
-        setStale(cached.stale);
-        setFetchedAt(cached.fetchedAt);
-        if (selected && (selected !== targetPeriod || targetKind !== kind)) {
-          skipNextUrlLoad.current = cacheKey;
-          setSearchParams({ kind: targetKind, period: selected }, { replace: true });
-        }
-        return;
-      }
-      let response: Response;
-      const refreshQuery = force && targetKind !== "daily" ? "?refresh=true" : "";
-      if (targetKind === "daily") response = await fetch(apiUrl(selected ? `/ai/reports/daily/${selected}` : "/ai/reports/daily/latest"), { headers, signal: controller.signal });
-      else response = await fetch(apiUrl(`${selected ? `/ai/reports/${targetKind}/${selected}` : `/ai/reports/${targetKind}/latest`}${refreshQuery}`), { headers, signal: controller.signal });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || "报告暂不可用");
-      const nextReport = (body.report || body) as DailyReport | PeriodReport;
-      const nextStale = Boolean(body.stale);
-      const nextFetchedAt = body.fetchedAt || body.report?.fetchedAt || body.report?.generatedAt;
-      reportCache.set(cacheKey, { report: nextReport, stale: nextStale, fetchedAt: nextFetchedAt });
-      if (!isCurrent()) return;
-      setReport(nextReport);
-      setStale(nextStale);
-      setFetchedAt(nextFetchedAt);
-      if (selected && (selected !== targetPeriod || targetKind !== kind)) {
-        skipNextUrlLoad.current = cacheKey;
-        setSearchParams({ kind: targetKind, period: selected }, { replace: true });
-      }
-    } catch (e) {
-      if (!isCurrent() || (e instanceof DOMException && e.name === "AbortError")) return;
-      setReport(null); setFetchedAt(undefined); setError(e instanceof Error ? e.message : "报告暂不可用");
-    } finally { if (isCurrent()) setLoading(false); }
-  };
-
+  const [params, setParams] = useSearchParams();
+  const paramKind = params.get("kind");
+  const kind: Kind = paramKind === "weekly" || paramKind === "monthly" ? paramKind : "daily";
+  const requested = params.get("period") || "latest";
+  const [archive, setArchive] = useState<{ kind: Kind; entries: Edition[] }>();
+  const [edition, setEdition] = useState<{ key: string; report: Report; period: string }>();
+  const [error, setError] = useState<{ key: string; text: string }>();
+  const key = `${kind}:${requested}`;
   useEffect(() => {
-    const selectionKey = `${kind}:${requestedPeriod}`;
-    if (skipNextUrlLoad.current === selectionKey) {
-      skipNextUrlLoad.current = null;
-      return;
-    }
-    void load(kind, requestedPeriod);
-    return () => requestRef.current?.controller.abort();
-  }, [kind, requestedPeriod]);
-  const dailyReport = report?.kind === "daily" ? report : null;
-  const periodReport = report?.kind !== "daily" ? report : null;
-  const topics = dailyReport?.hotTopics || [];
-  const items = dailyReport?.items || [];
-  const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
-  const openStory = (topic: HotFeedTopic, item?: HotFeedItem) => { const id = topic.links?.story?.split("/").pop() || item?.links?.story?.split("/").pop() || topic.id; navigate(`/ai/news/story/${id}`, { state: { fallback: { title: topic.title, summary: item?.summary, reason: item?.reason, category: item?.category, score: item?.score ?? topic.score, source: item?.source || topic.source, publishedAt: item?.publishedAt || topic.latestAt, links: { original: item?.links?.original || topic.links?.original } } } }); };
+    const controller = new AbortController();
+    void request<{ items: Edition[] }>(`/ai/reports/editions/${kind}`, controller.signal)
+      .then(payload => { if (!controller.signal.aborted) setArchive({ kind, entries: payload.items }); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [kind]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void request<{ period: string; report: Report }>(`/ai/reports/editions/${kind}/${encodeURIComponent(requested)}`, controller.signal)
+      .then(payload => { if (!controller.signal.aborted) setEdition({ key, ...payload }); })
+      .catch((reason: Error) => { if (!controller.signal.aborted) setError({ key, text: reason.message }); });
+    return () => controller.abort();
+  }, [kind, requested, key]);
+  const active = edition?.key === key ? edition : undefined;
+  const currentArchive = archive?.kind === kind ? archive.entries : [];
+  function choose(value: Kind, period?: string) {
+    setParams(period ? { kind: value, period } : { kind: value });
+    document.querySelector("main")?.scrollTo(0, 0);
+  }
+  return <div className="ai-report-paper">
+    <div className="edition-archive-rail">
+      <nav aria-label="报告周期" className="mb-3"><PeriodButtons kind={kind} choose={choose} /></nav>
+      <Archive entries={currentArchive} kind={kind} active={active?.period || requested} choose={period => choose(kind, period)} />
+    </div>
+    <div className="edition-reading-area min-w-0">
+      <div className="edition-reading-inner">
+        <nav aria-label="报告周期" className="mb-4"><PeriodButtons kind={kind} choose={choose} /></nav>
+        <div className="edition-reading-archive mb-4">
+          <Archive compact entries={currentArchive} kind={kind} active={active?.period || requested} choose={period => choose(kind, period)} />
+        </div>
+        {active ? <EditionArticle key={`${kind}:${active.period}`} report={active.report} kind={kind} period={active.period} /> : <p role="status" className="py-6 text-sm">{error?.key === key ? error.text : "加载中…"}</p>}
+      </div>
+    </div>
+  </div>;
+}
 
-  return <div><PageHeader title="AI 日报" subtitle="日报、周报、月报 · FT-Research AI 资讯档案" actions={<button type="button" onClick={() => void load(kind, period, true)} disabled={loading} aria-busy={loading} aria-label={loading ? "正在刷新 AI 日报" : "刷新 AI 日报"} className="rounded-lg border border-border px-3 py-1.5 text-sm disabled:opacity-50"><RefreshCw className={`mr-1 inline h-4 w-4 ${loading ? "animate-spin" : ""}`} />{loading ? "刷新中…" : "刷新"}</button>} />{stale && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">当前展示缓存内容{fetchedAt ? `，缓存时间：${new Date(fetchedAt).toLocaleString("zh-CN")}` : ""}。</p>}{error && <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">{error}</p>}<div className="report-layout grid gap-5"><ArchiveRail kind={kind} items={archive} period={period} onSelect={(value) => setSearchParams({ kind, period: value })} onKindSelect={(value) => setSearchParams({ kind: value, period: "" })} /><main className="min-w-0">{loading ? <div className="space-y-3"><div className="h-32 animate-pulse rounded-xl bg-muted/40" /><div className="h-48 animate-pulse rounded-xl bg-muted/40" /></div> : kind === "daily" ? <><div className="mb-4 rounded-lg border border-border/50 bg-muted/20 p-3 text-sm text-muted-foreground">{dailyReport?.period || period || "暂无日期"} · 前一自然日 AI 热点快照{dailyReport?.hotTopics?.length ? ` · ${dailyReport.hotTopics.length} 条热点` : ""}</div><AIHotFeed topics={topics} items={items} onOpenStory={openStory} />{itemById.size === 0 && topics.length > 0 && <p className="mt-3 text-xs text-muted-foreground">部分事件摘要将在详情页补充。</p>}</> : periodReport ? <PeriodReport report={periodReport} /> : <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground">暂无{kind === "weekly" ? "周报" : "月报"}内容。</p>}</main></div></div>;
+function PeriodButtons({ kind, choose }: { kind: Kind; choose: (value: Kind) => void }) {
+  return <div className="inline-flex max-w-full flex-wrap gap-1 rounded-lg border border-[var(--edition-line)] bg-[var(--edition-surface)] p-0.5">
+    {(Object.keys(LABELS) as Kind[]).map(value => <button key={value} type="button" aria-pressed={kind === value} onClick={() => choose(value)}
+      className={`whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm font-semibold hover:text-[var(--edition-accent)] sm:px-4 ${kind === value ? "bg-[var(--edition-tint)] text-[var(--edition-accent)]" : "text-[var(--edition-muted)]"}`}>{LABELS[value]}</button>)}
+  </div>;
 }

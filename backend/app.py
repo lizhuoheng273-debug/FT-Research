@@ -19,6 +19,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -41,7 +42,7 @@ import reflection as reflect_layer
 import signals
 import glm_config
 from financial_news import FinancialNewsScheduler, FinancialNewsService
-from aihot_api import AihotClient
+from aihot_api import AihotClient, REPORT_BASE_URL
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
 from report_scheduler import DailyReportScheduler
@@ -135,6 +136,7 @@ app.state.run_cleanup_scheduler = RunCleanupScheduler(app.state.run_manager)
 install_auth_routes(app)
 install_conversation_routes(app)
 aihot_client = AihotClient()
+aihot_edition_client = AihotClient(base_url=os.environ.get("AIHOT_BASE_URL") or REPORT_BASE_URL)
 report_archive = ReportArchive()
 aihot_reports = AihotReportClient(report_archive)
 
@@ -446,6 +448,34 @@ def ai_reports_index(kind: str = Query("daily"), refresh: bool = Query(False), f
     else:
         items = aihot_reports.list_periods(kind, force=refresh or force)
     return {"kind": kind, "items": items}
+
+
+@app.get("/api/ai/reports/editions/{kind}")
+def ai_reports_editions(kind: Literal["daily", "weekly", "monthly"]):
+    try:
+        return aihot_edition_client.report_editions(kind)
+    except Exception as exc:
+        raise HTTPException(502, "报告归档暂不可用") from exc
+
+
+@app.get("/api/ai/reports/editions/{kind}/{period}")
+def ai_reports_edition(kind: Literal["daily", "weekly", "monthly"], period: str):
+    try:
+        return aihot_edition_client.report_edition(kind, period)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            raise HTTPException(404, "该期报告暂无内容") from exc
+        raise HTTPException(502, "报告暂不可用") from exc
+    except Exception as exc:
+        raise HTTPException(502, "报告暂不可用") from exc
+
+
+@app.get("/api/ai/reports/editions/{kind}/{period}/headline-image")
+def ai_reports_headline_image(kind: Literal["daily", "weekly", "monthly"], period: str):
+    try:
+        return aihot_edition_client.edition_headline_image(kind, period)
+    except ValueError as exc:
+        raise HTTPException(400, "报告期格式不正确") from exc
 
 
 @app.get("/api/ai/reports/daily/latest")
