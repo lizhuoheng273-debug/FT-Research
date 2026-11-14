@@ -758,6 +758,10 @@ def test_financial_news_endpoints_expose_overview_feed_detail_and_status(monkeyp
     monkeypatch.setattr(app.financial_news_service, "status", lambda: {"quickIntervalSeconds": 180, "rssIntervalSeconds": 1800})
     client = TestClient(app.app)
     assert client.get("/api/finance/news/overview").json()["data"]["urgent"][0]["id"] == "event-1"
+    compact = client.get("/api/finance/news/overview?compact=true").json()["data"]
+    assert compact["urgent"][0]["id"] == "event-1"
+    assert "feed" not in compact
+    assert payload["feed"][0]["id"] == "event-1"
     assert client.get("/api/finance/news/feed?category=all&limit=20").status_code == 200
     assert client.get("/api/finance/news/events/event-1").json()["data"]["id"] == "event-1"
     assert client.get("/api/finance/news/status").json()["data"]["quickIntervalSeconds"] == 180

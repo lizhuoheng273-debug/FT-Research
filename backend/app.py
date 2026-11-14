@@ -721,9 +721,15 @@ def radar_refresh():
 
 
 @app.get("/api/finance/news/overview")
-def financial_news_overview():
+def financial_news_overview(compact: bool = Query(False)):
     """紧要快讯、热门事件与来源状态；只读取后台缓存。"""
-    return {"data": financial_news_service.overview()}
+    overview = financial_news_service.overview()
+    if compact:
+        # The board does not render the rolling event library. Keep the
+        # complete response available to existing API callers, but avoid
+        # transferring thousands of reports on every page poll.
+        overview = {key: value for key, value in overview.items() if key != "feed"}
+    return {"data": overview}
 
 
 @app.post("/api/finance/news/refresh")

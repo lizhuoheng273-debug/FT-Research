@@ -328,7 +328,7 @@ export interface FinancialNewsOverview {
   };
   hot: FinancialNewsItem[]; aShareHot?: FinancialNewsItem[]; candidates?: FinancialNewsItem[];
   globalObservation?: FinancialNewsItem[]; globalHighlights?: FinancialNewsItem[];
-  feed: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
+  feed?: FinancialNewsItem[]; sourceStatus: FinancialNewsSourceStatus[];
   eventLibraryHours?: number; aiReview?: FinancialNewsAiReview;
   hotRank?: FinancialHotRankItem[]; hotRankGeneratedAt?: string | null;
   hotRankSourceStatus?: FinancialNewsSourceStatus[];
@@ -488,7 +488,7 @@ export const api = {
   hkCashflow: (symbol: string) => get<HkCashflow>(`/global/hk/cashflow?symbol=${encodeURIComponent(symbol)}`),
   radar: () => get<RadarData>("/radar"),
   radarRefresh: () => request<RadarData>("/radar/refresh", "POST"),
-  financialNewsOverview: (signal?: AbortSignal) => request<FinancialNewsOverview>("/finance/news/overview", "GET", undefined, signal),
+  financialNewsOverview: (signal?: AbortSignal) => request<FinancialNewsOverview>("/finance/news/overview?compact=true", "GET", undefined, signal),
   financialNewsRefresh: (signal?: AbortSignal) => request<FinancialNewsRefreshResponse>("/finance/news/refresh", "POST", undefined, signal),
   financialNewsCalendar: (signal?: AbortSignal) => request<FinancialCalendarResponse>("/finance/news/calendar", "GET", undefined, signal),
   financialNewsCalendarRefresh: (signal?: AbortSignal) => request<FinancialCalendarRefreshResponse>("/finance/news/calendar/refresh", "POST", undefined, signal),
