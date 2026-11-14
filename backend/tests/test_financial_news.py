@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 import threading
+import sys
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -8,6 +10,16 @@ from financial_news import FinancialNewsScheduler, FinancialNewsService, hot_sco
 
 
 NOW = datetime(2026, 8, 31, 8, 0, tzinfo=timezone.utc)
+
+
+def test_missing_akshare_quick_source_does_not_prevent_startup(monkeypatch):
+    def eastmoney():
+        return ["latest"]
+
+    monkeypatch.setitem(sys.modules, "akshare", SimpleNamespace(stock_info_global_em=eastmoney))
+    fetchers = FinancialNewsService._default_fetchers()
+    assert list(fetchers) == ["东方财富快讯"]
+    assert fetchers["东方财富快讯"]() == ["latest"]
 
 
 def _item(**overrides):

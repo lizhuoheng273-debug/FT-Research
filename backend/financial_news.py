@@ -335,12 +335,19 @@ class FinancialNewsService:
             import akshare as ak
         except ImportError:
             return {}
-        return {
-            "财联社电报": lambda: ak.stock_info_global_cls(symbol="重点"),
-            "同花顺快讯": ak.stock_info_global_ths,
-            "东方财富快讯": ak.stock_info_global_em,
-            "新浪财经快讯": ak.stock_info_global_sina,
-        }
+        fetchers: dict[str, Callable[[], Any]] = {}
+        cls_fetcher = getattr(ak, "stock_info_global_cls", None)
+        if callable(cls_fetcher):
+            fetchers["财联社电报"] = lambda: cls_fetcher(symbol="重点")
+        for label, attribute in (
+            ("同花顺快讯", "stock_info_global_ths"),
+            ("东方财富快讯", "stock_info_global_em"),
+            ("新浪财经快讯", "stock_info_global_sina"),
+        ):
+            fetcher = getattr(ak, attribute, None)
+            if callable(fetcher):
+                fetchers[label] = fetcher
+        return fetchers
 
     def normalize_quick_rows(self, rows: Any, *, source: str) -> list[dict[str, Any]]:
         if hasattr(rows, "to_dict"):
