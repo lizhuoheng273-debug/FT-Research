@@ -419,18 +419,54 @@ class FinancialNewsService:
 
     def cluster_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         groups: list[list[dict[str, Any]]] = []
+        group_times: list[datetime | None] = []
+        group_titles: list[tuple[str, str, set[str], bool]] = []
+        by_bigram: dict[str, list[int]] = {}
+        by_title: dict[str, list[int]] = {}
         ordered = sorted(items, key=lambda item: item.get("publishedAt") or "", reverse=True)
         for item in ordered:
             published = _parse_datetime(item.get("publishedAt"))
             target = None
-            for group in groups:
-                group_time = _parse_datetime(group[0].get("publishedAt"))
+            title = str(item.get("title") or "")
+            normalized = _normalized_title(headline(title))
+            full_title = _normalized_title(title)
+            bigrams = _bigrams(normalized) if normalized else set()
+            roundup = is_roundup(title)
+            # Only groups sharing a title or bigram can satisfy _similar.
+            candidate_counts: dict[int, int] = {group_id: 0 for group_id in by_title.get(full_title, ())}
+            candidate_counts.update({group_id: 0 for group_id in by_title.get(normalized, ())})
+            for bigram in bigrams:
+                for group_id in by_bigram.get(bigram, ()):
+                    candidate_counts[group_id] = candidate_counts.get(group_id, 0) + 1
+            for group_id in sorted(candidate_counts):
+                group = groups[group_id]
+                group_time = group_times[group_id]
                 close_in_time = not published or not group_time or abs((published - group_time).total_seconds()) <= EVENT_LIBRARY_HOURS * 3600
-                if close_in_time and _similar(item.get("title", ""), group[0].get("title", "")):
+                if not close_in_time:
+                    continue
+                other_full, other_normalized, other_bigrams, other_roundup = group_titles[group_id]
+                if roundup or other_roundup:
+                    plausible = full_title == other_full
+                elif normalized == other_normalized:
+                    plausible = bool(normalized)
+                else:
+                    shorter, longer = sorted((len(normalized), len(other_normalized)))
+                    substring = bool(shorter and shorter / longer >= 0.60 and (normalized in other_normalized or other_normalized in normalized))
+                    # Jaccard >= 0.62 needs this minimum shared-bigram count.
+                    enough_overlap = candidate_counts[group_id] * 1.62 >= 0.62 * (len(bigrams) + len(other_bigrams))
+                    plausible = substring or enough_overlap
+                if plausible and _similar(title, group[0].get("title", "")):
                     target = group
                     break
             if target is None:
+                group_id = len(groups)
                 groups.append([item])
+                group_times.append(published)
+                group_titles.append((full_title, normalized, bigrams, roundup))
+                for key in {full_title, normalized}:
+                    by_title.setdefault(key, []).append(group_id)
+                for bigram in bigrams:
+                    by_bigram.setdefault(bigram, []).append(group_id)
             else:
                 target.append(item)
 
