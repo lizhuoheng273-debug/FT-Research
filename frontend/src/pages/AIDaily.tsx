@@ -216,8 +216,8 @@ export function AIDaily() {
     </div>
     <div className="edition-reading-area min-w-0">
       <div className="edition-reading-inner">
-        <nav aria-label="报告周期" className="mb-4"><PeriodButtons kind={kind} choose={choose} /></nav>
         <div className="edition-reading-archive mb-4">
+          <nav aria-label="报告周期" className="mb-4"><PeriodButtons kind={kind} choose={choose} /></nav>
           <Archive compact entries={currentArchive} kind={kind} active={active?.period || requested} choose={period => choose(kind, period)} />
         </div>
         {active ? <EditionArticle key={`${kind}:${active.period}`} report={active.report} kind={kind} period={active.period} /> : <p role="status" className="py-6 text-sm">{error?.key === key ? error.text : "加载中…"}</p>}
