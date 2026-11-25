@@ -24,7 +24,7 @@ const NAV = [
   { to: "/ai/news", icon: Radar, label: "AI 热点资讯", section: "AI 板块" },
   { to: "/ai/daily", icon: FileText, label: "AI 日报" },
   { to: "/finance/review", icon: Activity, label: "每日复盘", section: "金融板块" },
-  { to: "/finance/news", icon: Newspaper, label: "金融市场资讯" },
+  { to: "/finance/news", icon: Newspaper, label: "金融日报" },
   { to: "/finance/watchlist", icon: Star, label: "自选股" },
   { to: "/finance/debate", icon: Swords, label: "多空辩论" },
 ];
@@ -33,7 +33,7 @@ export function Layout() {
   const { pathname } = useLocation();
   const { identity, signOut } = useAuth();
   const stockAiWorkspace = /^\/finance\/stocks\/\d{6}\/ai$/.test(pathname);
-  const reportPage = pathname === "/ai/daily";
+  const reportPage = pathname === "/ai/daily" || pathname === "/finance/news";
   const { dark, toggle } = useDarkMode();
   const [sidebarPreference, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
   const [narrowScreen, setNarrowScreen] = useState(() => window.matchMedia("(max-width: 639px)").matches);

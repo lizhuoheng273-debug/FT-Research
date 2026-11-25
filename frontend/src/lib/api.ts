@@ -368,6 +368,171 @@ export interface FinancialNewsFollowingResponse {
   hasMore: boolean; total: number;
 }
 
+export interface FinancialDailyMarketItem {
+  name: string; value: string; change: string; direction: "up" | "down" | "flat";
+}
+export interface FinancialDailyStoryCard {
+  reportKey: string;
+  storyId: string;
+  milestoneId?: string;
+  milestoneCount: number;
+  reportCount: number;
+  bucket: string;
+  sectionCode?: string;
+  sectionName?: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  sourceName: string;
+  sourceTierGrade?: string;
+  official?: boolean;
+  publishedAt: string | null;
+  relativeTime?: string;
+  originalUrl: string;
+  independentCount?: number;
+}
+export interface FinancialDailyPick {
+  reportKey: string;
+  storyId: string;
+  sectionCode: string;
+  sectionName: string;
+  title: string;
+  summary: string;
+}
+export interface FinancialDailySection {
+  key: string;
+  code: string;
+  name: string;
+  note: string;
+  items: FinancialDailyStoryCard[];
+}
+export interface FinancialDailyEdition {
+  editionKey: string;
+  editionDate: string;
+  editionType: "morning" | "evening";
+  editionTag: string;
+  publishTimeLabel: string;
+  dateLabel: string;
+  dayNumber: string;
+  generatedAt: string;
+  overview: string;
+  marketStrip: {
+    title: string;
+    note: string;
+    items: FinancialDailyMarketItem[];
+    partial?: boolean;
+  };
+  urgentBanner?: {
+    reportKey: string;
+    storyId: string;
+    title: string;
+    sourceName: string;
+    time: string;
+  } | null;
+  lead: FinancialDailyStoryCard | null;
+  keyPicks: FinancialDailyPick[];
+  sections: FinancialDailySection[];
+  calendar?: FinancialCalendarResponse;
+  coverage?: {
+    activeSources: number;
+    totalSources: number;
+    rawReports: number;
+    trackedStories: number;
+    selectedCount: number;
+    sources: Array<{ name: string; ok: boolean; count: number; cache: string; error?: string | null }>;
+  };
+}
+export interface FinancialDailyEditionSummary {
+  editionKey: string;
+  editionDate: string;
+  editionType: "morning" | "evening";
+  publishTimeLabel: string;
+  leadTitle: string;
+  updatedAt: string;
+}
+export interface FinancialReportFollowup {
+  reportKey: string;
+  title: string;
+  sourceName: string;
+  publishedAt: string | null;
+  relativeTime: string;
+  originalUrl: string;
+  role: string;
+}
+export interface FinancialReportDetail {
+  reportKey: string;
+  title: string;
+  summary: string;
+  publishedAt: string | null;
+  timeLabel: string;
+  relativeTime: string;
+  sourceName: string;
+  sourceTier: string;
+  originalUrl: string;
+  bucket: string;
+  bucketName: string;
+  tags: string[];
+  relatedStocks?: string[];
+  eventSummary?: {
+    storyId: string;
+    title: string;
+    reportCount: number;
+    milestoneCount: number;
+  } | null;
+  followups: FinancialReportFollowup[];
+}
+export interface FinancialTrackedEventReport {
+  reportKey: string;
+  title: string;
+  sourceName: string;
+  sourceTier: string;
+  publishedAt: string | null;
+  timeLabel: string;
+  relativeTime?: string;
+  originalUrl: string;
+}
+export interface FinancialTrackedEventMilestone {
+  milestoneId: string;
+  title: string;
+  occurredAt: string;
+  timeLabel: string;
+  reportCount: number;
+  sourceSummary: string;
+  marketNote?: string;
+  representativeReportKey: string;
+  reports: FinancialTrackedEventReport[];
+}
+export interface FinancialTrackedEvent {
+  storyId: string;
+  title: string;
+  bucket: string;
+  bucketName: string;
+  statusTag: string;
+  reportCount: number;
+  sourceCount: number;
+  firstReportLabel: string;
+  latestUpdateLabel: string;
+  overview: {
+    paragraphs: string[];
+    latestMilestoneSummary?: string;
+    generatedBy?: string;
+  };
+  milestones: FinancialTrackedEventMilestone[];
+  reports: FinancialTrackedEventReport[];
+  whyHot: {
+    heatIndex: number;
+    participants48h: number;
+    newParticipants6h: number;
+    officialCount: number;
+    headline: string;
+    detail: string;
+    badges: string[];
+  };
+  heatSeries: Array<{ label: string; value: number; participants?: number; milestone?: string }>;
+  tags: string[];
+  recordMeta: { firstAt: string; latestAt: string; nodeCount: number };
+}
+
 // 产业信号 · GPU 租金
 export interface GpuSpot {
   gpu: string; median?: number; asof_ts?: number;
@@ -497,6 +662,17 @@ export const api = {
   financialNewsStatus: () => get<FinancialNewsStatus>("/finance/news/status"),
   financialNewsFollowing: (codes: string[], page = 1, pageSize = 20, signal?: AbortSignal) =>
     request<FinancialNewsFollowingResponse>("/finance/news/following", "POST", { codes, page, pageSize }, signal),
+  financialDailyEditions: (signal?: AbortSignal) => request<FinancialDailyEditionSummary[]>("/finance/daily/editions", "GET", undefined, signal),
+  financialDailyLatest: (edition?: "morning" | "evening", signal?: AbortSignal) =>
+    request<FinancialDailyEdition>(`/finance/daily/latest${edition ? `?edition=${edition}` : ""}`, "GET", undefined, signal),
+  financialDailyEdition: (editionKey: string, signal?: AbortSignal) =>
+    request<FinancialDailyEdition>(`/finance/daily/${encodeURIComponent(editionKey)}`, "GET", undefined, signal),
+  financialDailyRefresh: (edition?: "morning" | "evening", signal?: AbortSignal) =>
+    request<FinancialDailyEdition>(`/finance/daily/refresh${edition ? `?edition=${edition}` : ""}`, "POST", undefined, signal),
+  financialNewsReportDetail: (reportKey: string, signal?: AbortSignal) =>
+    request<FinancialReportDetail>(`/finance/news/reports/${encodeURIComponent(reportKey)}`, "GET", undefined, signal),
+  financialNewsTrackedEvent: (storyId: string, signal?: AbortSignal) =>
+    request<FinancialTrackedEvent>(`/finance/news/tracked-events/${encodeURIComponent(storyId)}`, "GET", undefined, signal),
   gpuRent: () => get<GpuRentData>("/signals/gpu-rent"),
   gpuRentRefresh: () => request<GpuRentData>("/signals/gpu-rent/refresh", "POST"),
   portfolio: () => get<PortfolioData>("/portfolio"),

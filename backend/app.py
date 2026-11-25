@@ -42,6 +42,7 @@ import reflection as reflect_layer
 import signals
 import glm_config
 from financial_news import FinancialNewsScheduler, FinancialNewsService
+from financial_daily import FinancialDailyScheduler, FinancialDailyService
 from aihot_api import AihotClient, REPORT_BASE_URL
 from aihot_reports import AihotReportClient
 from report_archive import ReportArchive
@@ -74,6 +75,12 @@ _CALENDAR_REFRESH_COOLDOWN_SECONDS = 60
 market_review_service = market_review.market_review_service
 market_review_brief_service = MarketReviewBriefService()
 market_review_scheduler = PostCloseReviewScheduler(market_review_service, market_review_brief_service)
+financial_daily_service = FinancialDailyService(
+    financial_news_service,
+    market_review_service=market_review_service,
+    global_indices_fn=market.get_global_indices_snapshot,
+)
+financial_daily_scheduler = FinancialDailyScheduler(financial_daily_service)
 
 
 @asynccontextmanager
@@ -82,6 +89,7 @@ async def lifespan(_app: FastAPI):
         astock.prewarm_a_stock_universe()
         market_review_service.prewarm()
         financial_news_scheduler.start()
+        financial_daily_scheduler.start()
         market_review_scheduler.start()
         rss_catalog.start_scheduler(1800)
         getattr(_app.state, "run_cleanup_scheduler", None) and _app.state.run_cleanup_scheduler.start()
@@ -90,6 +98,7 @@ async def lifespan(_app: FastAPI):
     finally:
         getattr(_app.state, "run_cleanup_scheduler", None) and _app.state.run_cleanup_scheduler.stop()
         getattr(_app.state, "run_manager", None) and _app.state.run_manager.shutdown()
+        financial_daily_scheduler.stop()
         financial_news_scheduler.stop()
         market_review_scheduler.stop()
         rss_catalog.stop_scheduler()
@@ -813,6 +822,50 @@ def financial_news_calendar_refresh():
 @app.post("/api/finance/news/following")
 def financial_news_following(request: FinancialNewsFollowingReq):
     return {"data": financial_news_service.following(request.codes, page=request.page, page_size=request.pageSize)}
+
+
+@app.get("/api/finance/daily/editions")
+def financial_daily_editions(limit: int = Query(60, ge=1, le=120)):
+    return {"data": financial_daily_service.list_editions(limit=limit)}
+
+
+@app.get("/api/finance/daily/latest")
+def financial_daily_latest(edition: str | None = Query(None)):
+    edition_type = edition if edition in {"morning", "evening"} else None
+    return {"data": financial_daily_service.latest_edition(edition_type=edition_type)}
+
+
+@app.get("/api/finance/daily/{edition_key}")
+def financial_daily_edition(edition_key: str):
+    item = financial_daily_service.get_edition(edition_key)
+    if not item:
+        raise HTTPException(404, "该期金融日报暂未生成")
+    return {"data": item}
+
+
+@app.post("/api/finance/daily/refresh")
+def financial_daily_refresh(edition: str | None = Query(None)):
+    edition_type = edition if edition in {"morning", "evening"} else None
+    try:
+        return {"data": financial_daily_service.refresh_now(edition_type=edition_type)}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"金融日报刷新失败：{exc}") from exc
+
+
+@app.get("/api/finance/news/reports/{report_key}")
+def financial_news_report_detail(report_key: str):
+    detail = financial_daily_service.get_report_detail(report_key)
+    if not detail:
+        raise HTTPException(404, "该金融资讯报道不存在或已过期")
+    return {"data": detail}
+
+
+@app.get("/api/finance/news/tracked-events/{story_id}")
+def financial_news_tracked_event(story_id: str):
+    event = financial_daily_service.get_tracked_event(story_id)
+    if not event:
+        raise HTTPException(404, "该金融事件脉络不存在或已超出追踪周期")
+    return {"data": event}
 
 
 @app.get("/api/signals/gpu-rent")

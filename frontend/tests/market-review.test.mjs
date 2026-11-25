@@ -44,10 +44,9 @@ test("daily review modal launchers are keyboard-focusable buttons", () => {
   assert.match(daily, /<button\s+type=["']button["'][\s\S]*setModal\("turnover"\)[\s\S]*完整榜单/);
 });
 
-test("financial news keeps market quote cards out of the two-section page", () => {
+test("financial news keeps independent globalIndices calls out of the financial daily page", () => {
   assert.doesNotMatch(financial, /api\.globalIndices\(\)/);
-  assert.doesNotMatch(financial, /全球市场/);
-  assert.match(financial, /<GlobalHotList/);
+  assert.match(financial, /金融日报/);
   assert.match(financial, /<UpcomingEvents/);
   assert.doesNotMatch(financial, /我的关注/);
 });

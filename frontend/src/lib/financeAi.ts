@@ -1,4 +1,4 @@
-export type FinanceAiSource = "review" | "news" | "watchlist" | "index" | "stock" | "stock-panel" | "news-story";
+export type FinanceAiSource = "review" | "news" | "watchlist" | "index" | "stock" | "stock-panel" | "news-story" | "news-event";
 export type AiWorkspaceSource = FinanceAiSource | "ai-news" | "ai-daily";
 
 export interface FinanceAiTarget {
@@ -11,8 +11,9 @@ export interface FinanceAiTarget {
 
 export function buildFinanceAiKey(source: FinanceAiSource, identifiers: { code?: string; panel?: string; eventId?: string; date?: string } = {}): string {
   if (source === "review") return `review:${identifiers.date || "latest"}`;
-  if (source === "news") return "news";
+  if (source === "news") return `news:${identifiers.date || "latest"}`;
   if (source === "news-story") return `news-story:${identifiers.eventId || "unknown"}`;
+  if (source === "news-event") return `news-event:${identifiers.eventId || "unknown"}`;
   if (source === "watchlist") return "watchlist";
   if (source === "index") return `index:${identifiers.code || "unknown"}`;
   if (source === "stock") return `stock:${identifiers.code || "unknown"}`;
