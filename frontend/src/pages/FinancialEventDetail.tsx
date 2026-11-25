@@ -154,8 +154,8 @@ export function FinancialEventDetail() {
           </div>
 
           {tab === "overview" && (
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
-              <div className="space-y-5">
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="min-w-0 space-y-5">
                 {/* 先了解这件事 */}
                 <GlassCard>
                   <div className="mb-3 flex items-center justify-between gap-2">

@@ -137,9 +137,10 @@
     min-height: 100dvh;
     display: grid;
     grid-template-areas: "reading";
+    grid-template-columns: minmax(0, 1fr);
   }
-  .edition-reading-area { grid-area: reading; padding: 20px 16px 48px; }
-  .edition-reading-inner { width: 100%; max-width: 640px; margin-inline: auto; }
+  .edition-reading-area { grid-area: reading; min-width: 0; padding: 16px 12px 48px; }
+  .edition-reading-inner { width: 100%; min-width: 0; max-width: 640px; margin-inline: auto; }
   .edition-report { container: edition / inline-size; overflow-wrap: anywhere; }
   .edition-archive-rail { grid-area: rail; display: none; }
   .edition-headline-title { font-size: 32px; line-height: 1.28; letter-spacing: -0.03em; text-wrap: balance; }

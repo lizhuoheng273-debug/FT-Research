@@ -34,10 +34,11 @@ export function Layout() {
   const { identity, signOut } = useAuth();
   const stockAiWorkspace = /^\/finance\/stocks\/\d{6}\/ai$/.test(pathname);
   const reportPage = pathname === "/ai/daily" || pathname === "/finance/news";
+  const financeNewsSection = pathname === "/finance/news" || pathname.startsWith("/finance/news/");
   const { dark, toggle } = useDarkMode();
   const [sidebarPreference, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
   const [narrowScreen, setNarrowScreen] = useState(() => window.matchMedia("(max-width: 639px)").matches);
-  const compactReport = reportPage && narrowScreen;
+  const compactReport = (pathname === "/ai/daily" || financeNewsSection) && narrowScreen;
   const collapsed = sidebarPreference || compactReport;
   useEffect(() => {
     storageSet("vr-sidebar", sidebarPreference ? "collapsed" : "expanded");
@@ -147,8 +148,8 @@ export function Layout() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-auto">
-        <div className={cn("mx-auto", stockAiWorkspace ? "max-w-none px-3 py-3" : reportPage ? "max-w-none" : "max-w-6xl px-6 py-6")}>
+      <main className="min-w-0 flex-1 overflow-auto">
+        <div className={cn("mx-auto min-w-0", stockAiWorkspace ? "max-w-none px-3 py-3" : reportPage ? "max-w-none" : "max-w-6xl px-3.5 py-4 sm:px-6 sm:py-6")}>
           <Outlet />
         </div>
       </main>

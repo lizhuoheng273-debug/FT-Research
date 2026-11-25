@@ -447,7 +447,7 @@ export function FinancialNews() {
                           </>
                         )}
                       </div>
-                      <h2 className="edition-headline-title font-extrabold tracking-tight">
+                      <h2 className="edition-headline-title text-2xl font-extrabold leading-snug tracking-tight sm:text-3xl">
                         <Link
                           to={`/finance/news/story/${edition.lead.reportKey}`}
                           className="transition-colors hover:text-[var(--edition-accent)]"
