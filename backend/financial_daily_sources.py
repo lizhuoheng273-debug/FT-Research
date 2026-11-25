@@ -36,8 +36,8 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
-REQUEST_TIMEOUT_SECONDS = 12
-BATCH_TIMEOUT_SECONDS = 40
+REQUEST_TIMEOUT_SECONDS = 8
+BATCH_TIMEOUT_SECONDS = 22
 MAX_ITEMS_PER_SOURCE = 20
 MAX_BODY_CHARS = 14000
 
@@ -403,7 +403,7 @@ def _parse_html_list(html_text: str, spec: DailySourceSpec, *, now: datetime) ->
     return rows
 
 
-def fetch_article_body(url: str, *, timeout: int = 10) -> str:
+def fetch_article_body(url: str, *, timeout: int = 6) -> str:
     """Fetch public article HTML and extract clean readable Markdown body."""
     safe_url = _safe_http_url(url)
     if not safe_url:

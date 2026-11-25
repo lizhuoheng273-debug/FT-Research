@@ -16,7 +16,7 @@ import json
 import logging
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -314,7 +314,29 @@ def _passes_guardrails(text: str, source_corpus: str) -> bool:
     norm_corpus = re.sub(r"(?<=\d),(?=\d)", "", source_corpus)
     generated_nums = set(_NUMERIC_TOKEN_RE.findall(norm_text))
     allowed_nums = set(_NUMERIC_TOKEN_RE.findall(norm_corpus))
-    return not bool(generated_nums - allowed_nums)
+    extra = generated_nums - allowed_nums
+    if not extra:
+        return True
+    # Allow exact unit-scale equivalents (e.g. billion->亿 x10, million->万 x100) and trailing-zero formatting
+    corpus_vals: list[float] = []
+    for tok in allowed_nums:
+        try:
+            corpus_vals.append(float(tok.rstrip("%")))
+        except ValueError:
+            continue
+    for tok in extra:
+        try:
+            val = float(tok.rstrip("%"))
+        except ValueError:
+            return False
+        matched = False
+        for base in corpus_vals:
+            if any(abs(val - base * factor) <= max(1e-6, abs(val) * 1e-4) for factor in (1.0, 10.0, 100.0, 0.1, 0.01)):
+                matched = True
+                break
+        if not matched:
+            return False
+    return True
 
 
 def _format_beijing(iso_value: str | None) -> str:
@@ -375,7 +397,7 @@ class FinancialDailyService:
     def is_refreshing(self) -> bool:
         return bool(self._refresh_lock.locked() or self._compose_active)
 
-    def _call_llm_json(self, system_prompt: str, user_prompt: str) -> Any:
+    def _call_llm_json(self, system_prompt: str, user_prompt: str, *, timeout_seconds: int = 45) -> Any:
         if self.llm_call is not None:
             raw = self.llm_call([
                 {"role": "system", "content": system_prompt},
@@ -395,7 +417,7 @@ class FinancialDailyService:
                     {"role": "user", "content": user_prompt},
                 ],
                 use_tools=False,
-                timeout_seconds=120,
+                timeout_seconds=timeout_seconds,
             )
             raw = resp["choices"][0]["message"].get("content") or ""
         if isinstance(raw, (dict, list)):
@@ -1005,12 +1027,19 @@ class FinancialDailyService:
             return it["reportKey"], existing
 
         if allow_llm:
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                body_map = dict(pool.map(_maybe_fetch_body, items))
-            for it in items:
-                b = body_map.get(it["reportKey"]) or ""
-                if b:
-                    it["bodyText"] = b
+            body_executor = ThreadPoolExecutor(max_workers=6)
+            body_futs = {body_executor.submit(_maybe_fetch_body, it): it for it in items}
+            try:
+                done_b, _ = wait(body_futs.keys(), timeout=10)
+                for fut in done_b:
+                    try:
+                        rk, b = fut.result()
+                        if b:
+                            body_futs[fut]["bodyText"] = b
+                    except Exception:  # noqa: BLE001
+                        continue
+            finally:
+                body_executor.shutdown(wait=False, cancel_futures=True)
 
         # Step 2: AIHOT Answer-First Chinese headline + complete factual summary (80-160 chars)
         changed = False
@@ -1069,6 +1098,17 @@ class FinancialDailyService:
                     it["summary"] = s_zh
                     changed = True
 
+        # Cap English long-body GLM translations to top 4 stories to keep compose fast & predictable
+        en_translate_keys: set[str] = set()
+        if allow_llm:
+            for it in items:
+                rb = str(it.get("bodyText") or "").strip()
+                ml = 800 if it.get("bucket") == "market" else 420
+                if len(rb) >= ml and len(rb) >= len(it.get("summary") or "") * 2.0 and _is_mostly_english(rb):
+                    en_translate_keys.add(it["reportKey"])
+                    if len(en_translate_keys) >= 4:
+                        break
+
         # Step 3: Decide bodyMode ("full" vs "summary"), translate English long bodies to Chinese Markdown + TOC, attach K-line for market
         def _prepare_body(it: dict[str, Any]) -> tuple[str, str, str, list[dict[str, Any]], dict[str, str] | None]:
             rk = it["reportKey"]
@@ -1080,7 +1120,7 @@ class FinancialDailyService:
                 return rk, "", "summary", [], market_chart
 
             if _is_mostly_english(raw_body):
-                if not allow_llm:
+                if not allow_llm or rk not in en_translate_keys:
                     return rk, "", "summary", [], market_chart
                 try:
                     res = self._call_llm_json(
@@ -1088,11 +1128,12 @@ class FinancialDailyService:
                         (
                             "请把以下英文财经正文翻译为中文 Markdown；若正文较长（超过 900 字），请合理划分 2-4 个简洁的 `## 小节标题` 方便目录跳转。"
                             '返回严格 JSON 对象 `{"markdown": "..."}`：\n'
-                            + raw_body[:4200]
+                            + raw_body[:3000]
                         ),
+                        timeout_seconds=40,
                     )
                     md = str(res.get("markdown") or "").strip() if isinstance(res, dict) else ""
-                    if md and len(md) >= 260 and _passes_guardrails(md, f"{it['title']} {raw_body[:4500]}"):
+                    if md and len(md) >= 260 and _passes_guardrails(md, f"{it['title']} {raw_body[:3500]}"):
                         return rk, md, "full", extract_markdown_outline(md), market_chart
                 except Exception:  # noqa: BLE001
                     logger.exception("long body translation failed for %s", rk)
@@ -1103,8 +1144,24 @@ class FinancialDailyService:
             outline = extract_markdown_outline(md)
             return rk, md, "full", outline, market_chart
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            enriched_bodies = list(pool.map(_prepare_body, items))
+        prep_executor = ThreadPoolExecutor(max_workers=4)
+        prep_futs = {prep_executor.submit(_prepare_body, it): it for it in items}
+        enriched_bodies: list[tuple[str, str, str, list[dict[str, Any]], dict[str, str] | None]] = []
+        try:
+            done_p, not_done_p = wait(prep_futs.keys(), timeout=45)
+            for fut in done_p:
+                try:
+                    enriched_bodies.append(fut.result())
+                except Exception:  # noqa: BLE001
+                    it = prep_futs[fut]
+                    mc = detect_market_chart(it["title"], it.get("summary", "")) if it.get("bucket") == "market" else None
+                    enriched_bodies.append((it["reportKey"], "", "summary", [], mc))
+            for fut in not_done_p:
+                it = prep_futs[fut]
+                mc = detect_market_chart(it["title"], it.get("summary", "")) if it.get("bucket") == "market" else None
+                enriched_bodies.append((it["reportKey"], "", "summary", [], mc))
+        finally:
+            prep_executor.shutdown(wait=False, cancel_futures=True)
 
         for rk, body_md, body_mode, outline, market_chart in enriched_bodies:
             it = next((x for x in items if x["reportKey"] == rk), None)
@@ -1201,6 +1258,8 @@ class FinancialDailyService:
                     if st.get("milestoneId"):
                         prior_milestone_ids.add(st["milestoneId"])
 
+        allowed_names = set(SOURCE_SPEC_BY_NAME.keys())
+
         def _collect_candidates(strict_cutoff: bool) -> list[dict[str, Any]]:
             pools: dict[str, list[dict[str, Any]]] = {row["key"]: [] for row in FINANCE_BUCKETS}
             upper_bound = cutoff_utc if strict_cutoff else now_utc
@@ -1223,6 +1282,8 @@ class FinancialDailyService:
                     (latest_ms.get("reports") or [None])[0],
                 )
                 if not rep or not _safe_http_url(rep.get("originalUrl")):
+                    continue
+                if self.official_fetcher is None and str(rep.get("source") or "") not in allowed_names:
                     continue
                 if not _has_market_relevance(rep):
                     continue
@@ -1731,25 +1792,25 @@ class FinancialDailyScheduler:
         if now_bj.hour < 18:
             self.service.store.delete_daily_edition(f"{today}-evening")
 
-        morning_ed = self.service.get_edition(f"{today}-morning")
-        if now_bj.hour >= 8 and (not morning_ed or morning_ed.get("promptVersion") != PROMPT_VERSION):
-            self.service.compose_edition(
-                edition_date=today,
-                edition_type="morning",
-                refresh_upstream=self.refresh_upstream,
-                allow_llm=True,
-            )
-            generated.append(f"{today}-morning")
-
-        evening_ed = self.service.get_edition(f"{today}-evening")
-        if now_bj.hour >= 18 and (not evening_ed or evening_ed.get("promptVersion") != PROMPT_VERSION):
-            self.service.compose_edition(
-                edition_date=today,
-                edition_type="evening",
-                refresh_upstream=self.refresh_upstream,
-                allow_llm=True,
-            )
-            generated.append(f"{today}-evening")
+        # Prioritize the currently active edition first (evening first after 18:00),
+        # and reuse the freshly fetched 44-source cache if backfilling the earlier edition.
+        ordered_types = ("evening", "morning") if now_bj.hour >= 18 else ("morning",)
+        refreshed_this_cycle = False
+        for ed_type in ordered_types:
+            min_hour = 18 if ed_type == "evening" else 8
+            if now_bj.hour < min_hour:
+                continue
+            ed_key = f"{today}-{ed_type}"
+            existing_ed = self.service.get_edition(ed_key)
+            if not existing_ed or existing_ed.get("promptVersion") != PROMPT_VERSION:
+                self.service.compose_edition(
+                    edition_date=today,
+                    edition_type=ed_type,
+                    refresh_upstream=(self.refresh_upstream and not refreshed_this_cycle),
+                    allow_llm=True,
+                )
+                refreshed_this_cycle = True
+                generated.append(ed_key)
 
         hour_key = now_bj.strftime("%Y-%m-%d %H:00")
         if hour_key != self._last_hour_key:
