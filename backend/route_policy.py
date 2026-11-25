@@ -13,6 +13,7 @@ _AUTH = {
     ("GET", "/api/ai/rss/sources"), ("POST", "/api/ai/rss/resolve"),
     ("POST", "/api/ai/rss/refresh-all"), ("POST", "/api/ai/rss/refresh"),
     ("POST", "/api/finance/news/calendar/refresh"), ("POST", "/api/finance/news/refresh"),
+    ("POST", "/api/finance/daily/refresh"),
 }
 _OWNER_EXACT = {
     ("POST", "/api/reflect"),
@@ -30,7 +31,8 @@ _MARKET_READ = {
     "/api/investor-qa", "/api/industry", "/api/global/indices", "/api/global/stock", "/api/global/hk/cashflow",
     "/api/radar", "/api/market/overview", "/api/market/review", "/api/market/emotion", "/api/market/turnover-top",
     "/api/finance/news/overview", "/api/finance/news/feed", "/api/finance/news/status", "/api/finance/news/calendar",
-    "/api/finance/news/events/", "/api/signals/gpu-rent", "/api/ai/news/stories/", "/api/ai/reports/",
+    "/api/finance/news/events/", "/api/finance/news/reports/", "/api/finance/news/tracked-events/",
+    "/api/finance/daily/", "/api/signals/gpu-rent", "/api/ai/news/stories/", "/api/ai/reports/",
 }
 
 

@@ -5,20 +5,21 @@ import { AiConversation } from "@/components/ai/AiConversation";
 import { ConversationRail } from "@/components/ai/ConversationRail";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { useAiChatSession } from "@/hooks/useAiChatSession";
-import { api, type AiStatus, type FinancialCalendarResponse, type FinancialHotRankItem, type FinancialNewsItem, type FinancialNewsOverview, type MarketReview, type Quote } from "@/lib/api";
+import { api, type AiStatus, type FinancialCalendarResponse, type FinancialDailyEdition, type FinancialHotRankItem, type FinancialNewsItem, type FinancialReportDetail, type FinancialTrackedEvent, type MarketReview, type Quote } from "@/lib/api";
 import { buildFinanceAiKey, type FinanceAiSource } from "@/lib/financeAi";
 import { loadWatch } from "@/lib/watchlist";
 import { cn } from "@/lib/utils";
 
-const SOURCES: FinanceAiSource[] = ["review", "news", "watchlist", "index", "stock", "stock-panel", "news-story"];
+const SOURCES: FinanceAiSource[] = ["review", "news", "watchlist", "index", "stock", "stock-panel", "news-story", "news-event"];
 const suggestions: Record<FinanceAiSource, string[]> = {
   review: ["今天盘面最重要的矛盾是什么", "指数和宽度是否背离", "列出明天需要验证的信号"],
-  news: ["今天最重要的三条资讯是什么", "这些资讯如何影响 A 股", "哪些结论还需要核实"],
+  news: ["今天金融日报最重要的主线是什么", "这些资讯如何影响相关市场", "哪些结论还需要官方数据核实"],
   watchlist: ["帮我按风险分组自选股", "哪些数据最值得补充", "列出逐只验证清单"],
   index: ["这段指数走势如何", "成交量和波动有什么信息", "列出需要验证的因素"],
   stock: ["先帮我建立这只股票的研究框架", "当前估值需要重点验证什么", "列出可能证伪投资逻辑的风险"],
   "stock-panel": ["总结当前分类的关键变化", "有哪些风险点", "给我一份验证清单"],
-  "news-story": ["这件事为什么重要", "按时间梳理相关报道", "涉及哪些行业和公司"],
+  "news-story": ["这件事为什么重要", "按时间梳理同事件后续报道", "涉及哪些行业和公司"],
+  "news-event": ["按时间梳理这件事的关键转折点", "哪些信息已兑现、哪些还在观察期", "后续需要盯紧哪些官方日程或数据"],
 };
 
 function parseSource(value: string | null): FinanceAiSource {
@@ -46,17 +47,40 @@ function buildContext(source: FinanceAiSource, payload: unknown, code: string, p
     const review = payload as MarketReview | null;
     return review ? [`来源：每日复盘快照`, `交易日：${review.tradingDate}`, `指数：${(review.indices || []).slice(0, 4).map((item) => `${item.name} ${item.price}（${item.changePct ?? "缺失"}%）`).join("；")}`, `宽度：上涨 ${review.breadth?.up ?? "缺失"}、下跌 ${review.breadth?.down ?? "缺失"}、涨停 ${review.breadth?.limitUp ?? "缺失"}、跌停 ${review.breadth?.limitDown ?? "缺失"}`, `成交额：${review.liquidity?.todayAmountYuan ?? "缺失"}；变化 ${review.liquidity?.changePct ?? "缺失"}%`, `板块：${(review.sectors || []).slice(0, 8).map((item) => `${item.name} ${item.net}`).join("；")}`].join("\n") : "每日复盘快照暂不可用。";
   }
-  if (source === "news" ) {
-    const data = payload as { overview?: FinancialNewsOverview; calendar?: FinancialCalendarResponse } | null;
-    const highlights = data?.overview?.hotRank || [];
-    const upcoming = data?.calendar?.items || [];
-    return data ? [`来源：金融市场资讯`, `全球财经热点：${highlights.slice(0, 5).map((item) => `${item.title}（${item.placements.map(row => row.sourceName).join("、")} · ${item.publishedAt || "日期缺失"}）`).join("；") || "暂无"}`, `未来重要事件（计划，非已发生事实）：${upcoming.map((item) => `${item.title}（${item.startsAt || item.date + ' 当地日期，时间待定'}；${item.source}；${item.originalUrl}）`).join("；") || "暂无已确认日程"}`, `日程完整性：${data.calendar?.partial ? "部分来源不可用，可能有遗漏" : "仅覆盖已接入的官方来源"}`].join("\n") : "金融资讯快照暂不可用。";
+  if (source === "news") {
+    const data = payload as { edition?: FinancialDailyEdition; calendar?: FinancialCalendarResponse } | null;
+    const edition = data?.edition;
+    const upcoming = data?.calendar?.items || edition?.calendar?.items || [];
+    const sectionItems = (edition?.sections || []).flatMap((sec) => sec.items.map((item) => `[${sec.name}] ${item.title}（${item.sourceName} · ${item.publishedAt || "近期"}）`));
+    return data ? [
+      `来源：金融日报（${edition?.dateLabel || ""} ${edition?.editionTag || ""}）`,
+      `本期导读：${edition?.overview || "暂无"}`,
+      `今日头条：${edition?.lead ? `${edition.lead.title}（${edition.lead.sourceName}）` : "暂无"}`,
+      `五大板块要点：${sectionItems.slice(0, 12).join("；") || "暂无"}`,
+      `未来重要事件（计划，非已发生事实）：${upcoming.map((item) => `${item.title}（${item.startsAt || item.date + ' 当地日期，时间待定'}；${item.source}；${item.originalUrl}）`).join("；") || "暂无已确认日程"}`,
+      `日程完整性：${data.calendar?.partial ? "部分来源不可用，可能有遗漏" : "仅覆盖已接入的官方来源"}`,
+    ].join("\n") : "金融日报快照暂不可用。";
   }
   if (source === "news-story") {
-    const story = payload as FinancialNewsItem | FinancialHotRankItem | null;
-    if (!story) return `金融资讯事件 ${eventId} 暂不可用。`;
-    if ("placements" in story) return `来源：财经热点榜\n事件：${story.title}\nAI导读：${story.aiDigest || "暂未生成"}\n上榜平台：${story.placements.map(item => `${item.sourceName}第${item.sourceRank}名`).join("、")}\n事件编号：${eventId}`;
-    return `来源：金融资讯事件\n事件：${story.title}\n摘要：${story.summary || "缺失"}\n来源：${story.source || "缺失"}\n事件编号：${eventId}`;
+    const detail = payload as FinancialReportDetail | FinancialNewsItem | FinancialHotRankItem | null;
+    if (!detail) return `金融资讯 ${eventId} 暂不可用。`;
+    if ("reportKey" in detail) {
+      return `来源：金融日报详情\n标题：${detail.title}\n板块：${detail.bucketName}\n出处：${detail.sourceName}（${detail.timeLabel}）\n摘要：${detail.summary}\n同事件后续：${detail.followups.map((f) => `${f.title}（${f.sourceName}）`).join("；") || "暂无"}\n原文：${detail.originalUrl}`;
+    }
+    if ("placements" in detail) return `来源：财经热点榜\n事件：${detail.title}\nAI导读：${detail.aiDigest || "暂未生成"}\n上榜平台：${detail.placements.map(item => `${item.sourceName}第${item.sourceRank}名`).join("、")}\n事件编号：${eventId}`;
+    return `来源：金融资讯事件\n事件：${detail.title}\n摘要：${detail.summary || "缺失"}\n来源：${detail.source || "缺失"}\n事件编号：${eventId}`;
+  }
+  if (source === "news-event") {
+    const evt = payload as FinancialTrackedEvent | null;
+    if (!evt) return `金融事件脉络 ${eventId} 暂不可用。`;
+    return [
+      `来源：金融事件脉络`,
+      `事件：${evt.title}`,
+      `板块：${evt.bucketName} · ${evt.reportCount} 篇报道 · ${evt.sourceCount} 个独立来源`,
+      `先了解这件事：${(evt.overview?.paragraphs || []).join(" ")}`,
+      `关键节点进展：${evt.milestones.map((m) => `${m.timeLabel} ${m.title}（${m.sourceSummary}）`).join("；")}`,
+      `为什么热：${evt.whyHot.headline}`,
+    ].join("\n");
   }
   if (source === "index") {
     const index = payload as { name?: string; quote?: { price?: number; changePct?: number }; points?: unknown[] } | null;
@@ -97,11 +121,18 @@ export function FinanceAiWorkspace() {
     if (source === "review") request = api.marketReview();
     else if (source === "news") {
       request = Promise.all([
-        api.financialNewsOverview(),
+        date ? api.financialDailyEdition(date) : api.financialDailyLatest(),
         api.financialNewsCalendar(),
-      ]).then(([overview, calendar]) => ({ overview, calendar }));
+      ]).then(([edition, calendar]) => ({ edition, calendar }));
     }
-    else if (source === "news-story") request = eventId ? api.financialNewsEvent(eventId) : Promise.reject(new Error("缺少资讯事件编号"));
+    else if (source === "news-story") {
+      request = eventId
+        ? api.financialNewsReportDetail(eventId).catch(() => api.financialNewsEvent(eventId))
+        : Promise.reject(new Error("缺少资讯报道编号"));
+    }
+    else if (source === "news-event") {
+      request = eventId ? api.financialNewsTrackedEvent(eventId) : Promise.reject(new Error("缺少事件脉络编号"));
+    }
     else if (source === "index") request = api.marketChart("index", code, "daily");
     else if (source === "stock" || source === "stock-panel") request = api.quote(code);
     else { const codes = loadWatch(); request = codes.length ? api.quote(codes.join(",")) : Promise.resolve({}); }
@@ -117,7 +148,7 @@ export function FinanceAiWorkspace() {
   const conversationKey = buildFinanceAiKey(source, { code, panel, eventId, date: reviewDate });
   const session = useAiChatSession({ conversationKey, conversationId, context, contextReady: !loading && !error && loaded?.key === requestKey, analysisScope: scopeFor(source), source: { type: source, code, panel, eventId, date: reviewDate } });
   const stateFrom = (location.state as { from?: string } | null)?.from;
-  const title = source === "review" ? "每日复盘 AI" : source === "news" ? "金融资讯 AI" : source === "news-story" ? "资讯事件 AI" : source === "watchlist" ? "自选股 AI" : source === "index" ? "指数研究 AI" : source === "stock-panel" ? `${code} · ${panel} AI` : `${code} · 个股 AI`;
+  const title = source === "review" ? "每日复盘 AI" : source === "news" ? "金融日报 AI" : source === "news-story" ? "资讯详情 AI" : source === "news-event" ? "事件脉络 AI" : source === "watchlist" ? "自选股 AI" : source === "index" ? "指数研究 AI" : source === "stock-panel" ? `${code} · ${panel} AI` : `${code} · 个股 AI`;
   const returnTo = () => { if (stateFrom) navigate(stateFrom, { replace: true }); else navigate(source === "stock" || source === "stock-panel" ? `/finance/stocks/${code}` : "/finance/news", { replace: true }); };
   const startNew = () => { session.clearChat(); const next = new URLSearchParams(params); next.delete("conversationId"); navigate(`${location.pathname}${next.toString() ? `?${next}` : ""}`); };
 

@@ -113,7 +113,69 @@ class FinancialNewsStore:
             observed_at TEXT NOT NULL,
             payload_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS tracked_stories (
+            story_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            bucket TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            overview_json TEXT NOT NULL DEFAULT '{}',
+            overview_inputs_hash TEXT NOT NULL DEFAULT '',
+            first_report_at TEXT,
+            latest_at TEXT,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS tracked_stories_latest_idx ON tracked_stories(latest_at);
+        CREATE TABLE IF NOT EXISTS story_milestones (
+            milestone_id TEXT PRIMARY KEY,
+            story_id TEXT NOT NULL REFERENCES tracked_stories(story_id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            representative_report_key TEXT NOT NULL DEFAULT '',
+            market_note TEXT NOT NULL DEFAULT '',
+            report_count INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS story_milestones_story_idx ON story_milestones(story_id, occurred_at);
+        CREATE TABLE IF NOT EXISTS milestone_reports (
+            milestone_id TEXT NOT NULL REFERENCES story_milestones(milestone_id) ON DELETE CASCADE,
+            story_id TEXT NOT NULL REFERENCES tracked_stories(story_id) ON DELETE CASCADE,
+            report_key TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'report',
+            PRIMARY KEY (milestone_id, report_key)
+        );
+        CREATE INDEX IF NOT EXISTS milestone_reports_report_idx ON milestone_reports(report_key);
+        CREATE TABLE IF NOT EXISTS story_signals (
+            story_id TEXT NOT NULL REFERENCES tracked_stories(story_id) ON DELETE CASCADE,
+            participant_key TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            source_tier TEXT NOT NULL DEFAULT 'C',
+            kind TEXT NOT NULL DEFAULT 'editorial',
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (story_id, participant_key, observed_at)
+        );
+        CREATE INDEX IF NOT EXISTS story_signals_story_idx ON story_signals(story_id, observed_at);
+        CREATE TABLE IF NOT EXISTS story_heat_hourly (
+            story_id TEXT NOT NULL REFERENCES tracked_stories(story_id) ON DELETE CASCADE,
+            hour_key TEXT NOT NULL,
+            heat REAL NOT NULL DEFAULT 0,
+            participants INTEGER NOT NULL DEFAULT 0,
+            milestone_label TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (story_id, hour_key)
+        );
+        CREATE TABLE IF NOT EXISTS daily_editions (
+            edition_key TEXT PRIMARY KEY,
+            edition_date TEXT NOT NULL,
+            edition_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            snapshot_hash TEXT NOT NULL DEFAULT '',
+            prompt_version TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS daily_editions_date_idx ON daily_editions(edition_date, edition_type);
         """)
+        self._conn.execute("PRAGMA foreign_keys = ON")
         try:
             self._conn.execute("ALTER TABLE reports ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'" )
         except sqlite3.OperationalError:
@@ -122,8 +184,15 @@ class FinancialNewsStore:
 
     def _prune(self) -> None:
         cutoff = (self.now_fn().astimezone(UTC) - timedelta(hours=self.retention_hours)).isoformat()
+        tracked_cutoff = (self.now_fn().astimezone(UTC) - timedelta(days=30)).isoformat()
         self._conn.execute("DELETE FROM events WHERE COALESCE(latest_at, updated_at) < ?", (cutoff,))
-        self._conn.execute("DELETE FROM reports WHERE COALESCE(published_at, last_seen_at) < ?", (cutoff,))
+        self._conn.execute("DELETE FROM tracked_stories WHERE COALESCE(latest_at, updated_at) < ?", (tracked_cutoff,))
+        self._conn.execute(
+            """DELETE FROM reports
+            WHERE COALESCE(published_at, last_seen_at) < ?
+              AND report_id NOT IN (SELECT report_key FROM milestone_reports)""",
+            (cutoff,),
+        )
         self._conn.commit()
 
     def upsert_reports(self, reports: list[dict[str, Any]]) -> list[str]:
@@ -237,6 +306,343 @@ class FinancialNewsStore:
             "INSERT OR REPLACE INTO market_observations(observation_id, observed_at, payload_json) VALUES (?, ?, ?)",
             (observation_id, self.now_fn().astimezone(UTC).isoformat(), json.dumps(payload, ensure_ascii=False)),
         )
+        self._conn.commit()
+
+    def upsert_tracked_story(
+        self,
+        *,
+        story_id: str,
+        title: str,
+        bucket: str,
+        status: str = "active",
+        overview: dict[str, Any] | None = None,
+        overview_inputs_hash: str = "",
+        first_report_at: str | None = None,
+        latest_at: str | None = None,
+        tags: list[str] | None = None,
+    ) -> None:
+        now_iso = self.now_fn().astimezone(UTC).isoformat()
+        first_iso = _iso(first_report_at) or now_iso
+        latest_iso = _iso(latest_at) or first_iso
+        self._conn.execute(
+            """INSERT INTO tracked_stories (
+                story_id, title, bucket, status, overview_json, overview_inputs_hash,
+                first_report_at, latest_at, tags_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(story_id) DO UPDATE SET
+                title=excluded.title,
+                bucket=excluded.bucket,
+                status=excluded.status,
+                overview_json=CASE WHEN excluded.overview_json != '{}' THEN excluded.overview_json ELSE tracked_stories.overview_json END,
+                overview_inputs_hash=CASE WHEN excluded.overview_inputs_hash != '' THEN excluded.overview_inputs_hash ELSE tracked_stories.overview_inputs_hash END,
+                first_report_at=MIN(COALESCE(tracked_stories.first_report_at, excluded.first_report_at), excluded.first_report_at),
+                latest_at=MAX(COALESCE(tracked_stories.latest_at, excluded.latest_at), excluded.latest_at),
+                tags_json=CASE WHEN excluded.tags_json != '[]' THEN excluded.tags_json ELSE tracked_stories.tags_json END,
+                updated_at=excluded.updated_at""",
+            (
+                story_id,
+                title,
+                bucket,
+                status,
+                json.dumps(overview or {}, ensure_ascii=False),
+                overview_inputs_hash,
+                first_iso,
+                latest_iso,
+                json.dumps(tags or [], ensure_ascii=False),
+                now_iso,
+            ),
+        )
+        self._conn.commit()
+
+    def update_tracked_overview(self, story_id: str, overview: dict[str, Any], inputs_hash: str) -> None:
+        now_iso = self.now_fn().astimezone(UTC).isoformat()
+        self._conn.execute(
+            "UPDATE tracked_stories SET overview_json = ?, overview_inputs_hash = ?, updated_at = ? WHERE story_id = ?",
+            (json.dumps(overview, ensure_ascii=False), inputs_hash, now_iso, story_id),
+        )
+        self._conn.commit()
+
+    def upsert_milestone(
+        self,
+        *,
+        milestone_id: str,
+        story_id: str,
+        title: str,
+        occurred_at: str | None,
+        representative_report_key: str,
+        market_note: str = "",
+        report_count: int = 1,
+    ) -> None:
+        now_iso = self.now_fn().astimezone(UTC).isoformat()
+        occurred_iso = _iso(occurred_at) or now_iso
+        self._conn.execute(
+            """INSERT INTO story_milestones (
+                milestone_id, story_id, title, occurred_at, representative_report_key,
+                market_note, report_count, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(milestone_id) DO UPDATE SET
+                title=excluded.title,
+                occurred_at=MIN(story_milestones.occurred_at, excluded.occurred_at),
+                representative_report_key=excluded.representative_report_key,
+                market_note=CASE WHEN excluded.market_note != '' THEN excluded.market_note ELSE story_milestones.market_note END,
+                report_count=excluded.report_count""",
+            (milestone_id, story_id, title, occurred_iso, representative_report_key, market_note, int(report_count), now_iso),
+        )
+        self._conn.commit()
+
+    def link_milestone_report(self, *, milestone_id: str, story_id: str, report_key: str, role: str = "report") -> None:
+        self._conn.execute(
+            """INSERT INTO milestone_reports (milestone_id, story_id, report_key, role)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(milestone_id, report_key) DO UPDATE SET role=excluded.role""",
+            (milestone_id, story_id, report_key, role),
+        )
+        self._conn.execute(
+            "UPDATE story_milestones SET report_count = (SELECT COUNT(*) FROM milestone_reports WHERE milestone_id = ?) WHERE milestone_id = ?",
+            (milestone_id, milestone_id),
+        )
+        self._conn.commit()
+
+    def record_signal(
+        self,
+        *,
+        story_id: str,
+        participant_key: str,
+        source_name: str,
+        source_tier: str = "C",
+        kind: str = "editorial",
+        observed_at: str | None = None,
+    ) -> None:
+        observed_iso = _iso(observed_at) or self.now_fn().astimezone(UTC).isoformat()
+        self._conn.execute(
+            """INSERT OR IGNORE INTO story_signals (
+                story_id, participant_key, source_name, source_tier, kind, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (story_id, participant_key, source_name, source_tier, kind, observed_iso),
+        )
+        self._conn.commit()
+
+    def upsert_heat_snapshot(
+        self,
+        *,
+        story_id: str,
+        hour_key: str,
+        heat: float,
+        participants: int,
+        milestone_label: str = "",
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO story_heat_hourly (story_id, hour_key, heat, participants, milestone_label)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(story_id, hour_key) DO UPDATE SET
+                heat=excluded.heat,
+                participants=excluded.participants,
+                milestone_label=CASE WHEN excluded.milestone_label != '' THEN excluded.milestone_label ELSE story_heat_hourly.milestone_label END""",
+            (story_id, hour_key, float(heat), int(participants), milestone_label),
+        )
+        self._conn.commit()
+
+    def list_active_stories(self, days: int = 30) -> list[dict[str, Any]]:
+        cutoff = (self.now_fn().astimezone(UTC) - timedelta(days=max(1, int(days)))).isoformat()
+        rows = self._conn.execute(
+            "SELECT * FROM tracked_stories WHERE COALESCE(latest_at, updated_at) >= ? ORDER BY latest_at DESC",
+            (cutoff,),
+        ).fetchall()
+        stories: list[dict[str, Any]] = []
+        for row in rows:
+            story = self._hydrate_tracked_story(row, include_reports=True)
+            stories.append(story)
+        return stories
+
+    def _hydrate_tracked_story(self, row: sqlite3.Row, *, include_reports: bool = True) -> dict[str, Any]:
+        story_id = row["story_id"]
+        milestone_rows = self._conn.execute(
+            "SELECT * FROM story_milestones WHERE story_id = ? ORDER BY occurred_at DESC",
+            (story_id,),
+        ).fetchall()
+        milestones: list[dict[str, Any]] = []
+        all_reports: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+        for m_row in milestone_rows:
+            reports: list[dict[str, Any]] = []
+            if include_reports:
+                rep_rows = self._conn.execute(
+                    """SELECT r.*, mr.role AS link_role
+                    FROM milestone_reports mr
+                    JOIN reports r ON r.report_id = mr.report_key
+                    WHERE mr.milestone_id = ?
+                    ORDER BY COALESCE(r.published_at, r.first_seen_at) DESC""",
+                    (m_row["milestone_id"],),
+                ).fetchall()
+                for rr in rep_rows:
+                    rep = self._row_to_report(rr)
+                    rep["reportKey"] = rep["id"]
+                    rep["role"] = rr["link_role"]
+                    reports.append(rep)
+                    if rep["id"] not in seen_keys:
+                        seen_keys.add(rep["id"])
+                        all_reports.append(rep)
+            milestones.append({
+                "milestoneId": m_row["milestone_id"],
+                "storyId": story_id,
+                "title": m_row["title"],
+                "occurredAt": m_row["occurred_at"],
+                "representativeReportKey": m_row["representative_report_key"],
+                "marketNote": m_row["market_note"],
+                "reportCount": max(int(m_row["report_count"] or 0), len(reports)),
+                "reports": reports,
+            })
+        signal_rows = self._conn.execute(
+            "SELECT * FROM story_signals WHERE story_id = ? ORDER BY observed_at DESC",
+            (story_id,),
+        ).fetchall()
+        heat_rows = self._conn.execute(
+            "SELECT * FROM story_heat_hourly WHERE story_id = ? ORDER BY hour_key ASC",
+            (story_id,),
+        ).fetchall()
+        try:
+            overview = json.loads(row["overview_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            overview = {}
+        try:
+            tags = json.loads(row["tags_json"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            tags = []
+        return {
+            "storyId": story_id,
+            "title": row["title"],
+            "bucket": row["bucket"],
+            "status": row["status"],
+            "overview": overview,
+            "overviewInputsHash": row["overview_inputs_hash"],
+            "firstReportAt": row["first_report_at"],
+            "latestAt": row["latest_at"],
+            "tags": tags,
+            "milestones": milestones,
+            "reports": all_reports,
+            "signals": [dict(s) for s in signal_rows],
+            "heatSeries": [
+                {
+                    "hourKey": h["hour_key"],
+                    "heat": h["heat"],
+                    "participants": h["participants"],
+                    "milestoneLabel": h["milestone_label"],
+                }
+                for h in heat_rows
+            ],
+        }
+
+    def get_tracked_story(self, story_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM tracked_stories WHERE story_id = ?", (story_id,)).fetchone()
+        if not row:
+            return None
+        return self._hydrate_tracked_story(row, include_reports=True)
+
+    def get_report_detail(self, report_key: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_key,)).fetchone()
+        if not row:
+            return None
+        report = self._row_to_report(row)
+        report["reportKey"] = report["id"]
+        link = self._conn.execute(
+            "SELECT story_id, milestone_id, role FROM milestone_reports WHERE report_key = ? LIMIT 1",
+            (report_key,),
+        ).fetchone()
+        if link:
+            report["storyId"] = link["story_id"]
+            report["milestoneId"] = link["milestone_id"]
+            report["role"] = link["role"]
+        return report
+
+    def save_daily_edition(
+        self,
+        *,
+        edition_key: str,
+        edition_date: str,
+        edition_type: str,
+        payload: dict[str, Any],
+        snapshot_hash: str = "",
+        prompt_version: str = "",
+    ) -> None:
+        now_iso = self.now_fn().astimezone(UTC).isoformat()
+        self._conn.execute(
+            """INSERT INTO daily_editions (
+                edition_key, edition_date, edition_type, payload_json, snapshot_hash,
+                prompt_version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(edition_key) DO UPDATE SET
+                payload_json=excluded.payload_json,
+                snapshot_hash=excluded.snapshot_hash,
+                prompt_version=excluded.prompt_version,
+                updated_at=excluded.updated_at""",
+            (
+                edition_key,
+                edition_date,
+                edition_type,
+                json.dumps(payload, ensure_ascii=False),
+                snapshot_hash,
+                prompt_version,
+                now_iso,
+                now_iso,
+            ),
+        )
+        self._conn.commit()
+
+    def get_daily_edition(self, edition_key: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT payload_json FROM daily_editions WHERE edition_key = ?", (edition_key,)).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["payload_json"])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def get_latest_daily_edition(self, edition_type: str | None = None) -> dict[str, Any] | None:
+        if edition_type in {"morning", "evening"}:
+            row = self._conn.execute(
+                "SELECT payload_json FROM daily_editions WHERE edition_type = ? ORDER BY edition_date DESC, updated_at DESC LIMIT 1",
+                (edition_type,),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """SELECT payload_json FROM daily_editions
+                ORDER BY edition_date DESC, CASE edition_type WHEN 'evening' THEN 2 ELSE 1 END DESC, updated_at DESC LIMIT 1"""
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["payload_json"])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def list_daily_editions(self, limit: int = 60) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT edition_key, edition_date, edition_type, payload_json, updated_at
+            FROM daily_editions
+            ORDER BY edition_date DESC, CASE edition_type WHEN 'evening' THEN 2 ELSE 1 END DESC
+            LIMIT ?""",
+            (max(1, int(limit)),),
+        ).fetchall()
+        editions: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            lead = payload.get("lead") or {}
+            editions.append({
+                "editionKey": row["edition_key"],
+                "editionDate": row["edition_date"],
+                "editionType": row["edition_type"],
+                "publishTimeLabel": payload.get("publishTimeLabel") or ("08:00 早报" if row["edition_type"] == "morning" else "18:00 晚报"),
+                "leadTitle": lead.get("title") or payload.get("headline") or row["edition_key"],
+                "updatedAt": row["updated_at"],
+            })
+        return editions
+
+    def prune_tracked(self, days: int = 30) -> None:
+        cutoff = (self.now_fn().astimezone(UTC) - timedelta(days=max(1, int(days)))).isoformat()
+        self._conn.execute("DELETE FROM tracked_stories WHERE COALESCE(latest_at, updated_at) < ?", (cutoff,))
         self._conn.commit()
 
     def close(self) -> None:
