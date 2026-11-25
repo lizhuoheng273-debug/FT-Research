@@ -238,7 +238,7 @@ class FinancialNewsStore:
                     int(report.get("sourceTier") or 8), str(report.get("sourceLevel") or ""),
                     original_url, normalized_url, str(report.get("category") or ""),
                     str(report.get("track") or ""), json.dumps(report.get("relatedStocks") or [], ensure_ascii=False),
-                    json.dumps({key: report.get(key) for key in ("importanceType", "official", "rumor", "relatedConcepts", "conceptEvidence", "originSource", "stale") if key in report}, ensure_ascii=False),
+                    json.dumps({key: report.get(key) for key in ("importanceType", "official", "rumor", "relatedConcepts", "conceptEvidence", "originSource", "stale", "bodyText", "bodyMarkdown", "bodyMode", "outline", "marketChart", "defaultBucket") if key in report}, ensure_ascii=False),
                     observed, observed,
                 ),
             )
@@ -585,9 +585,19 @@ class FinancialNewsStore:
         return report
 
     @_locked
-    def apply_report_translation(self, report_key: str, *, title_zh: str = "", summary_zh: str = "") -> None:
-        """Persist validated GLM Chinese translations to reports, milestones, and tracked stories."""
-        if not title_zh and not summary_zh:
+    def apply_report_translation(
+        self,
+        report_key: str,
+        *,
+        title_zh: str = "",
+        summary_zh: str = "",
+        body_markdown: str | None = None,
+        body_mode: str | None = None,
+        outline: list[dict[str, Any]] | None = None,
+        market_chart: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist validated GLM Chinese translations, full body, TOC outline, and K-line chart metadata."""
+        if not title_zh and not summary_zh and body_markdown is None and body_mode is None and outline is None and market_chart is None:
             return
         row = self._conn.execute(
             "SELECT title, summary, metadata_json FROM reports WHERE report_id = ?",
@@ -603,7 +613,16 @@ class FinancialNewsStore:
             meta = {}
         if title_zh and not meta.get("originalTitle"):
             meta["originalTitle"] = old_title
-        meta["translatedZh"] = True
+        if title_zh or summary_zh:
+            meta["translatedZh"] = True
+        if body_markdown is not None:
+            meta["bodyMarkdown"] = body_markdown
+        if body_mode is not None:
+            meta["bodyMode"] = body_mode
+        if outline is not None:
+            meta["outline"] = outline
+        if market_chart is not None:
+            meta["marketChart"] = market_chart
         new_title = title_zh or old_title
         new_summary = summary_zh or old_summary
         now_iso = self.now_fn().astimezone(UTC).isoformat()

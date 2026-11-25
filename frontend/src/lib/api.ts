@@ -174,7 +174,7 @@ export interface ChartPoint {
   average: number | null; volume: number; amount: number;
 }
 export interface MarketChart {
-  asset: "stock" | "index"; code: string; name: string; period: ChartPeriod;
+  asset: "stock" | "index" | "global_index"; code: string; name: string; period: ChartPeriod;
   adjust: "qfq" | "hfq" | ""; source: string; fetchedAt: string; stale: boolean;
   quote: {
     price: number; change: number; changePct: number; open: number; high: number;
@@ -381,12 +381,16 @@ export interface FinancialDailyStoryCard {
   sectionCode?: string;
   sectionName?: string;
   title: string;
+  originalTitle?: string;
   summary: string;
-  tags: string[];
+  bodyMode?: "full" | "summary";
+  marketChart?: { asset: "index" | "global_index"; code: string; name: string } | null;
+  tags?: string[];
   sourceName: string;
   sourceTierGrade?: string;
   official?: boolean;
   publishedAt: string | null;
+  timeLabel?: string;
   relativeTime?: string;
   originalUrl: string;
   independentCount?: number;
@@ -408,6 +412,7 @@ export interface FinancialDailySection {
 }
 export interface FinancialDailyEdition {
   editionKey: string;
+  promptVersion?: string;
   editionDate: string;
   editionType: "morning" | "evening";
   editionTag: string;
@@ -415,13 +420,13 @@ export interface FinancialDailyEdition {
   dateLabel: string;
   dayNumber: string;
   generatedAt: string;
-  overview: string;
-  marketStrip: {
+  overview?: string;
+  marketStrip?: {
     title: string;
     note: string;
     items: FinancialDailyMarketItem[];
     partial?: boolean;
-  };
+  } | null;
   urgentBanner?: {
     reportKey: string;
     storyId: string;
@@ -433,6 +438,8 @@ export interface FinancialDailyEdition {
   keyPicks: FinancialDailyPick[];
   sections: FinancialDailySection[];
   calendar?: FinancialCalendarResponse;
+  storyCount?: number;
+  editorialEngine?: "glm" | "rule";
   coverage?: {
     activeSources: number;
     totalSources: number;
@@ -460,17 +467,29 @@ export interface FinancialDailyEditionSummary {
 }
 export interface FinancialReportFollowup {
   reportKey: string;
+  milestoneId?: string;
   title: string;
   sourceName: string;
   publishedAt: string | null;
+  timeLabel?: string;
   relativeTime: string;
   originalUrl: string;
   role: string;
 }
+export interface FinancialOutlineEntry {
+  id: string;
+  text: string;
+  level: number;
+}
 export interface FinancialReportDetail {
   reportKey: string;
   title: string;
+  originalTitle?: string;
   summary: string;
+  bodyMode?: "full" | "summary";
+  bodyMarkdown?: string;
+  outline?: FinancialOutlineEntry[];
+  marketChart?: { asset: "index" | "global_index"; code: string; name: string } | null;
   publishedAt: string | null;
   timeLabel: string;
   relativeTime: string;
@@ -479,7 +498,7 @@ export interface FinancialReportDetail {
   originalUrl: string;
   bucket: string;
   bucketName: string;
-  tags: string[];
+  tags?: string[];
   relatedStocks?: string[];
   eventSummary?: {
     storyId: string;
@@ -698,7 +717,7 @@ export const api = {
   announcements: (code: string) => get<Announcement[]>(`/announcements?code=${code}`),
   companyInfo: (code: string) => get<CompanyProfile>(`/info?code=${code}`),
   quote: (codes: string) => get<Record<string, Quote>>(`/quote?codes=${codes}`),
-  marketChart: (asset: "stock" | "index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq", force = false, scope: "recent" | "full" = "recent") =>
+  marketChart: (asset: "stock" | "index" | "global_index", code: string, period: ChartPeriod, adjust: "qfq" | "hfq" | "" = "qfq", force = false, scope: "recent" | "full" = "recent") =>
     get<MarketChart>(`/market/chart?asset=${asset}&code=${encodeURIComponent(code)}&period=${period}&adjust=${adjust}&scope=${scope}${force ? "&refresh=true" : ""}`),
   reports: (code: string) => get<Report[]>(`/reports?code=${code}`),
   news: (code: string) => get<NewsItem[]>(`/news?code=${code}`),

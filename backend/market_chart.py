@@ -25,6 +25,13 @@ INDEX_CODES = {
     "000680": ("科创综指", "sh000680"),
     "000688": ("科创50", "sh000688"),
 }
+GLOBAL_INDEX_CODES = {
+    "DJI": ("道琼斯", "100.DJIA"),
+    "SPX": ("标普500", "100.SPX"),
+    "NDX": ("纳斯达克", "100.NDX"),
+    "HSI": ("恒生指数", "100.HSI"),
+    "HSTECH": ("恒生科技", "124.HSTECH"),
+}
 
 STALE_MAX_AGE = 86_400
 CACHE_MAX_ENTRIES = 128
@@ -35,9 +42,14 @@ class ChartUnavailable(RuntimeError):
 
 
 def normalize_asset_code(asset: str, code: str) -> str:
-    if asset not in {"stock", "index"}:
-        raise ValueError("asset 必须是 stock 或 index")
+    if asset not in {"stock", "index", "global_index"}:
+        raise ValueError("asset 必须是 stock、index 或 global_index")
     normalized = str(code or "").strip()
+    if asset == "global_index":
+        upper = normalized.upper()
+        if upper not in GLOBAL_INDEX_CODES:
+            raise ValueError("不支持的海外指数代码")
+        return upper
     if not re.fullmatch(r"\d{6}", normalized):
         raise ValueError("代码必须是 6 位数字")
     if asset == "index" and normalized not in INDEX_CODES:
@@ -331,6 +343,56 @@ def _akshare_rows(
     )
 
 
+def _fetch_global_index(
+    code: str,
+    period: str,
+    count: int = 60,
+    scope: str = "recent",
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    import astock
+
+    _, secid = GLOBAL_INDEX_CODES[code]
+    klt = {"daily": "101", "weekly": "102", "monthly": "103"}.get(period, "101")
+    lmt = "1000" if scope == "full" else str(max(20, min(int(count or 60), 250)))
+    resp = astock.em_get(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        params={
+            "secid": secid,
+            "klt": klt,
+            "fqt": "0",
+            "lmt": lmt,
+            "end": "20500101",
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57",
+        },
+        timeout=10,
+    )
+    klines = ((resp.json().get("data") or {}).get("klines")) or []
+    points: list[dict[str, Any]] = []
+    for line in klines:
+        parts = str(line).split(",")
+        if len(parts) < 7:
+            continue
+        t_str = parts[0].strip()
+        op, cl, hi, lo = _number(parts[1]), _number(parts[2]), _number(parts[3]), _number(parts[4])
+        vol, amt = _number(parts[5]), _number(parts[6])
+        if cl <= 0:
+            continue
+        points.append({
+            "time": t_str,
+            "open": op or cl,
+            "high": hi or max(op or cl, cl),
+            "low": lo or min(op or cl, cl),
+            "close": cl,
+            "average": None,
+            "volume": vol,
+            "amount": amt,
+        })
+    if not points:
+        raise ChartUnavailable("海外指数行情暂不可用")
+    return "东方财富", points, list(points)
+
+
 def _fetch_from_akshare(
     asset: str,
     code: str,
@@ -339,6 +401,8 @@ def _fetch_from_akshare(
     count: int = 60,
     scope: str = "recent",
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    if asset == "global_index":
+        return _fetch_global_index(code, period, count, scope)
     points = _rows_to_points(_akshare_rows(asset, code, period, adjust, count, scope))
     points = prepare_points(asset, period, points)
     quote_points = list(points)
@@ -440,7 +504,13 @@ def get_chart(
             return payload
         _CACHE.pop(cached_key, None)
         raise ChartUnavailable(str(exc)) from exc
-    name = INDEX_CODES[code][0] if asset == "index" else code
+    name = (
+        INDEX_CODES[code][0]
+        if asset == "index"
+        else GLOBAL_INDEX_CODES[code][0]
+        if asset == "global_index"
+        else code
+    )
     payload = {
         "asset": asset, "code": code, "name": name, "period": period, "adjust": adjust,
         "source": source, "fetchedAt": _iso_now(), "stale": stale,

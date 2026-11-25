@@ -88,12 +88,23 @@ function chartOption(data: MarketChartData, zoomWindow?: ZoomWindow) {
   };
 }
 
-interface Props { asset: "stock" | "index"; code: string; onData?: (data: MarketChartData | null) => void }
+interface Props {
+  asset: "stock" | "index" | "global_index";
+  code: string;
+  defaultPeriod?: ChartPeriod;
+  onData?: (data: MarketChartData | null) => void;
+}
 
-export function MarketChart({ asset, code, onData }: Props) {
+export function MarketChart({ asset, code, defaultPeriod, onData }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const availablePeriods = asset === "global_index" ? periods.filter((item) => item.key !== "intraday" && item.key !== "five_day") : periods;
   const fromUrl = searchParams.get("period");
-  const initialPeriod: ChartPeriod = periods.some((item) => item.key === fromUrl) ? fromUrl as ChartPeriod : "intraday";
+  const fallbackPeriod: ChartPeriod = defaultPeriod && availablePeriods.some((item) => item.key === defaultPeriod)
+    ? defaultPeriod
+    : asset === "global_index"
+      ? "daily"
+      : "intraday";
+  const initialPeriod: ChartPeriod = availablePeriods.some((item) => item.key === fromUrl) ? (fromUrl as ChartPeriod) : fallbackPeriod;
   const [period, setPeriod] = useState<ChartPeriod>(initialPeriod);
   const [data, setData] = useState<MarketChartData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,9 +186,9 @@ export function MarketChart({ asset, code, onData }: Props) {
   }, [asset, code, period]);
   useEffect(() => {
     const next = searchParams.get("period");
-    const restored: ChartPeriod = periods.some((item) => item.key === next) ? next as ChartPeriod : "intraday";
+    const restored: ChartPeriod = availablePeriods.some((item) => item.key === next) ? (next as ChartPeriod) : fallbackPeriod;
     setPeriod((current) => current === restored ? current : restored);
-  }, [searchParams]);
+  }, [searchParams, asset, fallbackPeriod]);
   useEffect(() => {
     const onVisibility = () => setVisible(document.visibilityState === "visible");
     document.addEventListener("visibilitychange", onVisibility);
@@ -193,9 +204,9 @@ export function MarketChart({ asset, code, onData }: Props) {
   return <div className="rounded-xl border border-border/60 bg-muted/10 p-3 sm:p-4">
     <div className="flex flex-wrap items-center gap-2">
       <div className="flex min-w-0 flex-1 flex-wrap gap-1 rounded-lg bg-muted/30 p-1">
-        {periods.map((item) => <button key={item.key} onClick={() => {
+        {availablePeriods.map((item) => <button key={item.key} onClick={() => {
           const next = new URLSearchParams(searchParams);
-          if (item.key === "intraday") next.delete("period"); else next.set("period", item.key);
+          if (item.key === fallbackPeriod) next.delete("period"); else next.set("period", item.key);
           setSearchParams(next, { replace: true });
           setPeriod(item.key);
         }} className={cn("rounded-md px-3 py-1.5 text-xs", period === item.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>{item.label}</button>)}

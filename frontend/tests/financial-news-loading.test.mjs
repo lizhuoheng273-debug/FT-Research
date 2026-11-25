@@ -117,75 +117,75 @@ const sampleEdition = {
   editionDate: "2026-11-25",
   editionType: "evening",
   editionTag: "晚刊",
-  publishTimeLabel: "18:00 定时出刊",
+  publishTimeLabel: "截至 18:00 截稿",
   dateLabel: "2026 年 11 月 25 日 · 星期三",
   dayNumber: "25",
   generatedAt: "2026-11-25T10:00:00Z",
-  overview: "央行降准落地，同时海外纪要与算力资本开支成为各版面关注重点。",
-  marketStrip: { title: "当日收盘客观速览", note: "交易日 2026-11-25", items: [{ name: "上证指数", value: "3386", change: "+0.84%", direction: "up" }] },
-  urgentBanner: { reportKey: "rep-lead", storyId: "st-lead", title: "央行宣布降准 0.25 个百分点", sourceName: "中国人民银行", time: "11月25日 14:30" },
+  storyCount: 4,
   lead: {
     reportKey: "rep-lead",
     storyId: "st-lead",
     milestoneCount: 4,
     reportCount: 12,
     bucket: "macro",
-    sectionName: "宏观与政策",
+    sectionName: "宏观数据与政策",
     title: "央行宣布降准 0.25 个百分点",
-    summary: "释放约 5000 亿元长期流动性。",
-    tags: ["央行"],
+    summary: "中国人民银行宣布下调金融机构存款准备金率 0.25 个百分点，释放约 5000 亿元长期流动性，维护年末资金面平稳。",
     sourceName: "中国人民银行",
     publishedAt: "2026-11-25T06:30:00Z",
-    relativeTime: "3 小时前",
     originalUrl: "https://www.pbc.gov.cn/",
   },
   keyPicks: [
-    { reportKey: "rep-1", storyId: "st-1", sectionCode: "01", sectionName: "宏观与政策", title: "美联储纪要分歧加大", summary: "分歧加大" },
-    { reportKey: "rep-2", storyId: "st-2", sectionCode: "02", sectionName: "国内与 A 股", title: "沪深交易所修订并购重组指引", summary: "修订指引" },
-    { reportKey: "rep-3", storyId: "st-3", sectionCode: "04", sectionName: "产业与科技", title: "海外云巨头上调算力资本开支", summary: "上调开支" },
+    { reportKey: "rep-1", storyId: "st-1", sectionCode: "01", sectionName: "宏观数据与政策", title: "美联储纪要分歧加大", summary: "分歧加大" },
+    { reportKey: "rep-2", storyId: "st-2", sectionCode: "02", sectionName: "市场表现", title: "A股收评：沪指放量上涨 1.4%", summary: "沪指放量上涨" },
+    { reportKey: "rep-3", storyId: "st-3", sectionCode: "03", sectionName: "海外公司事件与财报", title: "英伟达三季度数据中心营收大增", summary: "数据中心营收大增" },
   ],
   sections: [
     {
       key: "macro",
       code: "01",
-      name: "宏观与政策",
+      name: "宏观数据与政策",
       note: "央行与财政",
-      items: [{ reportKey: "rep-1", storyId: "st-1", milestoneCount: 2, reportCount: 4, bucket: "macro", title: "美联储纪要分歧加大", summary: "分歧", tags: [], sourceName: "CNBC", publishedAt: null, originalUrl: "https://cnbc.com" }],
+      items: [{ reportKey: "rep-1", storyId: "st-1", milestoneCount: 2, reportCount: 4, bucket: "macro", title: "美联储纪要分歧加大", summary: "多位委员强调观察核心通胀走势，美债收益率走高。", sourceName: "CNBC", publishedAt: null, originalUrl: "https://cnbc.com" }],
     },
     {
-      key: "china",
+      key: "market",
       code: "02",
-      name: "国内与 A 股",
-      note: "交易所",
-      items: [{ reportKey: "rep-2", storyId: "st-2", milestoneCount: 1, reportCount: 2, bucket: "china", title: "沪深交易所修订并购重组指引", summary: "指引", tags: [], sourceName: "上交所", publishedAt: null, originalUrl: "https://sse.com.cn" }],
+      name: "市场表现",
+      note: "中美港市场",
+      items: [{ reportKey: "rep-2", storyId: "st-2", milestoneCount: 1, reportCount: 2, bucket: "market", title: "A股收评：沪指放量上涨 1.4%", summary: "三大股指集体走高，两市成交额放大至 1.8 万亿元。", sourceName: "第一财经", publishedAt: null, originalUrl: "https://yicai.com" }],
     },
     {
-      key: "tech",
-      code: "04",
-      name: "产业与科技",
-      note: "算力与芯片",
-      items: [{ reportKey: "rep-3", storyId: "st-3", milestoneCount: 3, reportCount: 6, bucket: "tech", title: "海外云巨头上调算力资本开支", summary: "开支", tags: [], sourceName: "FT", publishedAt: null, originalUrl: "https://ft.com" }],
+      key: "companies",
+      code: "03",
+      name: "海外公司事件与财报",
+      note: "重点科技与龙头公司",
+      items: [{ reportKey: "rep-3", storyId: "st-3", milestoneCount: 1, reportCount: 3, bucket: "companies", title: "英伟达三季度数据中心营收大增", summary: "英伟达三季度数据中心营收达 308 亿美元，创单季新高。", sourceName: "FT", publishedAt: null, originalUrl: "https://ft.com" }],
     },
   ],
-  coverage: { activeSources: 20, totalSources: 22, rawReports: 120, trackedStories: 18, selectedCount: 4, sources: [] },
 };
 
-test("renders single lead, three section-backed picks, urgent banner, and calendar independently", async () => {
+test("renders AIHOT-style flat layout with lead, 3 picks, 3 thematic sections, and bottom calendar", async () => {
   let signal;
   const app = mount({
     financialDailyLatest: (_type, s) => {
       signal = s;
       return Promise.resolve(sampleEdition);
     },
-    financialDailyEditions: () => Promise.resolve([{ editionKey: "2026-11-25-evening", editionDate: "2026-11-25", editionType: "evening", publishTimeLabel: "18:00 定时出刊", leadTitle: "央行宣布降准", updatedAt: "" }]),
+    financialDailyEditions: () => Promise.resolve([{ editionKey: "2026-11-25-evening", editionDate: "2026-11-25", editionType: "evening", publishTimeLabel: "截至 18:00 截稿", leadTitle: "央行宣布降准", updatedAt: "" }]),
     financialNewsCalendar: () => Promise.resolve({ items: [{ id: "cal-1" }] }),
   });
   await flush();
 
   const content = app.text();
-  assert.match(content, /今日金融头条/);
-  assert.match(content, /本期看点/);
-  assert.match(content, /持续事件\s+·\s+4\s+个关键节点\s+\/\s+12\s+篇报道/);
+  assert.match(content, /头条/);
+  assert.match(content, /今日看点/);
+  assert.match(content, /宏观数据与政策/);
+  assert.match(content, /市场表现/);
+  assert.match(content, /海外公司事件与财报/);
+  // Removed modules must NOT appear
+  assert.doesNotMatch(content, /本期导读/);
+  assert.doesNotMatch(content, /来源覆盖/);
   assert.equal(app.findAll((n) => n.type === "UpcomingEvents").length, 1);
 
   const pickLinks = app.findAll((n) => /^\/finance\/news\/story\/rep-\d/.test(n.props?.to || ""));
