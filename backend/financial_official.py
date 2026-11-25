@@ -61,8 +61,8 @@ OFFICIAL_PORTALS: tuple[OfficialPortalSpec, ...] = (
     OfficialPortalSpec(
         source_id="sse",
         name="上交所",
-        url="https://www.sse.com.cn/news/newsrelease/",
-        link_hints=("/news/", "/announcement/", ".shtml", ".html"),
+        url="https://www.sse.com.cn/aboutus/mediacenter/hotandd/",
+        link_hints=("/aboutus/", "/mediacenter/", ".shtml", ".html"),
         category="公司",
     ),
     OfficialPortalSpec(

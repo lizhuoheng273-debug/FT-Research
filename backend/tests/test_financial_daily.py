@@ -4,7 +4,7 @@ import json
 from fastapi.testclient import TestClient
 
 import app as app_module
-from financial_daily import FinancialDailyScheduler, FinancialDailyService, _passes_guardrails
+from financial_daily import FinancialDailyScheduler, FinancialDailyService, _passes_guardrails, classify_bucket
 from financial_news import FinancialNewsService
 from financial_news_store import FinancialNewsStore
 from route_policy import policy_for
@@ -409,3 +409,172 @@ def test_scheduler_idempotent_morning_and_evening_and_api_routes(tmp_path, monke
         evt_res = client.get(f"/api/finance/news/tracked-events/{story_id}")
         assert evt_res.status_code == 200
         assert evt_res.json()["data"]["storyId"] == story_id
+
+
+def test_bucket_precedence_noise_clickbait_and_glm_translation_dedup(tmp_path):
+    now = datetime(2026, 11, 25, 18, 10, tzinfo=SHANGHAI)
+    assert classify_bucket("A股午评：沪指跌1.2%，半导体与AI算力回调", "创业板指跌超1%") == "china"
+    assert classify_bucket("2026年1—10月，我国对外直接投资9411.3亿元人民币", "商务部公布数据") == "macro"
+    assert classify_bucket("在岸人民币汇率走强至7.18附近", "外汇市场关注美元指数") == "commodities"
+
+    svc = _make_news_service(tmp_path, lambda: now)
+    svc.store.upsert_reports([
+        {
+            "title": "US preparing plan for new tariffs on 12 global partners",
+            "summary": "Washington outlines new 12 partner tariff proposals.",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "BBC财经",
+            "sourceLevel": "A",
+            "originalUrl": "https://www.bbc.com/tariffs-12",
+        },
+        {
+            "title": "Trump readies new tariffs on 12 major economies",
+            "summary": "Separate report covering the same 12 partner tariff move.",
+            "publishedAt": (now - timedelta(hours=3)).astimezone(UTC).isoformat(),
+            "source": "Financial Times",
+            "sourceLevel": "A",
+            "originalUrl": "https://www.ft.com/tariffs-12",
+        },
+        {
+            "title": "Nvidia quarterly revenue reaches 35.1 billion dollars",
+            "summary": "Data center demand remains strong at 35.1 billion.",
+            "publishedAt": (now - timedelta(hours=4)).astimezone(UTC).isoformat(),
+            "source": "CNBC",
+            "sourceLevel": "A",
+            "originalUrl": "https://www.cnbc.com/nvda-35",
+        },
+        {
+            "title": "久远银海：在互动平台表示大模型已应用于部分政务项目",
+            "summary": "投资者互动平台回复提问。",
+            "publishedAt": (now - timedelta(hours=1)).astimezone(UTC).isoformat(),
+            "source": "Financial Times",
+            "sourceLevel": "A",
+            "originalUrl": "https://finance.example.com/ir-qa",
+        },
+        {
+            "title": "100%！美联储加息大消息！“华尔街之狼”发出警告",
+            "summary": "发生了什么？",
+            "publishedAt": (now - timedelta(hours=1)).astimezone(UTC).isoformat(),
+            "source": "CNBC",
+            "sourceLevel": "A",
+            "originalUrl": "https://finance.example.com/clickbait",
+        },
+        {
+            "title": "上交所公布科创板指数样本调整名单",
+            "summary": "例行指数样本调整将于下月生效。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "上交所",
+            "sourceLevel": "S",
+            "official": True,
+            "originalUrl": "https://www.sse.com.cn/index-adj",
+        },
+        {
+            "title": "现货黄金回升至 2645 美元/盎司，关注美元走势",
+            "summary": "国际金价震荡上行。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "Financial Times",
+            "sourceLevel": "A",
+            "originalUrl": "https://www.ft.com/gold-2645",
+        },
+    ])
+
+    def mock_llm(messages):
+        user_msg = messages[-1]["content"]
+        if "SAME_NODE" in user_msg:
+            payload = json.loads(user_msg.split("：\n", 1)[1])
+            return [{"reportKey": r["reportKey"], "action": "NEW_STORY"} for r in payload]
+        if "breadth" in user_msg:
+            payload = json.loads(user_msg.split("：\n", 1)[1])
+            bbc_key = next(r["reportKey"] for r in payload if "BBC" in r["source"])
+            out = []
+            for r in payload:
+                if "BBC" in r["source"]:
+                    out.append({
+                        "reportKey": r["reportKey"],
+                        "breadth": 4.9,
+                        "novelty": 4.8,
+                        "evidence": 4.6,
+                        "bucket": "macro",
+                        "titleZh": "美国拟对 12 个贸易伙伴推出新关税方案",
+                        "summaryZh": "美方正拟定针对 12 个贸易伙伴的新关税提案。",
+                    })
+                elif "Financial Times" in r["source"] and "tariffs" in r["title"].lower():
+                    out.append({
+                        "reportKey": r["reportKey"],
+                        "breadth": 4.5,
+                        "novelty": 4.4,
+                        "evidence": 4.5,
+                        "bucket": "macro",
+                        "duplicateOf": bbc_key,
+                    })
+                elif "Nvidia" in r["title"]:
+                    out.append({
+                        "reportKey": r["reportKey"],
+                        "breadth": 4.2,
+                        "novelty": 4.0,
+                        "evidence": 4.3,
+                        "bucket": "tech",
+                        "titleZh": "英伟达季度营收达 999 亿美元大关",  # fabricated number -> guardrail must reject
+                    })
+                else:
+                    out.append({
+                        "reportKey": r["reportKey"],
+                        "breadth": 3.8,
+                        "novelty": 3.5,
+                        "evidence": 4.0,
+                        "bucket": r["bucket"],
+                    })
+            return out
+        if "先了解这件事" in user_msg:
+            return {"paragraphs": ["围绕 12 个贸易伙伴的关税方案引发市场关注。"], "latestMilestoneSummary": "提案正在酝酿。"}
+        if "本期导读" in user_msg:
+            return {"overview": "本期关注美国拟对 12 个贸易伙伴推出新关税方案。"}
+        return {}
+
+    daily = FinancialDailyService(
+        svc,
+        official_fetcher=_StubOfficial([]),
+        market_review_service=_StubMarketReview(),
+        now_fn=lambda: now,
+        llm_call=mock_llm,
+    )
+    edition = daily.compose_edition(refresh_upstream=False, allow_llm=True)
+
+    assert edition["coverage"]["editorialEngine"] == "glm"
+    all_items = ([edition["lead"]] if edition["lead"] else []) + [
+        item for sec in edition["sections"] for item in sec["items"]
+    ]
+    all_titles = [item["title"] for item in all_items]
+    assert not any("互动平台" in t for t in all_titles)
+    assert not any("华尔街之狼" in t or "100%！" in t for t in all_titles)
+
+    # Cross-outlet tariff story folded into 1 surviving entry translated to Chinese
+    tariff_items = [item for item in all_items if "关税" in item["title"] or "tariff" in item["title"].lower()]
+    assert len(tariff_items) == 1
+    assert tariff_items[0]["title"] == "美国拟对 12 个贸易伙伴推出新关税方案"
+    assert tariff_items[0]["originalTitle"] == "US preparing plan for new tariffs on 12 global partners"
+    assert tariff_items[0]["independentCount"] >= 2
+
+    # Guardrail rejects fabricated "999" titleZh while keeping original report
+    nvda_items = [item for item in all_items if "Nvidia" in item["title"] or "英伟达" in item["title"]]
+    assert len(nvda_items) == 1
+    assert nvda_items[0]["title"] == "Nvidia quarterly revenue reaches 35.1 billion dollars"
+
+
+def test_scheduler_passes_refresh_upstream_flag(tmp_path):
+    now = datetime(2026, 11, 25, 8, 5, tzinfo=SHANGHAI)
+    svc = _make_news_service(tmp_path, lambda: now)
+    daily = FinancialDailyService(svc, official_fetcher=_StubOfficial([]), now_fn=lambda: now)
+    calls = []
+    orig = daily.compose_edition
+
+    def spy_compose(*args, **kwargs):
+        calls.append(kwargs)
+        return orig(*args, **kwargs)
+
+    daily.compose_edition = spy_compose
+    sched = FinancialDailyScheduler(daily, refresh_upstream=True)
+    sched.run_once()
+    assert len(calls) == 1
+    assert calls[0]["refresh_upstream"] is True
+    assert calls[0]["allow_llm"] is True

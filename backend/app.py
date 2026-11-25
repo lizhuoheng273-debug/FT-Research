@@ -80,7 +80,7 @@ financial_daily_service = FinancialDailyService(
     market_review_service=market_review_service,
     global_indices_fn=market.get_global_indices_snapshot,
 )
-financial_daily_scheduler = FinancialDailyScheduler(financial_daily_service)
+financial_daily_scheduler = FinancialDailyScheduler(financial_daily_service, refresh_upstream=True)
 
 
 @asynccontextmanager

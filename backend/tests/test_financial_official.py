@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from financial_official import OfficialNewsFetcher, OfficialPortalSpec, parse_official_html
+from financial_official import OFFICIAL_PORTALS, OfficialNewsFetcher, OfficialPortalSpec, parse_official_html
+
+
+def test_sse_portal_uses_active_mediacenter_url():
+    sse = next(p for p in OFFICIAL_PORTALS if p.source_id == "sse")
+    assert sse.url == "https://www.sse.com.cn/aboutus/mediacenter/hotandd/"
 
 
 def test_parse_official_html_filters_nav_future_and_unsafe_links():

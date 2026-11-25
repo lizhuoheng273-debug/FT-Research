@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -39,14 +40,26 @@ _BUCKET_BY_KEY = {row["key"]: row for row in FINANCE_BUCKETS}
 _NON_ADVISORY_RE = re.compile(r"买入建议|强烈推荐|目标价|必涨|抄底|建议买入|建议卖出|重仓买入|坚决看多|逢低买入")
 _NUMERIC_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?%?")
 
+_ASHARE_WRAP_RE = re.compile(r"A股(?:午评|收评|早评|三大股指|开盘|收盘)|沪指|深成指|创业板指|科创50|北证50", re.I)
+_NOISE_RE = re.compile(
+    r"在互动平台表示|互动平台回复|投资者互动平台|互动易回复|回复投资者提问|董秘回复|"
+    r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总",
+    re.I,
+)
+_CLICKBAIT_RE = re.compile(
+    r"100%！|刚刚！.*突发|突发！.*大消息|重磅！.*大消息|发生了什么？|惊天|炸裂|史诗级|太猛了|暴涨预警|华尔街之狼",
+    re.I,
+)
 _MACRO_RE = re.compile(
     r"央行|美联储|欧央行|利率|降息|加息|降准|LPR|MLF|逆回购|财政部|发改委|国新办|国务院|"
-    r"通胀|CPI|PPI|PCE|PMI|GDP|非农|失业率|关税|贸易|国债|货币政策|fomc|fed|ecb|inflation|tariff|treasury",
+    r"通胀|CPI|PPI|PCE|PMI|GDP|非农|失业率|关税|贸易|国债|货币政策|fomc|fed|ecb|inflation|tariff|treasury|"
+    r"对外直接投资|外贸|进出口|社融|M2|社会消费品零售|工业增加值",
     re.I,
 )
 _COMMODITY_FX_RE = re.compile(
     r"原油|油价|布伦特|WTI|黄金|白银|铜价|铝|碳酸锂|天然气|煤炭|铁矿石|"
-    r"汇率|人民币|美元指数|欧元|日元|美债收益率|brent|crude|oil price|gold|copper|forex|currency",
+    r"汇率|人民币汇率|离岸人民币|在岸人民币|美元兑人民币|人民币兑美元|中间价|外汇|"
+    r"美元指数|欧元|日元|美债收益率|brent|crude|oil price|gold|copper|forex|currency",
     re.I,
 )
 _TECH_RE = re.compile(
@@ -69,6 +82,7 @@ _ENTITY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pboc", ("中国人民银行", "中国央行", "央行", "pboc")),
     ("fed", ("美联储", "federal reserve", "fomc", "fed")),
     ("ecb", ("欧央行", "欧洲央行", "ecb", "european central bank")),
+    ("boj", ("日本央行", "日央行", "bank of japan", "boj")),
     ("csrc", ("证监会", "csrc")),
     ("sse", ("上交所", "上海证券交易所", "sse")),
     ("szse", ("深交所", "深圳证券交易所", "szse")),
@@ -76,15 +90,28 @@ _ENTITY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("mof", ("财政部",)),
     ("miit", ("工信部", "工业和信息化部", "miit")),
     ("sec", ("sec", "form 8-k", "form 10-k")),
+    ("trump", ("特朗普", "trump", "donald trump")),
+    ("tariff", ("关税", "tariff", "tariffs")),
+    ("huawei", ("华为", "huawei")),
+    ("us_trade", ("美国商务部", "贸易战", "trading partners", "major economies")),
     ("nvidia", ("英伟达", "nvidia", "nvda")),
     ("apple", ("苹果", "apple", "aapl")),
     ("microsoft", ("微软", "microsoft", "msft")),
+    ("google", ("谷歌", "alphabet", "google", "googl")),
+    ("amazon", ("亚马逊", "amazon", "amzn")),
+    ("meta", ("meta", "facebook")),
     ("tesla", ("特斯拉", "tesla", "tsla")),
     ("tsmc", ("台积电", "tsmc")),
     ("alibaba", ("阿里巴巴", "阿里", "alibaba", "baba")),
     ("tencent", ("腾讯", "tencent")),
+    ("bytedance", ("字节跳动", "bytedance", "tiktok")),
+    ("openai", ("openai", "chatgpt")),
+    ("xiaomi", ("小米", "xiaomi")),
+    ("byd", ("比亚迪", "byd")),
+    ("catl", ("宁德时代", "catl")),
     ("gold", ("黄金", "金价", "gold")),
     ("oil", ("原油", "布伦特", "wti", "brent", "crude")),
+    ("boe", ("英国央行", "bank of england", "boe")),
     ("rrr", ("降准", "存款准备金率", "rrr")),
     ("cpi", ("cpi", "通胀", "inflation", "pce")),
     ("pmi", ("pmi", "制造业pmi")),
@@ -138,6 +165,8 @@ def extract_entities(title: str, summary: str = "") -> set[str]:
 
 def classify_bucket(title: str, summary: str = "", track: str = "", source: str = "") -> str:
     blob = f"{title} {summary[:300]}"
+    if _ASHARE_WRAP_RE.search(title):
+        return "china"
     if _COMMODITY_FX_RE.search(blob):
         return "commodities"
     if _MACRO_RE.search(blob) or source in {"中国人民银行", "Federal Reserve", "European Central Bank", "中国政府网", "国家统计局"}:
@@ -167,11 +196,14 @@ def _effective_grade(report: dict[str, Any], registry: dict[str, Any]) -> str:
 
 def _has_market_relevance(report: dict[str, Any]) -> bool:
     title = str(report.get("title") or "")
+    summary = str(report.get("summary") or "")
     if not title or is_roundup(title):
+        return False
+    if _NOISE_RE.search(title) or _NOISE_RE.search(summary[:200]):
         return False
     if financial_topic(report) is not None:
         return True
-    blob = f"{title} {report.get('summary', '')[:300]}"
+    blob = f"{title} {summary[:300]}"
     return bool(_MACRO_RE.search(blob) or _COMMODITY_FX_RE.search(blob) or _TECH_RE.search(blob) or _CHINA_RE.search(blob) or _GLOBAL_RE.search(blob))
 
 
@@ -255,8 +287,24 @@ class FinancialDailyService:
             raw = resp["choices"][0]["message"].get("content") or ""
         if isinstance(raw, (dict, list)):
             return raw
-        cleaned = re.sub(r"^```(?:json)?|```$", "", str(raw).strip(), flags=re.I).strip()
-        return json.loads(cleaned)
+        cleaned = re.sub(r"^```(?:json)?|```$", "", str(raw).strip(), flags=re.I | re.M).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            candidates: list[tuple[int, str]] = []
+            for start_ch, end_ch in (("[", "]"), ("{", "}")):
+                start = cleaned.find(start_ch)
+                end = cleaned.rfind(end_ch)
+                if start != -1 and end > start:
+                    candidates.append((start, end_ch))
+            candidates.sort(key=lambda item: item[0])
+            for start, end_ch in candidates:
+                end = cleaned.rfind(end_ch)
+                try:
+                    return json.loads(cleaned[start : end + 1])
+                except json.JSONDecodeError:
+                    continue
+            raise
 
     def _hotlist_index(self) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
         overview = self.news_service.overview() or {}
@@ -379,6 +427,8 @@ class FinancialDailyService:
         if not _safe_http_url(report.get("originalUrl")):
             return False
         if not _has_market_relevance(report):
+            return False
+        if _CLICKBAIT_RE.search(str(report.get("title") or "")) and not report.get("official") and corroborating_count < 2:
             return False
         grade = str(report.get("sourceLevel") or "C").upper()
         if report.get("official") or grade == "S":
@@ -732,7 +782,7 @@ class FinancialDailyService:
                 by_day[day]["value"] += 8
         return list(by_day.values())[-7:]
 
-    def _ensure_event_overview(self, story: dict[str, Any], *, allow_llm: bool) -> dict[str, Any]:
+    def _prepare_event_overview(self, story: dict[str, Any], *, allow_llm: bool) -> tuple[dict[str, Any], str, bool]:
         milestones = story.get("milestones") or []
         reports = story.get("reports") or []
         corpus_material = [
@@ -748,7 +798,7 @@ class FinancialDailyService:
         inputs_hash = hashlib.sha1(json.dumps(corpus_material, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
         existing_overview = story.get("overview") or {}
         if existing_overview.get("paragraphs") and story.get("overviewInputsHash") == inputs_hash:
-            return existing_overview
+            return existing_overview, inputs_hash, False
 
         latest_ms = milestones[0] if milestones else {}
         latest_line = f"{_format_beijing(latest_ms.get('occurredAt'))} · {latest_ms.get('title', story['title'])}" if latest_ms else ""
@@ -763,8 +813,7 @@ class FinancialDailyService:
         }
 
         if not allow_llm or not reports:
-            self.store.update_tracked_overview(story["storyId"], fallback, inputs_hash)
-            return fallback
+            return fallback, inputs_hash, True
 
         source_corpus = " ".join(f"{r.get('title', '')} {r.get('summary', '')}" for r in reports)
         prev_paragraphs = existing_overview.get("paragraphs") or []
@@ -790,13 +839,17 @@ class FinancialDailyService:
                 joined = " ".join(paras + [latest_sum])
                 if paras and _passes_guardrails(joined, source_corpus):
                     overview = {"paragraphs": paras, "latestMilestoneSummary": latest_sum, "generatedBy": "glm"}
-                    self.store.update_tracked_overview(story["storyId"], overview, inputs_hash)
-                    return overview
+                    return overview, inputs_hash, True
         except Exception:  # noqa: BLE001
             logger.exception("event overview generation failed; using factual fallback")
 
-        self.store.update_tracked_overview(story["storyId"], fallback, inputs_hash)
-        return fallback
+        return fallback, inputs_hash, True
+
+    def _ensure_event_overview(self, story: dict[str, Any], *, allow_llm: bool) -> dict[str, Any]:
+        overview, inputs_hash, changed = self._prepare_event_overview(story, allow_llm=allow_llm)
+        if changed:
+            self.store.update_tracked_overview(story["storyId"], overview, inputs_hash)
+        return overview
 
     def _rule_candidate_score(self, story: dict[str, Any], rep: dict[str, Any], now_dt: datetime) -> float:
         grade = _effective_grade(rep, self.registry)
@@ -806,11 +859,14 @@ class FinancialDailyService:
         recency_pts = max(0.0, 25.0 - age_h * 1.1)
         indep_count = len(independent_sources(story.get("reports") or [rep]))
         hot_bonus = 12.0 if rep.get("hotlistSignal") else 0.0
-        return grade_pts + recency_pts + min(20.0, indep_count * 5.0) + hot_bonus
+        clickbait_penalty = -25.0 if _CLICKBAIT_RE.search(str(rep.get("title") or "")) else 0.0
+        return grade_pts + recency_pts + min(20.0, indep_count * 5.0) + hot_bonus + clickbait_penalty
 
-    def _rerank_with_glm(self, candidates: list[dict[str, Any]], *, allow_llm: bool) -> dict[str, dict[str, Any]]:
+    def _rerank_with_glm(self, candidates: list[dict[str, Any]], *, allow_llm: bool) -> tuple[dict[str, dict[str, Any]], bool]:
         scores: dict[str, dict[str, Any]] = {}
+        cand_by_key: dict[str, dict[str, Any]] = {}
         for c in candidates:
+            cand_by_key[c["reportKey"]] = c
             grade = c["sourceTierGrade"]
             ev_default = 5.0 if (c["official"] or grade == "S") else 3.5 if grade == "A" else 2.0
             br_default = 4.0 if c["bucket"] in {"macro", "commodities"} else 3.2
@@ -820,10 +876,13 @@ class FinancialDailyService:
                 "novelty": nv_default,
                 "evidence": ev_default,
                 "bucket": c["bucket"],
+                "duplicateOf": "",
+                "titleZh": "",
+                "summaryZh": "",
             }
 
         if not allow_llm or not candidates:
-            return scores
+            return scores, False
 
         compact = [
             {
@@ -838,13 +897,17 @@ class FinancialDailyService:
             }
             for c in candidates[:60]
         ]
+        llm_used = False
         try:
             rows = self._call_llm_json(
-                "你是客观金融日报主编。只输出 JSON 数组，严格基于事实评估广度、增量和证据强度，严禁编造或给出投资建议。",
+                "你是客观金融日报主编。只输出严格 JSON 数组，严格基于事实评估广度、增量与证据强度，翻译英文资讯，并识别跨媒体重复事件，严禁编造或给出投资建议。",
                 (
-                    "请为以下候选财经资讯逐条打分（每项 0-5 分，可带一位小数），并确认最贴切的板块 bucket"
-                    "（macro|china|global|tech|commodities）。返回 JSON 数组，每项字段："
-                    "reportKey, breadth, novelty, evidence, bucket：\n"
+                    "请为以下候选财经资讯逐条打分（breadth/novelty/evidence 各 0-5 分，可带一位小数），确认最贴切的板块 bucket"
+                    "（macro|china|global|tech|commodities），并补充可选字段："
+                    "duplicateOf（若与本批次另一条报道讲述同一具体新闻事件，填写更权威或更早那条的 reportKey，否则不填）、"
+                    "titleZh（若原标题主要为英文则必填，译为客观简练中文标题并原样保留数字，不要换算单位或给出投资建议）、"
+                    "summaryZh（若原摘要主要为英文则必填，译为客观一句中文事实摘要<=90字并原样保留数字）。"
+                    "返回严格 JSON 数组，每项字段：reportKey, breadth, novelty, evidence, bucket, duplicateOf(可选), titleZh(可选), summaryZh(可选)：\n"
                     + json.dumps(compact, ensure_ascii=False)
                 ),
             )
@@ -864,10 +927,30 @@ class FinancialDailyService:
                     bucket = str(row.get("bucket") or scores[rkey]["bucket"])
                     if bucket not in _BUCKET_BY_KEY:
                         bucket = scores[rkey]["bucket"]
-                    scores[rkey] = {"breadth": breadth, "novelty": novelty, "evidence": evidence, "bucket": bucket}
+                    dup_of = str(row.get("duplicateOf") or "").strip()
+                    if dup_of == rkey or dup_of not in cand_by_key:
+                        dup_of = ""
+                    cand = cand_by_key[rkey]
+                    source_corpus = f"{cand['title']} {cand['summary']}"
+                    title_zh = str(row.get("titleZh") or "").strip()
+                    if title_zh and not _passes_guardrails(title_zh, source_corpus):
+                        title_zh = ""
+                    summary_zh = str(row.get("summaryZh") or "").strip()
+                    if summary_zh and not _passes_guardrails(summary_zh, source_corpus):
+                        summary_zh = ""
+                    scores[rkey] = {
+                        "breadth": breadth,
+                        "novelty": novelty,
+                        "evidence": evidence,
+                        "bucket": bucket,
+                        "duplicateOf": dup_of,
+                        "titleZh": title_zh[:160] if title_zh else "",
+                        "summaryZh": summary_zh[:220] if summary_zh else "",
+                    }
+                    llm_used = True
         except Exception:  # noqa: BLE001
             logger.exception("glm editorial rerank failed; using deterministic scores")
-        return scores
+        return scores, llm_used
 
     def _build_market_strip(self, edition_type: str) -> dict[str, Any]:
         if edition_type == "evening" and self.market_review_service is not None:
@@ -1044,13 +1127,32 @@ class FinancialDailyService:
             recalled: list[dict[str, Any]] = []
             for key in bucket_pools:
                 bucket_pools[key].sort(key=lambda item: item["_ruleScore"], reverse=True)
-                recalled.extend(bucket_pools[key][:15])
+                recalled.extend(bucket_pools[key][:10])
 
-            # Stage B: 4-axis rerank
-            rerank_map = self._rerank_with_glm(recalled, allow_llm=allow_llm)
+            # Stage B: 4-axis rerank + cross-outlet duplicate folding + English -> Chinese translation
+            rerank_map, llm_rerank_used = self._rerank_with_glm(recalled, allow_llm=allow_llm)
+            by_key = {c["reportKey"]: c for c in recalled}
+            dropped_keys: set[str] = set()
             for cand in recalled:
+                rk = rerank_map.get(cand["reportKey"]) or {}
+                dup_target = str(rk.get("duplicateOf") or "").strip()
+                if dup_target and dup_target != cand["reportKey"] and dup_target in by_key:
+                    # Avoid mutual/cyclic drops: resolve up to 2 hops and never drop if target is already dropped
+                    if dup_target not in dropped_keys and cand["reportKey"] not in dropped_keys:
+                        by_key[dup_target]["independentCount"] += 1
+                        dropped_keys.add(cand["reportKey"])
+
+            filtered_recalled: list[dict[str, Any]] = []
+            for cand in recalled:
+                if cand["reportKey"] in dropped_keys:
+                    continue
                 rk = rerank_map.get(cand["reportKey"]) or {"breadth": 3.0, "novelty": 3.0, "evidence": 3.0, "bucket": cand["bucket"]}
                 cand["bucket"] = rk["bucket"]
+                if rk.get("titleZh"):
+                    cand["originalTitle"] = cand["title"]
+                    cand["title"] = rk["titleZh"]
+                if rk.get("summaryZh"):
+                    cand["summary"] = rk["summaryZh"]
                 hot_pts = 5.0 if cand.get("hotlistSignal") else min(5.0, float(cand["independentCount"]))
                 cand["finalScore"] = round(
                     rk["breadth"] * 0.35 * 20.0
@@ -1060,6 +1162,8 @@ class FinancialDailyService:
                     2,
                 )
                 cand["evidenceScore"] = rk["evidence"]
+                filtered_recalled.append(cand)
+            recalled = filtered_recalled
 
             recalled.sort(key=lambda item: (item["finalScore"], item["official"], item["independentCount"]), reverse=True)
 
@@ -1139,12 +1243,33 @@ class FinancialDailyService:
                     if len(key_picks) >= 3:
                         break
 
-            # Precompute event overviews for lead + selected stories
+            # Precompute event overviews for lead + selected stories (prioritize lead/keyPicks + multi-report for GLM)
             selected_story_ids = ({lead["storyId"]} if lead else set()) | {item["storyId"] for item in all_section_items}
+            priority_story_ids = ({lead["storyId"]} if lead else set()) | {item["storyId"] for item in key_picks}
             story_by_id = {st["storyId"]: st for st in stories}
-            for sid in selected_story_ids:
-                if sid in story_by_id:
-                    self._ensure_event_overview(story_by_id[sid], allow_llm=allow_llm)
+            ordered_sids = [sid for sid in priority_story_ids if sid in selected_story_ids] + [
+                sid for sid in selected_story_ids if sid not in priority_story_ids
+            ]
+            llm_story_set: set[str] = set()
+            if allow_llm:
+                for sid in ordered_sids:
+                    st = story_by_id.get(sid)
+                    if not st:
+                        continue
+                    if sid in priority_story_ids or len(st.get("reports") or []) >= 2:
+                        llm_story_set.add(sid)
+                    if len(llm_story_set) >= 6:
+                        break
+            prep_tasks = [(sid, story_by_id[sid], sid in llm_story_set) for sid in ordered_sids if sid in story_by_id]
+            if prep_tasks:
+                if allow_llm and llm_story_set:
+                    with ThreadPoolExecutor(max_workers=4) as pool:
+                        ov_results = list(pool.map(lambda args: (args[0], self._prepare_event_overview(args[1], allow_llm=args[2])), prep_tasks))
+                else:
+                    ov_results = [(sid, self._prepare_event_overview(st, allow_llm=False)) for sid, st, _ in prep_tasks]
+                for sid, (ov, inputs_hash, changed) in ov_results:
+                    if changed:
+                        self.store.update_tracked_overview(sid, ov, inputs_hash)
 
             # Urgent live breaking banner (S-tier official within 4h)
             urgent_banner = None
@@ -1218,6 +1343,7 @@ class FinancialDailyService:
                     "rawReports": len(reports),
                     "trackedStories": len(stories),
                     "selectedCount": (1 if lead_clean else 0) + len(all_section_items),
+                    "editorialEngine": "glm" if llm_rerank_used else "rule",
                     "sources": source_health_list,
                 },
             }
@@ -1239,10 +1365,11 @@ class FinancialDailyService:
         return self.store.list_daily_editions(limit=limit)
 
     def latest_edition(self, edition_type: str | None = None) -> dict[str, Any]:
-        stored = self.store.get_latest_daily_edition(edition_type=edition_type)
-        if stored:
-            return stored
-        return self.compose_edition(edition_type=edition_type, refresh_upstream=False, allow_llm=False)
+        with self._lock:
+            stored = self.store.get_latest_daily_edition(edition_type=edition_type)
+            if stored:
+                return stored
+            return self.compose_edition(edition_type=edition_type, refresh_upstream=False, allow_llm=False)
 
     def get_edition(self, edition_key: str) -> dict[str, Any] | None:
         return self.store.get_daily_edition(edition_key)
@@ -1385,9 +1512,10 @@ class FinancialDailyService:
 class FinancialDailyScheduler:
     """Schedules 08:00 morning and 18:00 evening editions + hourly heat snapshots."""
 
-    def __init__(self, service: FinancialDailyService, *, interval_seconds: int = 60):
+    def __init__(self, service: FinancialDailyService, *, interval_seconds: int = 60, refresh_upstream: bool = False):
         self.service = service
         self.interval_seconds = max(10, int(interval_seconds))
+        self.refresh_upstream = refresh_upstream
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_hour_key: str | None = None
@@ -1398,11 +1526,21 @@ class FinancialDailyScheduler:
         today = now_bj.strftime("%Y-%m-%d")
 
         if now_bj.hour >= 8 and not self.service.get_edition(f"{today}-morning"):
-            self.service.compose_edition(edition_date=today, edition_type="morning", refresh_upstream=False, allow_llm=True)
+            self.service.compose_edition(
+                edition_date=today,
+                edition_type="morning",
+                refresh_upstream=self.refresh_upstream,
+                allow_llm=True,
+            )
             generated.append(f"{today}-morning")
 
         if now_bj.hour >= 18 and not self.service.get_edition(f"{today}-evening"):
-            self.service.compose_edition(edition_date=today, edition_type="evening", refresh_upstream=False, allow_llm=True)
+            self.service.compose_edition(
+                edition_date=today,
+                edition_type="evening",
+                refresh_upstream=self.refresh_upstream,
+                allow_llm=True,
+            )
             generated.append(f"{today}-evening")
 
         hour_key = now_bj.strftime("%Y-%m-%d %H:00")
