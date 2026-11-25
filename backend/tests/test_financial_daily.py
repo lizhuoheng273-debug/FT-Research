@@ -754,3 +754,100 @@ def test_scheduler_passes_refresh_upstream_flag(tmp_path):
     assert len(calls) == 1
     assert calls[0]["refresh_upstream"] is True
     assert calls[0]["allow_llm"] is True
+
+
+def test_clean_body_strips_login_menu_fluff_and_company_cap_and_english_followup_translation(tmp_path):
+    # 1. Login modal & channel nav dump must be completely stripped from extracted body
+    dirty_html = """
+    <div class="header-nav"><p>退出 激活卡 电子版 购物车 注册 登录</p></div>
+    <div class="login-modal"><h2>用户名登录 / 手机号登录 还没有账号? 免费注册</h2></div>
+    <ul>
+      <li>推荐 经济观察报 政策解读 上市公司 现代广告 论坛活动 文化艺术 心理观察</li>
+      <li>快讯 全部 时政 公司 A股 港股 美股 基金 商品</li>
+    </ul>
+    <div class="xx_boxsing">
+      <h2>核心进展</h2>
+      <p>英伟达董事会一致投票恢复黄仁勋总裁、首席执行官及董事职务，并表示已听取美国政府高层意见。</p>
+      <p>董事会声明称，独立调查仍将继续，同时增设国家安全与出口管制委员会。</p>
+    </div>
+    """
+    clean_md = _html_to_clean_markdown(dirty_html)
+    assert "用户名登录" not in clean_md
+    assert "购物车" not in clean_md
+    assert "现代广告" not in clean_md
+    assert "## 核心进展" in clean_md
+    assert "英伟达董事会一致投票恢复黄仁勋" in clean_md
+
+    # 2. Tabloid fluff ("穿迪奥棉夹克") is filtered, and same company gets at most 1 card in companies section
+    now = datetime(2026, 11, 25, 18, 10, tzinfo=SHANGHAI)
+    svc = _make_news_service(tmp_path, lambda: now)
+    collected = [
+        {
+            "title": "黄仁勋11天内辞任又复职，英伟达董事会称听取美国政府高层意见",
+            "summary": "英伟达董事会投票恢复黄仁勋全部职务。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "经济观察网",
+            "sourceLevel": "A",
+            "originalUrl": "https://eeo.com.cn/nvda-1",
+        },
+        {
+            "title": "黄仁勋重返Nvidia：美中AI竞争不只关乎芯片，更是人才之争",
+            "summary": "黄仁勋重返CEO职位引发业界讨论。",
+            "publishedAt": (now - timedelta(hours=3)).astimezone(UTC).isoformat(),
+            "source": "CNBC",
+            "sourceLevel": "A",
+            "originalUrl": "https://cnbc.com/nvda-2",
+        },
+        {
+            "title": "黄仁勋复职首秀弃皮衣穿迪奥棉夹克，售价28000元官网多尺寸售罄",
+            "summary": "穿搭花边消息。",
+            "publishedAt": (now - timedelta(hours=1)).astimezone(UTC).isoformat(),
+            "source": "经济观察网",
+            "sourceLevel": "A",
+            "originalUrl": "https://eeo.com.cn/nvda-jacket",
+        },
+        {
+            "title": "小米三季度财报披露手机毛利率不及预期，电动车业务亏损收窄",
+            "summary": "小米三季度营收同比增30%，存储芯片成本上升拖累手机毛利率。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "华尔街见闻",
+            "sourceLevel": "A",
+            "originalUrl": "https://wallstreetcn.com/xiaomi-1",
+        },
+        {
+            "title": "美联储会议纪要显示官员对后续降息节奏分歧加大",
+            "summary": "核心通胀黏性令多位委员偏向谨慎。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "CNBC",
+            "sourceLevel": "A",
+            "originalUrl": "https://cnbc.com/fed-1",
+        },
+    ]
+    daily = FinancialDailyService(svc, official_fetcher=_StubCollector(collected), now_fn=lambda: now)
+    edition = daily.compose_edition(refresh_upstream=False, allow_llm=False)
+    all_items = ([edition["lead"]] if edition["lead"] else []) + [
+        it for sec in edition["sections"] for it in sec["items"]
+    ]
+    assert not any("迪奥棉夹克" in it["title"] for it in all_items)
+    comp_sec = next(s for s in edition["sections"] if s["key"] == "companies")
+    nvda_in_comp = [it for it in comp_sec["items"] if "黄仁勋" in it["title"] or "Nvidia" in it["title"]]
+    assert len(nvda_in_comp) <= 1
+
+    # 3. purge_unapproved_sources cleans legacy unapproved stories cleanly
+    svc.store.upsert_reports([
+        {
+            "title": "旧版虎嗅文章",
+            "summary": "不应残留。",
+            "publishedAt": (now - timedelta(hours=4)).astimezone(UTC).isoformat(),
+            "source": "虎嗅",
+            "originalUrl": "https://huxiu.com/old-1",
+        }
+    ])
+    old_rep = next(r for r in svc.store.load_reports(hours=72) if r["source"] == "虎嗅")
+    svc.store.upsert_tracked_story(story_id="st-old-huxiu", title="旧版虎嗅事件", bucket="companies")
+    svc.store.upsert_milestone(milestone_id="ms-old-1", story_id="st-old-huxiu", title="旧节点", occurred_at=old_rep["publishedAt"], representative_report_key=old_rep["id"])
+    svc.store.link_milestone_report(milestone_id="ms-old-1", story_id="st-old-huxiu", report_key=old_rep["id"])
+    removed = svc.store.purge_unapproved_sources({"华尔街见闻", "CNBC", "经济观察网"})
+    assert removed >= 1
+    assert svc.store.get_tracked_story("st-old-huxiu") is None
+

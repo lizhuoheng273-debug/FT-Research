@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from data_paths import cache_path
 from financial_daily_sources import (
+    _BOILERPLATE_BODY_SIGNALS,
     DAILY_SOURCES,
     SOURCE_SPEC_BY_NAME,
     FinancialDailySourceCollector,
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v3.1"
+PROMPT_VERSION = "financial-daily-v4"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -69,6 +70,7 @@ _NOISE_RE = re.compile(
     r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总|"
     r"开展\d+亿元.*逆回购|公开市场业务交易公告|股东户数|过街码|地铁.*试点|党内法规|地方委员会工作条例|"
     r"三峡水运|常态化帮扶资金|thanksgiving|grocery stores|black friday deals|holiday shopping|"
+    r"弃皮衣|穿迪奥|棉夹克|售价\d+元.*售罄|同款标价|街拍|衣品|造型首秀|穿搭|"
     r"gta\s*6|video game|declares\s+\$[\d.]+\s+dividend|monthly distribution|quarterly distribution|"
     r"buying a new bmw|in my 70s|owner of detroit lions|dies at \d+",
     re.I,
@@ -136,6 +138,11 @@ _ENTITY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cpi", ("cpi", "通胀", "inflation", "pce")),
     ("gdp", ("gdp", "国内生产总值")),
 )
+_GENERIC_ENTITIES = {"trump"}
+_COMPANY_ENTITIES = {
+    "nvidia", "xiaomi", "apple", "microsoft", "google", "amazon", "meta", "tesla",
+    "dell", "tsmc", "micron", "openai", "huawei", "alibaba", "tencent", "byd", "catl",
+}
 
 _EN_STOPWORDS = {
     "the", "and", "for", "with", "from", "that", "this", "has", "have", "had", "are", "was", "were",
@@ -472,6 +479,13 @@ class FinancialDailyService:
 
         # Include previously stored reports from our 44 approved sources (or all seeded store rows in unit-test stub mode)
         allowed_names = set(SOURCE_SPEC_BY_NAME.keys())
+        if self.official_fetcher is None and not getattr(self, "_legacy_purged", False):
+            try:
+                self.store.purge_unapproved_sources(allowed_names)
+                self.store.clear_dirty_bodies(_BOILERPLATE_BODY_SIGNALS)
+                self._legacy_purged = True
+            except Exception:  # noqa: BLE001
+                logger.exception("legacy source/body cleanup failed")
         stored_reports = self.store.load_reports(hours=72)
         if self.official_fetcher is None and collected_reports:
             stored_reports = [r for r in stored_reports if str(r.get("source") or "") in allowed_names]
@@ -529,6 +543,7 @@ class FinancialDailyService:
         allow_weak: bool = False,
     ) -> list[dict[str, Any]]:
         entities = extract_entities(report["title"], report.get("summary", ""))
+        specific_entities = entities - _GENERIC_ENTITIES
         bg = _bigrams(headline(report["title"]))
         scored: list[tuple[float, dict[str, Any]]] = []
         for story in active_stories:
@@ -536,12 +551,18 @@ class FinancialDailyService:
             for m in story.get("milestones") or []:
                 story_entities |= extract_entities(m.get("title") or "")
             ent_overlap = len(entities & story_entities)
+            spec_overlap = len(specific_entities & (story_entities - _GENERIC_ENTITIES))
             title_sim = _dice(bg, _bigrams(headline(story["title"])))
             for m in story.get("milestones") or []:
                 title_sim = max(title_sim, _dice(bg, _bigrams(headline(m.get("title") or ""))))
-            score = ent_overlap * 0.35 + title_sim
-            strong_match = ent_overlap >= 2 or title_sim >= 0.42 or (ent_overlap >= 1 and title_sim >= 0.28)
-            weak_match = allow_weak and ent_overlap >= 1 and story.get("bucket") == report.get("bucket")
+            score = spec_overlap * 0.45 + ent_overlap * 0.25 + title_sim
+            strong_match = (
+                spec_overlap >= 2
+                or title_sim >= 0.42
+                or (spec_overlap >= 1 and title_sim >= 0.26)
+                or (ent_overlap >= 2 and title_sim >= 0.22)
+            )
+            weak_match = allow_weak and spec_overlap >= 1 and story.get("bucket") == report.get("bucket")
             if strong_match or weak_match:
                 scored.append((score, story))
         scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -554,7 +575,7 @@ class FinancialDailyService:
         *,
         allow_llm: bool,
     ) -> dict[str, dict[str, Any]]:
-        """Classify each report as SAME_NODE (same fact), NEW_NODE (true incremental development), or NEW_STORY."""
+        """Classify each report as SAME_NODE (same fact/commentary), NEW_NODE (true incremental stage), or NEW_STORY."""
         decisions: dict[str, dict[str, Any]] = {}
         batch_for_llm: list[dict[str, Any]] = []
 
@@ -575,9 +596,9 @@ class FinancialDailyService:
                     best_sim = sim
                     best_ms = ms
 
-            if best_ms and best_sim >= 0.58:
+            if best_ms and best_sim >= 0.52:
                 ms_dt = _parse(best_ms.get("occurredAt"))
-                if not rep_dt or not ms_dt or abs((rep_dt - ms_dt).total_seconds()) <= 18 * 3600:
+                if not rep_dt or not ms_dt or abs((rep_dt - ms_dt).total_seconds()) <= 30 * 3600:
                     decisions[rep["reportKey"]] = {
                         "action": "SAME_NODE",
                         "storyId": best_story["storyId"],
@@ -604,13 +625,13 @@ class FinancialDailyService:
                     ],
                 })
             else:
-                rep_ent = extract_entities(rep["title"], rep.get("summary", ""))
-                st_ent = extract_entities(best_story["title"])
+                rep_ent = extract_entities(rep["title"], rep.get("summary", "")) - _GENERIC_ENTITIES
+                st_ent = extract_entities(best_story["title"]) - _GENERIC_ENTITIES
                 ent_ov = len(rep_ent & st_ent)
-                if best_ms and (best_sim >= 0.50 or (ent_ov >= 2 and best_sim >= 0.25)):
-                    # Only create a NEW_NODE if separated by >= 6 hours; otherwise SAME_NODE
+                if best_ms and (best_sim >= 0.45 or (ent_ov >= 2 and best_sim >= 0.22)):
+                    # Default to SAME_NODE within 30 hours unless clearly separated in time
                     ms_dt = _parse(best_ms.get("occurredAt"))
-                    if rep_dt and ms_dt and abs((rep_dt - ms_dt).total_seconds()) < 6 * 3600:
+                    if not rep_dt or not ms_dt or abs((rep_dt - ms_dt).total_seconds()) <= 30 * 3600:
                         decisions[rep["reportKey"]] = {
                             "action": "SAME_NODE",
                             "storyId": best_story["storyId"],
@@ -624,13 +645,13 @@ class FinancialDailyService:
         if allow_llm and batch_for_llm:
             try:
                 rows = self._call_llm_json(
-                    "你是财经事件脉络归类专家。只返回严格 JSON 数组，不得编造 ID。",
+                    "你是严格遵循 AIHOT 事件脉络标准的财经编辑。只返回严格 JSON 数组，不得编造 ID。",
                     (
-                        "请严格区分：\n"
-                        "- SAME_NODE：多家媒体报道同一件事的同一个进展事实（无实质新进展）\n"
-                        "- NEW_NODE：同一事件的真正后续新进展/转折（例如从传闻到官方证实、从暴涨到反转大跌、从初审到终裁）\n"
-                        "- NEW_STORY：完全不同的独立事件\n"
-                        "返回严格 JSON 数组，每项字段：reportKey, action (SAME_NODE|NEW_NODE|NEW_STORY), storyId(可选), milestoneId(仅SAME_NODE必填)：\n"
+                        "请判断每篇新报道是否属于已有事件主题，以及它是否构成真正的「增量新进展」：\n"
+                        "- SAME_NODE：多家媒体报道同一件事的同一个节点，或对同一进展的评论/解读/复盘/多角度分析（例如多篇文章都在谈“黄仁勋复职”或“关税提案”）——没有实质性新阶段事实，一律归为 SAME_NODE，绝不新建节点！\n"
+                        "- NEW_NODE：明确服务于同一个事件主题，且带来了清晰的「新时间节点/新事实增量」（例如：曝光风波 → 正式辞职 → 员工请愿 → 董事会物色继任者 → 正式投票复职 → 监管调查/股价异动），绝不能把同日评论或无关事件标为 NEW_NODE！\n"
+                        "- NEW_STORY：完全不同的独立事件主题（例如俄乌安全保障与中美关税是不同事件，必须选 NEW_STORY）。\n"
+                        "返回严格 JSON 数组，每项字段：reportKey, action (SAME_NODE|NEW_NODE|NEW_STORY), storyId(可选), milestoneId(仅SAME_NODE必填), milestoneTitle(仅NEW_NODE必填，15-28字客观中文节点标题)：\n"
                         + json.dumps(batch_for_llm[:25], ensure_ascii=False)
                     ),
                 )
@@ -643,10 +664,11 @@ class FinancialDailyService:
                         action = str(row.get("action") or "")
                         sid = str(row.get("storyId") or "")
                         mid = str(row.get("milestoneId") or "")
+                        mtitle = _clean_text(row.get("milestoneTitle") or "", max_len=64)
                         if rkey and action == "SAME_NODE" and sid in valid_stories and mid in valid_stories[sid]:
                             decisions[rkey] = {"action": "SAME_NODE", "storyId": sid, "milestoneId": mid}
                         elif rkey and action == "NEW_NODE" and sid in valid_stories:
-                            decisions[rkey] = {"action": "NEW_NODE", "storyId": sid}
+                            decisions[rkey] = {"action": "NEW_NODE", "storyId": sid, "milestoneTitle": mtitle}
                         elif rkey and action == "NEW_STORY":
                             decisions[rkey] = {"action": "NEW_STORY"}
             except Exception:  # noqa: BLE001
@@ -656,6 +678,74 @@ class FinancialDailyService:
             if rep["reportKey"] not in decisions:
                 decisions[rep["reportKey"]] = {"action": "NEW_STORY"}
         return decisions
+
+    def _consolidate_story_milestones(self, story: dict[str, Any]) -> bool:
+        """Fold redundant same-day / overlapping commentary milestones into one representative node."""
+        milestones = story.get("milestones") or []
+        if len(milestones) < 2:
+            return False
+        kept: list[dict[str, Any]] = []
+        merges: dict[str, list[str]] = {}
+        for ms in milestones:
+            ms_dt = _parse(ms.get("occurredAt"))
+            ms_bg = _bigrams(headline(ms.get("title") or ""))
+            merged_into = None
+            for anchor in kept:
+                an_dt = _parse(anchor.get("occurredAt"))
+                an_bg = _bigrams(headline(anchor.get("title") or ""))
+                sim = _dice(ms_bg, an_bg)
+                within_24h = bool(ms_dt and an_dt and abs((ms_dt - an_dt).total_seconds()) <= 24 * 3600)
+                if sim >= 0.42 or (within_24h and sim >= 0.24):
+                    merged_into = anchor["milestoneId"]
+                    break
+            if merged_into:
+                merges.setdefault(merged_into, []).append(ms["milestoneId"])
+            else:
+                kept.append(ms)
+        changed = False
+        for keep_id, drop_ids in merges.items():
+            self.store.merge_milestones(
+                story_id=story["storyId"],
+                keep_milestone_id=keep_id,
+                drop_milestone_ids=drop_ids,
+            )
+            changed = True
+        return changed
+
+    def _translate_english_titles(self, entries: list[dict[str, str]], *, persist: bool = True) -> dict[str, str]:
+        """Translate a small batch of English report/milestone titles to Chinese and optionally persist to SQLite."""
+        todo = [e for e in entries if e.get("reportKey") and _is_mostly_english(e.get("title") or "")]
+        if not todo:
+            return {}
+        by_key = {e["reportKey"]: e for e in todo}
+        payload = [{"reportKey": e["reportKey"], "title": e["title"][:160]} for e in list(by_key.values())[:12]]
+        try:
+            rows = self._call_llm_json(
+                "你是客观财经翻译编辑。将英文财经标题忠实译成简练自然的中文标题，保留专有名词缩写与原数字，不编造事实，只返回严格 JSON 数组。",
+                (
+                    "请将以下英文新闻标题逐条译为简练中文标题，返回严格 JSON 数组，每项字段：reportKey, titleZh：\n"
+                    + json.dumps(payload, ensure_ascii=False)
+                ),
+                timeout_seconds=30,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("english followup/milestone title translation failed")
+            return {}
+        translated: dict[str, str] = {}
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                rk = str(row.get("reportKey") or "")
+                t_zh = _clean_text(row.get("titleZh") or "", max_len=140)
+                orig = by_key.get(rk)
+                if not orig or not t_zh or _is_mostly_english(t_zh):
+                    continue
+                if _passes_guardrails(t_zh, orig["title"]):
+                    translated[rk] = t_zh
+                    if persist:
+                        self.store.apply_report_translation(rk, title_zh=t_zh)
+        return translated
 
     def ingest_to_stories(self, reports: list[dict[str, Any]], *, allow_llm: bool = False) -> list[dict[str, Any]]:
         with self._lock:
@@ -714,10 +804,11 @@ class FinancialDailyService:
                     elif action == "NEW_NODE" and dec.get("storyId"):
                         sid = dec["storyId"]
                         mid = "ms-" + hashlib.sha1(f"{sid}:{rkey}".encode("utf-8")).hexdigest()[:12]
+                        ms_title = dec.get("milestoneTitle") or headline(rep["title"])
                         self.store.upsert_milestone(
                             milestone_id=mid,
                             story_id=sid,
-                            title=headline(rep["title"]),
+                            title=ms_title,
                             occurred_at=published_iso,
                             representative_report_key=rkey,
                             market_note="",
@@ -1389,23 +1480,30 @@ class FinancialDailyService:
             filtered.append(cand)
         filtered.sort(key=lambda item: (item["finalScore"], item["independentCount"]), reverse=True)
 
-        # Stage C: 1 Lead + 3 Thematic Sections (up to 4 each, strict cross-section dedup) + 3 Key Picks from Sections
+        # Stage C: 1 Lead + 3 Thematic Sections (up to 4 each, strict cross-section dedup + company entity cap) + 3 Key Picks
         lead = filtered[0] if filtered else None
         chosen_all: list[dict[str, Any]] = [lead] if lead else []
         source_counts: dict[str, int] = {lead["sourceName"]: 1} if lead else {}
+        lead_company_ents = (extract_entities(lead["title"], lead.get("summary", "")) & _COMPANY_ENTITIES) if lead else set()
 
         sections_out: list[dict[str, Any]] = []
         all_section_items: list[dict[str, Any]] = []
         for meta in FINANCE_BUCKETS:
             chosen: list[dict[str, Any]] = []
+            sec_company_ents: set[str] = set(lead_company_ents) if meta["key"] == "companies" else set()
             for cand in filtered:
                 if cand["bucket"] != meta["key"]:
                     continue
                 if any(self._is_duplicate_story(cand, existing) for existing in chosen_all):
                     continue
+                cand_company_ents = extract_entities(cand["title"], cand.get("summary", "")) & _COMPANY_ENTITIES
+                if cand_company_ents and (cand_company_ents & sec_company_ents):
+                    # Keep at most 1 headline per major company/CEO in the same section so one company never dominates
+                    continue
                 if source_counts.get(cand["sourceName"], 0) >= 3:
                     continue
                 source_counts[cand["sourceName"]] = source_counts.get(cand["sourceName"], 0) + 1
+                sec_company_ents |= cand_company_ents
                 chosen_all.append(cand)
                 item_out = {
                     **{k: v for k, v in cand.items() if not k.startswith("_")},
@@ -1475,6 +1573,30 @@ class FinancialDailyService:
 
         if merged_any or enriched_any:
             stories = self.store.list_active_stories(days=TRACKED_WINDOW_DAYS)
+
+        # Consolidate redundant same-day milestones & translate any English milestone titles on selected stories
+        selected_sids = {c["storyId"] for c in selected_cards if c.get("storyId")}
+        consolidated_any = False
+        english_ms_entries: list[dict[str, str]] = []
+        for st in stories:
+            if st["storyId"] not in selected_sids:
+                continue
+            if self._consolidate_story_milestones(st):
+                consolidated_any = True
+        if consolidated_any:
+            stories = self.store.list_active_stories(days=TRACKED_WINDOW_DAYS)
+        if allow_llm:
+            for st in stories:
+                if st["storyId"] not in selected_sids:
+                    continue
+                for ms in st.get("milestones") or []:
+                    rep_key = ms.get("representativeReportKey") or ""
+                    title = ms.get("title") or ""
+                    if rep_key and _is_mostly_english(title):
+                        english_ms_entries.append({"reportKey": rep_key, "title": title})
+            if english_ms_entries:
+                self._translate_english_titles(english_ms_entries, persist=True)
+                stories = self.store.list_active_stories(days=TRACKED_WINDOW_DAYS)
 
         # Precompute multi-milestone event overviews concurrently
         story_by_id = {st["storyId"]: st for st in stories}
@@ -1669,13 +1791,27 @@ class FinancialDailyService:
 
         # AIHOT-style incremental followups: ONLY other distinct milestones (1 representative per milestone), NEVER same-fact duplicates
         followups: list[dict[str, Any]] = []
+        same_node_reports: list[dict[str, Any]] = []
         event_summary = None
         if story:
+            if self._consolidate_story_milestones(story):
+                story = self.store.get_tracked_story(story_id) or story
             milestones = story.get("milestones") or []
             for ms in milestones:
-                if current_milestone_id and ms["milestoneId"] == current_milestone_id:
-                    continue
                 ms_reps = ms.get("reports") or []
+                if current_milestone_id and ms["milestoneId"] == current_milestone_id:
+                    for r in ms_reps:
+                        rk_other = r.get("reportKey") or r.get("id")
+                        if not rk_other or rk_other == report_key:
+                            continue
+                        same_node_reports.append({
+                            "reportKey": rk_other,
+                            "title": r["title"],
+                            "sourceName": r["source"],
+                            "timeLabel": _format_beijing(r.get("publishedAt")),
+                            "originalUrl": r.get("originalUrl"),
+                        })
+                    continue
                 rep = next((r for r in ms_reps if r.get("reportKey") == ms.get("representativeReportKey")), ms_reps[0] if ms_reps else None)
                 if not rep or rep.get("reportKey") == report_key:
                     continue
@@ -1690,6 +1826,20 @@ class FinancialDailyService:
                     "originalUrl": rep.get("originalUrl"),
                     "role": "milestone",
                 })
+            # Ensure zero untranslated English titles in followups or same-node corroborating sources
+            en_batch = [
+                {"reportKey": item["reportKey"], "title": item["title"]}
+                for item in followups + same_node_reports
+                if _is_mostly_english(item["title"])
+            ]
+            if en_batch:
+                zh_map = self._translate_english_titles(en_batch, persist=True)
+                for item in followups:
+                    if item["reportKey"] in zh_map:
+                        item["title"] = zh_map[item["reportKey"]]
+                for item in same_node_reports:
+                    if item["reportKey"] in zh_map:
+                        item["title"] = zh_map[item["reportKey"]]
             if len(milestones) >= 2:
                 event_summary = {
                     "storyId": story["storyId"],
@@ -1699,7 +1849,9 @@ class FinancialDailyService:
                 }
 
         body_markdown = str(report.get("bodyMarkdown") or "").strip()
-        body_mode = str(report.get("bodyMode") or ("full" if len(body_markdown) >= 240 else "summary"))
+        if body_markdown and sum(1 for kw in _BOILERPLATE_BODY_SIGNALS if kw in body_markdown[:450]) >= 2:
+            body_markdown = ""
+        body_mode = "full" if (str(report.get("bodyMode") or "") == "full" and len(body_markdown) >= 240) else "summary"
         outline = report.get("outline") if isinstance(report.get("outline"), list) else extract_markdown_outline(body_markdown)
         market_chart = report.get("marketChart") if isinstance(report.get("marketChart"), dict) else (
             detect_market_chart(report["title"], report.get("summary", "")) if bucket == "market" else None
@@ -1724,12 +1876,23 @@ class FinancialDailyService:
             "bucketName": bucket_meta["name"],
             "eventSummary": event_summary,
             "followups": followups,
+            "sameNodeReports": same_node_reports,
         }
 
     def get_tracked_event(self, story_id: str) -> dict[str, Any] | None:
         story = self.store.get_tracked_story(story_id)
         if not story:
             return None
+        if self._consolidate_story_milestones(story):
+            story = self.store.get_tracked_story(story_id) or story
+        en_ms = [
+            {"reportKey": ms.get("representativeReportKey") or "", "title": ms.get("title") or ""}
+            for ms in (story.get("milestones") or [])
+            if ms.get("representativeReportKey") and _is_mostly_english(ms.get("title") or "")
+        ]
+        if en_ms:
+            if self._translate_english_titles(en_ms, persist=True):
+                story = self.store.get_tracked_story(story_id) or story
         now_utc = self.now_fn().astimezone(UTC)
         overview, inputs_hash, changed = self._prepare_event_overview(story, allow_llm=False)
         if changed:

@@ -41,6 +41,7 @@ function adaptLegacy(item: LegacyStory): FinancialReportDetail {
     bucketName: isHot ? "财经要闻" : legacy.category || "财经资讯",
     eventSummary: null,
     followups: [],
+    sameNodeReports: [],
   };
 }
 
@@ -106,8 +107,9 @@ export function FinancialNewsDetail() {
   const hasToc = outline.length >= 2;
   const hasFullBody = detail?.bodyMode === "full" && Boolean(detail?.bodyMarkdown?.trim());
   const followups = detail?.followups || [];
+  const sameNodeReports = detail?.sameNodeReports || [];
+  const isTranslated = Boolean(detail?.originalTitle && detail.originalTitle !== detail.title);
 
-  // Map heading text -> outline id so markdown h2/h3 anchors match TOC links deterministically
   const headingIdMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const entry of outline) {
@@ -117,14 +119,14 @@ export function FinancialNewsDetail() {
   }, [outline]);
 
   return (
-    <div className="min-h-[calc(100vh-1rem)] px-4 py-6 sm:px-8 sm:py-8">
-      <div className={`mx-auto ${hasToc ? "max-w-[1020px]" : "max-w-[740px]"}`}>
-        {/* 顶栏导航：简洁扁平，去卡片割裂感 */}
+    <div className="min-h-[calc(100vh-1rem)] px-4 py-6 sm:px-8 sm:py-9">
+      <div className={`mx-auto ${hasToc ? "max-w-[1040px]" : "max-w-[740px]"}`}>
+        {/* 顶栏导航：扁平克制，浅色细分隔线 */}
         <div className="mb-8 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--edition-line)] pb-4 text-xs">
           <button
             type="button"
             onClick={() => navigate(-1)}
-            className="inline-flex items-center gap-1.5 text-[var(--edition-muted)] transition-colors hover:text-[var(--edition-accent)]"
+            className="inline-flex items-center gap-1.5 text-[var(--edition-muted)] transition-colors duration-150 hover:text-[var(--edition-accent)]"
           >
             <ArrowLeft className="h-4 w-4" />
             返回金融日报
@@ -144,7 +146,7 @@ export function FinancialNewsDetail() {
                 href={originalHref}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[var(--edition-muted)] transition-colors hover:text-[var(--edition-accent)]"
+                className="inline-flex items-center gap-1 text-[var(--edition-muted)] transition-colors duration-150 hover:text-[var(--edition-accent)]"
               >
                 原文
                 <ArrowUpRight className="h-3.5 w-3.5" />
@@ -169,35 +171,35 @@ export function FinancialNewsDetail() {
             正在加载正文…
           </p>
         ) : detail ? (
-          <div className={hasToc ? "grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_220px]" : ""}>
+          <div className={hasToc ? "grid grid-cols-1 gap-12 lg:grid-cols-[minmax(0,1fr)_220px]" : ""}>
             <article className="min-w-0">
               {/* 新闻报头 */}
               <header className="border-b border-[var(--edition-line)] pb-6">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--edition-muted)]">
                   <span className="font-semibold text-[var(--edition-accent)]">{detail.bucketName}</span>
-                  <span>·</span>
+                  <span className="opacity-45">·</span>
                   <span>{detail.sourceName}</span>
-                  <span>·</span>
+                  <span className="opacity-45">·</span>
                   <span className="font-mono">{detail.timeLabel}</span>
                 </div>
-                <h1 className="mt-3 text-2xl font-black leading-[1.32] tracking-tight sm:text-[32px]">
+                <h1 className="mt-3 text-2xl font-black leading-[1.34] tracking-tight sm:text-[31px]">
                   {detail.title}
                 </h1>
-                {detail.originalTitle && detail.originalTitle !== detail.title && (
+                {isTranslated && (
                   <p className="mt-2 text-xs leading-relaxed text-[var(--edition-muted)]">{detail.originalTitle}</p>
                 )}
               </header>
 
               {/* 移动端长文目录折叠条 */}
               {hasToc && (
-                <div className="mt-6 border-b border-[var(--edition-line)] pb-4 lg:hidden">
+                <div className="mt-5 border-b border-[var(--edition-line)] pb-4 lg:hidden">
                   <button
                     type="button"
                     onClick={() => setTocOpen((v) => !v)}
-                    className="flex w-full items-center justify-between text-xs font-semibold text-[var(--edition-muted)]"
+                    className="flex w-full items-center justify-between text-xs font-semibold text-[var(--edition-muted)] transition-colors hover:text-[var(--edition-accent)]"
                   >
                     <span className="inline-flex items-center gap-1.5">
-                      <List className="h-3.5 w-3.5" />
+                      <List className="h-3.5 w-3.5 text-[var(--edition-accent)]" />
                       本文目录（{outline.length} 节）
                     </span>
                     <ChevronDown className={`h-4 w-4 transition-transform ${tocOpen ? "rotate-180" : ""}`} />
@@ -209,7 +211,7 @@ export function FinancialNewsDetail() {
                           key={item.id}
                           href={`#${item.id}`}
                           onClick={() => setTocOpen(false)}
-                          className={`block py-0.5 text-[var(--edition-muted)] hover:text-[var(--edition-accent)] ${item.level === 3 ? "pl-3" : ""}`}
+                          className={`block py-0.5 text-[var(--edition-muted)] transition-colors hover:text-[var(--edition-accent)] ${item.level === 3 ? "pl-3" : ""}`}
                         >
                           {item.text}
                         </a>
@@ -219,12 +221,32 @@ export function FinancialNewsDetail() {
                 </div>
               )}
 
-              {/* 答案前置核心摘要（平铺阅读风格，不套浮动卡片） */}
-              <section className="mt-6 border-l-2 border-[var(--edition-accent)] bg-[var(--edition-tint)] px-4 py-3.5">
-                <p className="text-xs font-semibold text-[var(--edition-accent)]">核心摘要</p>
-                <p className="mt-1.5 whitespace-pre-wrap text-[15px] leading-[1.85] text-foreground/95">
+              {/* 答案前置核心摘要（参照 AIHOT：浅色强调背景 + 主题色标题） */}
+              <section className="mt-6 rounded-r-lg border-l-2 border-[var(--edition-accent)] bg-[var(--edition-tint)] px-5 py-4">
+                <p className="text-xs font-semibold tracking-wide text-[var(--edition-accent)]">核心摘要</p>
+                <p className="mt-2 whitespace-pre-wrap text-[15px] leading-[1.9] text-foreground/95">
                   {detail.summary}
                 </p>
+                {sameNodeReports.length > 0 && (
+                  <details className="mt-3 border-t border-[var(--edition-line)] pt-2.5 text-xs">
+                    <summary className="cursor-pointer select-none text-[var(--edition-muted)] transition-colors hover:text-[var(--edition-accent)]">
+                      另外 {sameNodeReports.length} 家也报道了 ▾
+                    </summary>
+                    <ul className="mt-2 space-y-1.5">
+                      {sameNodeReports.map((other) => (
+                        <li key={other.reportKey} className="flex items-baseline justify-between gap-3">
+                          <Link
+                            to={`/finance/news/story/${other.reportKey}`}
+                            className="min-w-0 flex-1 truncate text-foreground/85 transition-colors hover:text-[var(--edition-accent)]"
+                          >
+                            {other.title}
+                          </Link>
+                          <span className="shrink-0 text-[var(--edition-muted)]">{other.sourceName}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               </section>
 
               {/* 市场表现类资讯：直接内嵌站内相关市场交互式 K 线图 */}
@@ -232,7 +254,7 @@ export function FinancialNewsDetail() {
                 <section className="mt-8 border-t border-[var(--edition-line)] pt-6">
                   <div className="mb-3 flex items-baseline justify-between gap-2">
                     <h2 className="text-base font-bold">{detail.marketChart.name} 走势图</h2>
-                    <span className="font-mono text-xs text-[var(--edition-muted)]">{detail.marketChart.code}</span>
+                    <span className="font-mono text-xs text-[var(--edition-accent)]">{detail.marketChart.code}</span>
                   </div>
                   <MarketChart
                     asset={detail.marketChart.asset}
@@ -242,10 +264,13 @@ export function FinancialNewsDetail() {
                 </section>
               )}
 
-              {/* 中文完整正文（仅当原文相对摘要有实质细节增量时展示） */}
+              {/* 中文完整正文（参照 AIHOT：简洁正文头 + 舒适行距） */}
               {hasFullBody && (
                 <section className="mt-8 border-t border-[var(--edition-line)] pt-6">
-                  <div className="prose prose-sm max-w-none leading-[1.9] text-foreground/90 dark:prose-invert sm:prose-base">
+                  <div className="mb-4 flex items-center justify-between text-xs text-[var(--edition-muted)]">
+                    <span>{isTranslated ? "正文 · AI 翻译" : "正文"}</span>
+                  </div>
+                  <div className="prose prose-sm max-w-none leading-[1.95] text-foreground/90 dark:prose-invert sm:prose-base">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
@@ -253,7 +278,7 @@ export function FinancialNewsDetail() {
                           const text = nodeText(children).trim();
                           const id = headingIdMap.get(text);
                           return (
-                            <h2 id={id} className="mt-8 scroll-mt-6 border-b border-[var(--edition-line)] pb-2 text-lg font-bold">
+                            <h2 id={id} className="mt-9 scroll-mt-6 border-b border-[var(--edition-line)] pb-2 text-lg font-bold">
                               {children}
                             </h2>
                           );
@@ -267,7 +292,7 @@ export function FinancialNewsDetail() {
                             </h3>
                           );
                         },
-                        p: ({ children }) => <p className="my-4 text-[15px] leading-[1.9]">{children}</p>,
+                        p: ({ children }) => <p className="my-4 text-[15px] leading-[1.95]">{children}</p>,
                       }}
                     >
                       {detail.bodyMarkdown || ""}
@@ -294,38 +319,46 @@ export function FinancialNewsDetail() {
                 )}
               </footer>
 
-              {/* 事件后续（参照 AIHOT：只有真正存在增量新节点时才显示；没有则整块不渲染） */}
+              {/* 事件后续（参照 AIHOT：竖向时间轴 + 主题色高亮节点；无增量进展时整块隐藏） */}
               {followups.length > 0 && (
-                <section className="mt-10 border-t border-[var(--edition-line)] pt-6">
-                  <div className="mb-3 flex items-baseline justify-between gap-3">
+                <section className="mt-10 border-t border-[var(--edition-line)] pt-7">
+                  <div className="mb-5 flex items-baseline justify-between gap-3">
                     <h2 className="text-sm font-bold">
                       事件后续 <span className="font-mono font-normal text-[var(--edition-muted)]">· {followups.length}</span>
                     </h2>
                     {detail.eventSummary && (
                       <Link
                         to={`/finance/news/event/${detail.eventSummary.storyId}`}
-                        className="inline-flex items-center gap-0.5 text-xs font-medium text-[var(--edition-accent)] hover:underline"
+                        className="inline-flex items-center gap-0.5 text-xs font-medium text-[var(--edition-accent)] transition-opacity hover:opacity-80 hover:underline"
                       >
                         查看完整事件
                         <ChevronRight className="h-3.5 w-3.5" />
                       </Link>
                     )}
                   </div>
-                  <div className="divide-y divide-[var(--edition-line)]">
-                    {followups.map((item) => (
-                      <div key={item.reportKey} className="flex flex-wrap items-baseline justify-between gap-3 py-3 text-sm">
-                        <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
-                          <span className="shrink-0 font-mono text-xs text-[var(--edition-accent)]">
+                  <div className="relative space-y-5 pl-6 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-[var(--edition-line)]">
+                    {followups.map((item, idx) => (
+                      <div key={item.reportKey} className="relative">
+                        <span
+                          className={`absolute -left-6 top-1.5 h-2.5 w-2.5 rounded-full ${
+                            idx === 0
+                              ? "bg-[var(--edition-accent)] ring-4 ring-[var(--edition-tint)]"
+                              : "bg-[var(--edition-muted)]/45"
+                          }`}
+                        />
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--edition-muted)]">
+                          <span className={`font-mono ${idx === 0 ? "font-medium text-[var(--edition-accent)]" : ""}`}>
                             {item.timeLabel || item.relativeTime}
                           </span>
-                          <Link
-                            to={`/finance/news/story/${item.reportKey}`}
-                            className="min-w-0 font-medium transition-colors hover:text-[var(--edition-accent)]"
-                          >
-                            {item.title}
-                          </Link>
+                          <span className="opacity-45">·</span>
+                          <span>{item.sourceName}</span>
                         </div>
-                        <span className="shrink-0 text-xs text-[var(--edition-muted)]">{item.sourceName}</span>
+                        <Link
+                          to={`/finance/news/story/${item.reportKey}`}
+                          className="mt-1 block text-sm font-semibold leading-snug text-foreground transition-colors duration-150 hover:text-[var(--edition-accent)]"
+                        >
+                          {item.title}
+                        </Link>
                       </div>
                     ))}
                   </div>
@@ -341,13 +374,13 @@ export function FinancialNewsDetail() {
             {hasToc && (
               <aside className="hidden lg:block">
                 <div className="sticky top-6 border-l border-[var(--edition-line)] pl-4">
-                  <div className="mb-3 text-xs font-semibold text-[var(--edition-muted)]">目录</div>
+                  <div className="mb-3 text-xs font-semibold text-[var(--edition-accent)]">目录</div>
                   <nav className="space-y-2 text-xs">
                     {outline.map((item) => (
                       <a
                         key={item.id}
                         href={`#${item.id}`}
-                        className={`block leading-snug text-[var(--edition-muted)] transition-colors hover:text-[var(--edition-accent)] ${
+                        className={`block leading-snug text-[var(--edition-muted)] transition-colors duration-150 hover:text-[var(--edition-accent)] ${
                           item.level === 3 ? "pl-3" : ""
                         }`}
                       >

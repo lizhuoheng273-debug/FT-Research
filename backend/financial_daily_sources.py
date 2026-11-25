@@ -133,18 +133,70 @@ def _safe_http_url(url: str) -> str:
     return str(url).strip() if parsed.scheme in {"http", "https"} and parsed.netloc else ""
 
 
+_BOILERPLATE_DOM_RE = re.compile(
+    r"(?:^|[-_\s])(nav|navbar|subnav|menu|topbar|header|footer|login|signin|signup|register|auth|"
+    r"modal|popup|dialog|sidebar|sider|recommend|related|share|social|comment|advert|ad-?box|ad-?wrap|"
+    r"banner|toolbar|breadcrumb|hot-?list|rank|qrcode|qr-?code|download|app-?down|subscribe|copyright|"
+    r"disclaimer|paywall|cookie|newsletter)(?:$|[-_\s])",
+    re.I,
+)
+_BOILERPLATE_LINE_RE = re.compile(
+    r"用户名登录|手机号登录|密码登录|扫码登录|还没有账号|免费注册|立即注册|立即登录|忘记密码|"
+    r"退出\s+激活卡|激活卡\s+电子版|电子版\s+购物车|购物车\s+注册|"
+    r"扫码下载|下载客户端|下载APP|打开APP|关注微信公众号|微信扫一扫|扫一扫分享|"
+    r"^(分享到|责任编辑|编辑[：:]|校对[：:]|来源[：:]|原标题[：:]|点击进入专题|免责声明|版权声明|相关阅读|延伸阅读|推荐阅读|热文推荐|往期回顾|Copyright|All rights reserved|Sign in|Log in|Subscribe)",
+    re.I,
+)
+_BOILERPLATE_BODY_SIGNALS = ("用户名登录", "手机号登录", "还没有账号", "免费注册", "激活卡", "电子版", "购物车", "扫码登录", "下载客户端")
+
+
+def _is_channel_menu_line(text: str) -> bool:
+    """Detect navigation channel dumps like '快讯 全部 时政 公司 A股 港股 美股 基金 商品'."""
+    parts = [p for p in re.split(r"[\s|/·]+", text.strip()) if p]
+    if len(parts) < 5:
+        return False
+    short_tokens = sum(1 for p in parts if len(p) <= 4)
+    has_punct = bool(re.search(r"[，。；！？,.;!?]", text))
+    return (not has_punct) and (short_tokens / len(parts) >= 0.75)
+
+
+def _strip_boilerplate_nodes(soup: BeautifulSoup) -> None:
+    for tag in soup(["script", "style", "noscript", "iframe", "svg", "nav", "footer", "aside", "header", "form", "button", "input", "select", "textarea"]):
+        tag.decompose()
+    for node in list(soup.find_all(True)):
+        if getattr(node, "attrs", None) is None:
+            continue
+        classes = " ".join(node.get("class") or []) if isinstance(node.get("class"), list) else str(node.get("class") or "")
+        dom_id = str(node.get("id") or "")
+        role = str(node.get("role") or "")
+        if role in {"navigation", "banner", "contentinfo", "complementary", "dialog", "search"}:
+            node.decompose()
+            continue
+        if _BOILERPLATE_DOM_RE.search(f"{dom_id} {classes}"):
+            # Never accidentally destroy the whole body or main article element
+            if node.name not in {"html", "body", "article", "main"}:
+                node.decompose()
+
+
+def _is_boilerplate_body(md: str) -> bool:
+    head = (md or "")[:450]
+    if not head:
+        return True
+    hits = sum(1 for kw in _BOILERPLATE_BODY_SIGNALS if kw in head)
+    return hits >= 2
+
+
 def _html_to_clean_markdown(raw_html: str, *, max_chars: int = MAX_BODY_CHARS) -> str:
-    """Convert raw article HTML into clean Markdown paragraphs + h2/h3 headings."""
+    """Convert raw article HTML into clean Markdown paragraphs + h2/h3 headings, stripping nav/login/ads."""
     if not raw_html:
         return ""
     text_in = html_lib.unescape(str(raw_html))
     if "<" not in text_in:
         cleaned = re.sub(r"\s+", " ", text_in).strip()
-        return cleaned[:max_chars]
+        return "" if _is_boilerplate_body(cleaned) else cleaned[:max_chars]
 
     soup = BeautifulSoup(text_in, "html.parser")
-    for tag in soup(["script", "style", "noscript", "iframe", "svg", "nav", "footer", "aside", "form", "button"]):
-        tag.decompose()
+    _strip_boilerplate_nodes(soup)
 
     blocks: list[str] = []
     seen_lines: set[str] = set()
@@ -152,30 +204,34 @@ def _html_to_clean_markdown(raw_html: str, *, max_chars: int = MAX_BODY_CHARS) -
         # Skip nested paragraphs inside li/blockquote to prevent duplication
         if node.name == "p" and node.find_parent(["li", "blockquote"]):
             continue
-        t = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+        # Skip link-only nav items (e.g. menu lists, related-article lists)
+        total_txt = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
         min_len = 2 if node.name in {"h1", "h2", "h3", "h4"} else 6
-        if len(t) < min_len or t in seen_lines:
+        if len(total_txt) < min_len or total_txt in seen_lines:
             continue
-        if re.search(r"^(分享到|微信扫一扫|责任编辑|来源：|原标题：|点击进入专题|免责声明|Copyright|All rights reserved)", t, re.I):
+        if _BOILERPLATE_LINE_RE.search(total_txt) or _is_channel_menu_line(total_txt):
             continue
-        seen_lines.add(t)
+        if node.name in {"li", "p"}:
+            link_txt = sum(len(a.get_text(" ", strip=True)) for a in node.find_all("a"))
+            if len(total_txt) > 0 and (link_txt / len(total_txt)) > 0.75 and len(total_txt) < 120:
+                continue
+        seen_lines.add(total_txt)
         if node.name in {"h1", "h2"}:
-            blocks.append(f"## {t}")
+            blocks.append(f"## {total_txt}")
         elif node.name in {"h3", "h4"}:
-            blocks.append(f"### {t}")
+            blocks.append(f"### {total_txt}")
         elif node.name == "blockquote":
-            blocks.append(f"> {t}")
+            blocks.append(f"> {total_txt}")
         elif node.name == "li":
-            blocks.append(f"- {t}")
+            blocks.append(f"- {total_txt}")
         else:
-            blocks.append(t)
+            blocks.append(total_txt)
 
     if not blocks:
-        plain = re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).strip()
-        return plain[:max_chars]
+        return ""
 
-    joined = "\n\n".join(blocks)
-    return joined[:max_chars].strip()
+    joined = "\n\n".join(blocks)[:max_chars].strip()
+    return "" if _is_boilerplate_body(joined) else joined
 
 
 def _parse_dt(value: Any, *, default_tz=UTC) -> datetime | None:
@@ -403,8 +459,38 @@ def _parse_html_list(html_text: str, spec: DailySourceSpec, *, now: datetime) ->
     return rows
 
 
+def _find_best_article_container(soup: BeautifulSoup):
+    """Readability-style fallback: find the container with the richest prose paragraphs and lowest link density."""
+    best_node = None
+    best_score = 0.0
+    for node in soup.find_all(["article", "section", "div", "main"]):
+        direct_ps = [p for p in node.find_all("p", recursive=False)]
+        if len(direct_ps) < 2:
+            continue
+        prose_chars = 0
+        link_chars = 0
+        valid_p_count = 0
+        for p in direct_ps:
+            txt = re.sub(r"\s+", " ", p.get_text(" ", strip=True)).strip()
+            if len(txt) < 20 or _BOILERPLATE_LINE_RE.search(txt) or _is_channel_menu_line(txt):
+                continue
+            prose_chars += len(txt)
+            link_chars += sum(len(a.get_text(" ", strip=True)) for a in p.find_all("a"))
+            valid_p_count += 1
+        if prose_chars < 220 or valid_p_count < 2:
+            continue
+        link_density = link_chars / max(1, prose_chars)
+        if link_density > 0.35:
+            continue
+        score = prose_chars * (1.0 - link_density)
+        if score > best_score:
+            best_score = score
+            best_node = node
+    return best_node
+
+
 def fetch_article_body(url: str, *, timeout: int = 6) -> str:
-    """Fetch public article HTML and extract clean readable Markdown body."""
+    """Fetch public article HTML and extract clean readable Markdown body without site chrome/ads."""
     safe_url = _safe_http_url(url)
     if not safe_url:
         return ""
@@ -418,15 +504,23 @@ def fetch_article_body(url: str, *, timeout: int = 6) -> str:
             return ""
         resp.encoding = resp.apparent_encoding or resp.encoding or "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "noscript", "iframe", "svg", "nav", "footer", "aside", "header", "form"]):
-            tag.decompose()
-        # Prefer explicit article/content containers before falling back to whole body
+        _strip_boilerplate_nodes(soup)
+        # Prefer explicit article/content containers before falling back to readability scorer (NEVER whole soup.body)
         container = None
         for selector in (
-            "article",
+            ".xx_boxsing",
+            ".xd-b-content",
+            ".cls-article",
+            ".detail-body",
+            ".article-body",
+            ".article-txt",
+            ".article_txt",
+            "#artibody",
+            ".rich_media_content",
             "[itemprop='articleBody']",
             ".article-content",
             ".article_content",
+            ".news-content",
             ".m-txt",
             ".TRS_Editor",
             ".pages_content",
@@ -436,14 +530,18 @@ def fetch_article_body(url: str, *, timeout: int = 6) -> str:
             ".entry-content",
             "#UCAP-CONTENT",
             "#ContentBody",
-            "main",
+            "article",
         ):
             found = soup.select_one(selector)
-            if found and len(found.get_text(" ", strip=True)) >= 240:
-                container = found
-                break
-        target_html = str(container) if container is not None else str(soup.body or soup)
-        return _html_to_clean_markdown(target_html, max_chars=MAX_BODY_CHARS)
+            if found:
+                md_try = _html_to_clean_markdown(str(found), max_chars=MAX_BODY_CHARS)
+                if len(md_try) >= 240:
+                    return md_try
+        container = _find_best_article_container(soup)
+        if container is None:
+            return ""
+        md = _html_to_clean_markdown(str(container), max_chars=MAX_BODY_CHARS)
+        return md if len(md) >= 240 else ""
     except Exception:  # noqa: BLE001
         return ""
 

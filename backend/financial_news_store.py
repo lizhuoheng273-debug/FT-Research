@@ -701,6 +701,123 @@ class FinancialNewsStore:
         self._conn.commit()
 
     @_locked
+    def purge_unapproved_sources(self, allowed_sources: set[str]) -> int:
+        """Remove legacy reports/milestones/stories from sources outside the approved 44-source list."""
+        if not allowed_sources:
+            return 0
+        placeholders = ",".join("?" for _ in allowed_sources)
+        params = tuple(allowed_sources)
+        cur = self._conn.execute(
+            f"""DELETE FROM milestone_reports
+            WHERE report_key IN (SELECT report_id FROM reports WHERE source NOT IN ({placeholders}))""",
+            params,
+        )
+        removed = cur.rowcount
+        self._conn.execute(
+            f"DELETE FROM story_signals WHERE source_name NOT IN ({placeholders})",
+            params,
+        )
+        # Drop milestones that no longer have any linked approved reports
+        self._conn.execute(
+            "DELETE FROM story_milestones WHERE milestone_id NOT IN (SELECT DISTINCT milestone_id FROM milestone_reports)"
+        )
+        # Re-point representative_report_key when needed and refresh report counts
+        bad_ms = self._conn.execute(
+            f"""SELECT m.milestone_id
+            FROM story_milestones m
+            LEFT JOIN reports r ON r.report_id = m.representative_report_key
+            WHERE r.report_id IS NULL OR r.source NOT IN ({placeholders})""",
+            params,
+        ).fetchall()
+        for row in bad_ms:
+            mid = row["milestone_id"]
+            rep = self._conn.execute(
+                """SELECT mr.report_key, r.title
+                FROM milestone_reports mr
+                JOIN reports r ON r.report_id = mr.report_key
+                WHERE mr.milestone_id = ?
+                ORDER BY r.published_at DESC LIMIT 1""",
+                (mid,),
+            ).fetchone()
+            if rep:
+                self._conn.execute(
+                    "UPDATE story_milestones SET representative_report_key = ?, title = ? WHERE milestone_id = ?",
+                    (rep["report_key"], rep["title"], mid),
+                )
+        self._conn.execute(
+            """UPDATE story_milestones
+            SET report_count = (SELECT COUNT(*) FROM milestone_reports mr WHERE mr.milestone_id = story_milestones.milestone_id)"""
+        )
+        # Drop stories that no longer have any milestones
+        self._conn.execute(
+            "DELETE FROM tracked_stories WHERE story_id NOT IN (SELECT DISTINCT story_id FROM story_milestones)"
+        )
+        self._conn.commit()
+        return max(0, removed)
+
+    @_locked
+    def merge_milestones(
+        self,
+        *,
+        story_id: str,
+        keep_milestone_id: str,
+        drop_milestone_ids: list[str],
+        canonical_title: str = "",
+    ) -> None:
+        """Fold redundant same-fact milestones into one representative milestone."""
+        drops = [mid for mid in drop_milestone_ids if mid and mid != keep_milestone_id]
+        if not keep_milestone_id or not drops:
+            return
+        for mid in drops:
+            links = self._conn.execute(
+                "SELECT report_key, role FROM milestone_reports WHERE milestone_id = ?",
+                (mid,),
+            ).fetchall()
+            for lk in links:
+                self._conn.execute(
+                    """INSERT INTO milestone_reports (milestone_id, story_id, report_key, role)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(milestone_id, report_key) DO NOTHING""",
+                    (keep_milestone_id, story_id, lk["report_key"], lk["role"]),
+                )
+            self._conn.execute("DELETE FROM story_milestones WHERE milestone_id = ?", (mid,))
+        if canonical_title:
+            self._conn.execute(
+                "UPDATE story_milestones SET title = ? WHERE milestone_id = ?",
+                (canonical_title, keep_milestone_id),
+            )
+        self._conn.execute(
+            "UPDATE story_milestones SET report_count = (SELECT COUNT(*) FROM milestone_reports WHERE milestone_id = ?) WHERE milestone_id = ?",
+            (keep_milestone_id, keep_milestone_id),
+        )
+        self._conn.commit()
+
+    @_locked
+    def clear_dirty_bodies(self, markers: tuple[str, ...]) -> int:
+        """Clear previously cached article bodies that contain site nav/login boilerplate."""
+        rows = self._conn.execute("SELECT report_id, metadata_json FROM reports WHERE metadata_json LIKE '%bodyMarkdown%' OR metadata_json LIKE '%bodyText%'").fetchall()
+        cleaned = 0
+        for row in rows:
+            try:
+                meta = json.loads(row["metadata_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            body = f"{meta.get('bodyMarkdown') or ''} {meta.get('bodyText') or ''}"[:600]
+            if sum(1 for m in markers if m in body) >= 2:
+                meta["bodyText"] = ""
+                meta["bodyMarkdown"] = ""
+                meta["bodyMode"] = "summary"
+                meta["outline"] = []
+                self._conn.execute(
+                    "UPDATE reports SET metadata_json = ? WHERE report_id = ?",
+                    (json.dumps(meta, ensure_ascii=False), row["report_id"]),
+                )
+                cleaned += 1
+        if cleaned:
+            self._conn.commit()
+        return cleaned
+
+    @_locked
     def save_daily_edition(
         self,
         *,

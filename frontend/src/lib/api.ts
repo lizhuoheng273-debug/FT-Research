@@ -507,6 +507,13 @@ export interface FinancialReportDetail {
     milestoneCount: number;
   } | null;
   followups: FinancialReportFollowup[];
+  sameNodeReports?: Array<{
+    reportKey: string;
+    title: string;
+    sourceName: string;
+    timeLabel?: string;
+    originalUrl?: string | null;
+  }>;
 }
 export interface FinancialTrackedEventReport {
   reportKey: string;

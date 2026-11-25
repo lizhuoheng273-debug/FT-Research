@@ -46,6 +46,13 @@
     --chart-grid: 220 20% 14%;
     --chart-text: 215 15% 55%;
     --chart-axis: 220 20% 24%;
+
+    /* 日报/阅读页全局编排变量（跨首页、详情页、事件脉络页共享，分割线克制浅淡） */
+    --edition-surface: hsl(var(--card));
+    --edition-line: hsl(215 24% 28% / 0.45);
+    --edition-muted: hsl(var(--muted-foreground));
+    --edition-accent: hsl(var(--primary));
+    --edition-tint: hsl(var(--primary) / 0.09);
   }
 
   .light {
@@ -81,6 +88,12 @@
     --chart-grid: 214 20% 88%;
     --chart-text: 215 16% 42%;
     --chart-axis: 214 20% 78%;
+
+    --edition-surface: hsl(var(--card));
+    --edition-line: hsl(214 20% 80% / 0.58);
+    --edition-muted: hsl(var(--muted-foreground));
+    --edition-accent: hsl(var(--primary));
+    --edition-tint: hsl(var(--primary) / 0.06);
   }
 
   * { @apply border-border; }
@@ -128,11 +141,6 @@
   }
 
   .ai-report-paper {
-    --edition-surface: hsl(var(--card));
-    --edition-line: hsl(var(--border));
-    --edition-muted: hsl(var(--muted-foreground));
-    --edition-accent: hsl(var(--primary));
-    --edition-tint: hsl(var(--primary) / 0.1);
     color: hsl(var(--foreground));
     min-height: 100dvh;
     display: grid;
