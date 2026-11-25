@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html as html_lib
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v1"
+PROMPT_VERSION = "financial-daily-v2"
 TRACKED_WINDOW_DAYS = 30
 EDITION_MEMORY_DAYS = 7
 
@@ -43,7 +44,9 @@ _NUMERIC_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?%?")
 _ASHARE_WRAP_RE = re.compile(r"A股(?:午评|收评|早评|三大股指|开盘|收盘)|沪指|深成指|创业板指|科创50|北证50", re.I)
 _NOISE_RE = re.compile(
     r"在互动平台表示|互动平台回复|投资者互动平台|互动易回复|回复投资者提问|董秘回复|"
-    r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总",
+    r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总|"
+    r"thanksgiving|grocery stores|black friday deals|holiday shopping|gta\s*6|video game|"
+    r"declares\s+\$[\d.]+\s+dividend|monthly distribution|quarterly distribution",
     re.I,
 )
 _CLICKBAIT_RE = re.compile(
@@ -133,15 +136,64 @@ def _safe_http_url(value: Any) -> str:
     return text if text.startswith(("http://", "https://")) else ""
 
 
+_EN_STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "has", "have", "had", "are", "was", "were",
+    "will", "not", "but", "out", "new", "over", "after", "more", "than", "says", "said", "shows",
+    "into", "about", "been", "being", "its", "their", "your", "our", "all", "can", "may", "now",
+    "how", "why", "what", "who", "when", "where", "here", "there", "also", "just", "get", "gets",
+    "got", "make", "makes", "made", "still", "already", "could", "would", "should", "one", "two",
+    "first", "last", "year", "years", "day", "days", "week", "month", "report", "news", "video",
+}
+
+
+def _clean_text(value: Any, *, max_len: int = 220) -> str:
+    text = html_lib.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"A股A股", "A股", text)
+    text = re.sub(r"具体情况如下[：:]\s*$", "", text).strip()
+    text = re.sub(r"^原标题[：:]\s*", "", text).strip()
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len]
+    # Prefer cutting at sentence punctuation, else word boundary for Latin text
+    for sep in ("。", "！", "？", ";", "；", ". "):
+        pos = cut.rfind(sep)
+        if pos >= int(max_len * 0.55):
+            return cut[: pos + len(sep.strip())].strip()
+    if re.search(r"[A-Za-z0-9]$", cut) and max_len < len(text) and re.match(r"[A-Za-z0-9]", text[max_len]):
+        sp = cut.rfind(" ")
+        if sp >= int(max_len * 0.5):
+            return cut[:sp].rstrip(" ,;:-") + "…"
+    return cut.rstrip(" ,;:，；：") + "…"
+
+
+def _is_mostly_english(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return False
+    latin = len(re.findall(r"[A-Za-z]", s))
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", s))
+    return latin >= 12 and latin > cjk * 2
+
+
 def _normalized(text: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", (text or "").lower())
 
 
 def _bigrams(text: str) -> set[str]:
-    norm = _normalized(text)
-    if len(norm) < 2:
-        return {norm} if norm else set()
-    return {norm[i:i + 2] for i in range(len(norm) - 1)}
+    """Use CJK 2-grams for Chinese and meaningful whole words for English/Latin."""
+    low = (text or "").lower()
+    tokens: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", low):
+        if len(run) == 1:
+            tokens.add(run)
+        else:
+            tokens.update(run[i : i + 2] for i in range(len(run) - 1))
+    for word in re.findall(r"[a-z0-9]{3,}", low):
+        if word not in _EN_STOPWORDS:
+            tokens.add(word)
+    return tokens
 
 
 def _dice(a: set[str], b: set[str]) -> float:
@@ -210,8 +262,10 @@ def _has_market_relevance(report: dict[str, Any]) -> bool:
 def _passes_guardrails(text: str, source_corpus: str) -> bool:
     if not text or _NON_ADVISORY_RE.search(text):
         return False
-    generated_nums = set(_NUMERIC_TOKEN_RE.findall(text))
-    allowed_nums = set(_NUMERIC_TOKEN_RE.findall(source_corpus))
+    norm_text = re.sub(r"(?<=\d),(?=\d)", "", text)
+    norm_corpus = re.sub(r"(?<=\d),(?=\d)", "", source_corpus)
+    generated_nums = set(_NUMERIC_TOKEN_RE.findall(norm_text))
+    allowed_nums = set(_NUMERIC_TOKEN_RE.findall(norm_corpus))
     return not bool(generated_nums - allowed_nums)
 
 
@@ -421,8 +475,8 @@ class FinancialDailyService:
                 continue
             item = dict(raw)
             item["originalUrl"] = url
-            item["title"] = title
-            item["summary"] = str(item.get("summary") or title).strip()
+            item["title"] = _clean_text(title, max_len=160)
+            item["summary"] = _clean_text(item.get("summary") or title, max_len=360)
             item["source"] = str(item.get("source") or "公开来源").strip()
             item["sourceLevel"] = _effective_grade(item, self.registry)
             item["sourceTier"] = int(item.get("sourceTier") or source_tier(item["source"], self.registry))
@@ -555,8 +609,11 @@ class FinancialDailyService:
                     ],
                 })
             else:
-                # Deterministic fallback: shared entity/topic with >12h delta or distinct title -> NEW_NODE
-                if best_ms and best_sim >= 0.34:
+                # Deterministic fallback: only link without LLM on strong title/entity match
+                rep_ent = extract_entities(rep["title"], rep.get("summary", ""))
+                st_ent = extract_entities(best_story["title"])
+                ent_overlap = len(rep_ent & st_ent)
+                if best_ms and (best_sim >= 0.50 or ent_overlap >= 2 or (ent_overlap >= 1 and best_sim >= 0.42)):
                     decisions[rep["reportKey"]] = {
                         "action": "NEW_NODE",
                         "storyId": best_story["storyId"],
@@ -596,7 +653,13 @@ class FinancialDailyService:
             if rep["reportKey"] not in decisions:
                 candidates = self._recall_candidates(rep, active_stories)
                 if candidates:
-                    decisions[rep["reportKey"]] = {"action": "NEW_NODE", "storyId": candidates[0]["storyId"]}
+                    top = candidates[0]
+                    sim = _dice(_bigrams(headline(rep["title"])), _bigrams(headline(top["title"])))
+                    ent_ov = len(extract_entities(rep["title"], rep.get("summary", "")) & extract_entities(top["title"]))
+                    if sim >= 0.50 or ent_ov >= 2 or (ent_ov >= 1 and sim >= 0.42):
+                        decisions[rep["reportKey"]] = {"action": "NEW_NODE", "storyId": top["storyId"]}
+                    else:
+                        decisions[rep["reportKey"]] = {"action": "NEW_STORY"}
                 else:
                     decisions[rep["reportKey"]] = {"action": "NEW_STORY"}
         return decisions
@@ -837,10 +900,10 @@ class FinancialDailyService:
         latest_line = f"{_format_beijing(latest_ms.get('occurredAt'))} · {latest_ms.get('title', story['title'])}" if latest_ms else ""
         fallback = {
             "paragraphs": [
-                str(r.get("summary") or r.get("title"))
+                _clean_text(r.get("summary") or r.get("title"), max_len=240)
                 for r in sorted(reports, key=lambda item: item.get("publishedAt") or "", reverse=True)[:2]
                 if r.get("summary") or r.get("title")
-            ] or [story["title"]],
+            ] or [_clean_text(story["title"], max_len=160)],
             "latestMilestoneSummary": latest_line,
             "generatedBy": "rule",
         }
@@ -922,68 +985,135 @@ class FinancialDailyService:
                 "reportKey": c["reportKey"],
                 "bucket": c["bucket"],
                 "title": c["title"][:120],
-                "summary": c["summary"][:260],
+                "summary": c["summary"][:180],
                 "source": c["sourceName"],
                 "grade": c["sourceTierGrade"],
                 "independentSources": c["independentCount"],
                 "onHotlist": bool(c.get("hotlistSignal")),
             }
-            for c in candidates[:60]
+            for c in candidates[:50]
         ]
+
+        def _score_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            try:
+                rows = self._call_llm_json(
+                    "你是客观金融日报主编。只输出严格 JSON 数组，严禁编造或给出投资建议。",
+                    (
+                        "请为以下候选财经资讯逐条打分（breadth/novelty/evidence 各 0-5 分，可带一位小数），确认最贴切的板块 bucket"
+                        "（macro|china|global|tech|commodities），并补充可选字段："
+                        "duplicateOf（若与本批次另一条讲述同一具体事件，填写更权威或更早那条的 reportKey）、"
+                        "titleZh（若原标题为英文则必填，译为客观简练中文标题并原样保留数字）、"
+                        "summaryZh（若原摘要为英文则必填，译为一句客观中文摘要<=80字并原样保留数字）。"
+                        "返回严格 JSON 数组，每项字段：reportKey, breadth, novelty, evidence, bucket, duplicateOf(可选), titleZh(可选), summaryZh(可选)：\n"
+                        + json.dumps(chunk, ensure_ascii=False)
+                    ),
+                )
+                return rows if isinstance(rows, list) else []
+            except Exception:  # noqa: BLE001
+                logger.exception("glm editorial rerank chunk failed; using deterministic scores for chunk")
+                return []
+
+        chunks = [compact[i : i + 12] for i in range(0, len(compact), 12)]
+        all_rows: list[dict[str, Any]] = []
+        if len(chunks) == 1:
+            all_rows = _score_chunk(chunks[0])
+        else:
+            with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
+                for part in pool.map(_score_chunk, chunks):
+                    all_rows.extend(part)
+
         llm_used = False
+        for row in all_rows:
+            if not isinstance(row, dict):
+                continue
+            rkey = str(row.get("reportKey") or "")
+            if rkey not in scores:
+                continue
+            try:
+                breadth = max(0.0, min(5.0, float(row.get("breadth"))))
+                novelty = max(0.0, min(5.0, float(row.get("novelty"))))
+                evidence = max(0.0, min(5.0, float(row.get("evidence"))))
+            except (TypeError, ValueError):
+                continue
+            bucket = str(row.get("bucket") or scores[rkey]["bucket"])
+            if bucket not in _BUCKET_BY_KEY:
+                bucket = scores[rkey]["bucket"]
+            dup_of = str(row.get("duplicateOf") or "").strip()
+            if dup_of == rkey or dup_of not in cand_by_key:
+                dup_of = ""
+            cand = cand_by_key[rkey]
+            source_corpus = f"{cand['title']} {cand['summary']}"
+            title_zh = _clean_text(row.get("titleZh") or "", max_len=160)
+            if title_zh and not _passes_guardrails(title_zh, source_corpus):
+                title_zh = ""
+            summary_zh = _clean_text(row.get("summaryZh") or "", max_len=220)
+            if summary_zh and not _passes_guardrails(summary_zh, source_corpus):
+                summary_zh = ""
+            scores[rkey] = {
+                "breadth": breadth,
+                "novelty": novelty,
+                "evidence": evidence,
+                "bucket": bucket,
+                "duplicateOf": dup_of,
+                "titleZh": title_zh,
+                "summaryZh": summary_zh,
+            }
+            llm_used = True
+        return scores, llm_used
+
+    def _translate_selected_english(self, items: list[dict[str, Any]], *, allow_llm: bool) -> bool:
+        """Dedicated compact GLM translation pass for any remaining English headlines/summaries."""
+        if not allow_llm:
+            return False
+        targets = [
+            it for it in items
+            if _is_mostly_english(it.get("title") or "") or _is_mostly_english(it.get("summary") or "")
+        ]
+        if not targets:
+            return False
+        payload = [
+            {"reportKey": it["reportKey"], "title": it["title"][:160], "summary": it["summary"][:260]}
+            for it in targets[:20]
+        ]
         try:
             rows = self._call_llm_json(
-                "你是客观金融日报主编。只输出严格 JSON 数组，严格基于事实评估广度、增量与证据强度，翻译英文资讯，并识别跨媒体重复事件，严禁编造或给出投资建议。",
+                "你是客观财经翻译编辑。只输出严格 JSON 数组，忠实翻译英文财经标题与摘要，原样保留数字，严禁编造或给出投资建议。",
                 (
-                    "请为以下候选财经资讯逐条打分（breadth/novelty/evidence 各 0-5 分，可带一位小数），确认最贴切的板块 bucket"
-                    "（macro|china|global|tech|commodities），并补充可选字段："
-                    "duplicateOf（若与本批次另一条报道讲述同一具体新闻事件，填写更权威或更早那条的 reportKey，否则不填）、"
-                    "titleZh（若原标题主要为英文则必填，译为客观简练中文标题并原样保留数字，不要换算单位或给出投资建议）、"
-                    "summaryZh（若原摘要主要为英文则必填，译为客观一句中文事实摘要<=90字并原样保留数字）。"
-                    "返回严格 JSON 数组，每项字段：reportKey, breadth, novelty, evidence, bucket, duplicateOf(可选), titleZh(可选), summaryZh(可选)：\n"
-                    + json.dumps(compact, ensure_ascii=False)
+                    "请把以下英文财经资讯译为自然、客观、简洁的中文，返回严格 JSON 数组，每项字段："
+                    "reportKey, titleZh（中文标题）, summaryZh（一句客观中文摘要<=90字，原样保留数字且不换算单位）：\n"
+                    + json.dumps(payload, ensure_ascii=False)
                 ),
             )
-            if isinstance(rows, list):
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    rkey = str(row.get("reportKey") or "")
-                    if rkey not in scores:
-                        continue
-                    try:
-                        breadth = max(0.0, min(5.0, float(row.get("breadth"))))
-                        novelty = max(0.0, min(5.0, float(row.get("novelty"))))
-                        evidence = max(0.0, min(5.0, float(row.get("evidence"))))
-                    except (TypeError, ValueError):
-                        continue
-                    bucket = str(row.get("bucket") or scores[rkey]["bucket"])
-                    if bucket not in _BUCKET_BY_KEY:
-                        bucket = scores[rkey]["bucket"]
-                    dup_of = str(row.get("duplicateOf") or "").strip()
-                    if dup_of == rkey or dup_of not in cand_by_key:
-                        dup_of = ""
-                    cand = cand_by_key[rkey]
-                    source_corpus = f"{cand['title']} {cand['summary']}"
-                    title_zh = str(row.get("titleZh") or "").strip()
-                    if title_zh and not _passes_guardrails(title_zh, source_corpus):
-                        title_zh = ""
-                    summary_zh = str(row.get("summaryZh") or "").strip()
-                    if summary_zh and not _passes_guardrails(summary_zh, source_corpus):
-                        summary_zh = ""
-                    scores[rkey] = {
-                        "breadth": breadth,
-                        "novelty": novelty,
-                        "evidence": evidence,
-                        "bucket": bucket,
-                        "duplicateOf": dup_of,
-                        "titleZh": title_zh[:160] if title_zh else "",
-                        "summaryZh": summary_zh[:220] if summary_zh else "",
-                    }
-                    llm_used = True
         except Exception:  # noqa: BLE001
-            logger.exception("glm editorial rerank failed; using deterministic scores")
-        return scores, llm_used
+            logger.exception("selected english translation pass failed")
+            return False
+        if not isinstance(rows, list):
+            return False
+        by_key = {it["reportKey"]: it for it in targets}
+        translated = False
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rk = str(row.get("reportKey") or "")
+            it = by_key.get(rk)
+            if not it:
+                continue
+            corpus = f"{it['title']} {it['summary']}"
+            t_zh = _clean_text(row.get("titleZh") or "", max_len=160)
+            s_zh = _clean_text(row.get("summaryZh") or "", max_len=220)
+            if t_zh and not _passes_guardrails(t_zh, corpus):
+                t_zh = ""
+            if s_zh and not _passes_guardrails(s_zh, corpus):
+                s_zh = ""
+            if t_zh or s_zh:
+                if t_zh:
+                    it.setdefault("originalTitle", it["title"])
+                    it["title"] = t_zh
+                if s_zh:
+                    it["summary"] = s_zh
+                self.store.apply_report_translation(rk, title_zh=t_zh, summary_zh=s_zh)
+                translated = True
+        return translated
 
     def _build_market_strip(self, edition_type: str) -> dict[str, Any]:
         if edition_type == "evening" and self.market_review_service is not None:
@@ -1161,8 +1291,8 @@ class FinancialDailyService:
                     "milestoneCount": len(milestones),
                     "reportCount": len(story.get("reports") or []),
                     "bucket": story.get("bucket") if story.get("bucket") in _BUCKET_BY_KEY else classify_bucket(rep["title"], rep.get("summary", ""), str(rep.get("track") or ""), rep["source"]),
-                    "title": rep["title"],
-                    "summary": str(rep.get("summary") or rep["title"])[:220],
+                    "title": _clean_text(rep["title"], max_len=160),
+                    "summary": _clean_text(rep.get("summary") or rep["title"], max_len=220),
                     "tags": story.get("tags") or [_BUCKET_BY_KEY[story.get("bucket", "china")]["name"]],
                     "sourceName": rep["source"],
                     "sourceTierGrade": grade,
@@ -1213,6 +1343,9 @@ class FinancialDailyService:
                     continue
                 rk = rerank_map.get(cand["reportKey"]) or {"breadth": 3.0, "novelty": 3.0, "evidence": 3.0, "bucket": cand["bucket"]}
                 cand["bucket"] = rk["bucket"]
+                bucket_names = {b["name"] for b in FINANCE_BUCKETS}
+                non_bucket_tags = [t for t in (cand.get("tags") or []) if t not in bucket_names]
+                cand["tags"] = [_BUCKET_BY_KEY[cand["bucket"]]["name"], *non_bucket_tags][:4]
                 title_zh = str(rk.get("titleZh") or "").strip()
                 summary_zh = str(rk.get("summaryZh") or "").strip()
                 if title_zh or summary_zh:
@@ -1284,6 +1417,11 @@ class FinancialDailyService:
                     "note": meta["note"],
                     "items": chosen,
                 })
+
+            # Dedicated compact GLM translation pass for any remaining English lead/section items
+            selected_cards = ([lead] if lead else []) + all_section_items
+            if self._translate_selected_english(selected_cards, allow_llm=allow_llm):
+                stories = self.store.list_active_stories(days=TRACKED_WINDOW_DAYS)
 
             # Pick 3 keyPicks strictly from sections, preferring 1 per distinct bucket first
             picks_pool = sorted(all_section_items, key=lambda item: item["finalScore"], reverse=True)
@@ -1399,6 +1537,7 @@ class FinancialDailyService:
 
             payload = {
                 "editionKey": edition_key,
+                "promptVersion": PROMPT_VERSION,
                 "editionDate": target_date,
                 "editionType": target_type,
                 "editionTag": "早刊" if target_type == "morning" else "晚刊",
@@ -1722,7 +1861,12 @@ class FinancialDailyScheduler:
         now_bj = self.service.now_fn().astimezone(SHANGHAI)
         today = now_bj.strftime("%Y-%m-%d")
 
-        if now_bj.hour >= 8 and not self.service.get_edition(f"{today}-morning"):
+        if now_bj.hour < 18:
+            # Remove any premature evening edition created before 18:00
+            self.service.store.delete_daily_edition(f"{today}-evening")
+
+        morning_ed = self.service.get_edition(f"{today}-morning")
+        if now_bj.hour >= 8 and (not morning_ed or morning_ed.get("promptVersion") != PROMPT_VERSION):
             self.service.compose_edition(
                 edition_date=today,
                 edition_type="morning",
@@ -1731,7 +1875,8 @@ class FinancialDailyScheduler:
             )
             generated.append(f"{today}-morning")
 
-        if now_bj.hour >= 18 and not self.service.get_edition(f"{today}-evening"):
+        evening_ed = self.service.get_edition(f"{today}-evening")
+        if now_bj.hour >= 18 and (not evening_ed or evening_ed.get("promptVersion") != PROMPT_VERSION):
             self.service.compose_edition(
                 edition_date=today,
                 edition_type="evening",

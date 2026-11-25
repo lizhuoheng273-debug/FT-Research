@@ -45,9 +45,14 @@ export function Layout() {
   }, [sidebarPreference]);
   useEffect(() => {
     const query = window.matchMedia("(max-width: 639px)");
-    const onChange = () => setNarrowScreen(query.matches);
+    const onChange = () => setNarrowScreen(query.matches || window.innerWidth <= 639);
+    onChange();
     query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
+    window.addEventListener("resize", onChange);
+    return () => {
+      query.removeEventListener("change", onChange);
+      window.removeEventListener("resize", onChange);
+    };
   }, []);
 
   if (!identity) return <AuthGate>{null}</AuthGate>;

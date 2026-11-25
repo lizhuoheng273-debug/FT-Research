@@ -727,6 +727,11 @@ class FinancialNewsStore:
             return None
 
     @_locked
+    def delete_daily_edition(self, edition_key: str) -> None:
+        self._conn.execute("DELETE FROM daily_editions WHERE edition_key = ?", (edition_key,))
+        self._conn.commit()
+
+    @_locked
     def get_latest_daily_edition(self, edition_type: str | None = None) -> dict[str, Any] | None:
         if edition_type in {"morning", "evening"}:
             row = self._conn.execute(

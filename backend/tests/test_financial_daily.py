@@ -4,7 +4,7 @@ import json
 from fastapi.testclient import TestClient
 
 import app as app_module
-from financial_daily import FinancialDailyScheduler, FinancialDailyService, _passes_guardrails, classify_bucket
+from financial_daily import FinancialDailyScheduler, FinancialDailyService, _clean_text, _passes_guardrails, classify_bucket
 from financial_news import FinancialNewsService
 from financial_news_store import FinancialNewsStore
 from route_policy import policy_for
@@ -645,6 +645,60 @@ def test_request_refresh_is_non_blocking(tmp_path, monkeypatch):
     assert done.wait(2)
     if daily._refresh_thread:
         daily._refresh_thread.join(2)
+
+
+def test_english_word_clustering_no_false_merges_and_text_hygiene(tmp_path):
+    assert _passes_guardrails("美光将 CEO 安保预算提高 2000%", "Micron boosted CEO security budget by 2,000%") is True
+    assert _clean_text("&#34;央行&#34;开展逆回购操作。具体情况如下：") == '"央行"开展逆回购操作。'
+    assert _clean_text("A股A股午评：沪指微涨") == "A股午评：沪指微涨"
+    trimmed = _clean_text("The verdict was handed down in a federal court in New York today.", max_len=55)
+    assert not trimmed.endswith("New Y…")
+
+    now = datetime(2026, 11, 25, 14, 0, tzinfo=SHANGHAI)
+    svc = _make_news_service(tmp_path, lambda: now)
+    daily = FinancialDailyService(svc, official_fetcher=_StubOfficial([]), now_fn=lambda: now)
+    reps = [
+        {
+            "reportKey": "k-huawei",
+            "id": "k-huawei",
+            "title": "Huawei found guilty of stealing trade secrets in federal court",
+            "summary": "A US jury found Huawei guilty of trade secret theft.",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "BBC财经",
+            "sourceLevel": "A",
+            "originalUrl": "https://bbc.com/huawei",
+            "bucket": "tech",
+        },
+        {
+            "reportKey": "k-hyundai",
+            "id": "k-hyundai",
+            "title": "Hyundai new Kona N Line is already out testing in cold weather",
+            "summary": "Electric vehicle prototype spotted on roads.",
+            "publishedAt": (now - timedelta(hours=4)).astimezone(UTC).isoformat(),
+            "source": "Financial Times",
+            "sourceLevel": "A",
+            "originalUrl": "https://ft.com/hyundai",
+            "bucket": "tech",
+        },
+        {
+            "reportKey": "k-gta",
+            "id": "k-gta",
+            "title": "The infamous GTA 6 hacker has been released after pleading guilty",
+            "summary": "Gaming security case update.",
+            "publishedAt": (now - timedelta(hours=5)).astimezone(UTC).isoformat(),
+            "source": "CNBC",
+            "sourceLevel": "A",
+            "originalUrl": "https://cnbc.com/gta6",
+            "bucket": "tech",
+        },
+    ]
+    svc.store.upsert_reports(reps)
+    loaded = [{**r, "reportKey": r["id"], "bucket": "tech"} for r in svc.store.load_reports(hours=72)]
+    stories = daily.ingest_to_stories(loaded, allow_llm=False)
+    # GTA 6 should be filtered as noise; Huawei and Hyundai must NOT merge into the same story
+    huawei_story = next(st for st in stories if "Huawei" in st["title"])
+    assert len(huawei_story["reports"]) == 1
+    assert not any("Hyundai" in r["title"] or "GTA" in r["title"] for r in huawei_story["reports"])
 
 
 def test_scheduler_passes_refresh_upstream_flag(tmp_path):

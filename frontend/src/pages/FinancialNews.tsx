@@ -280,7 +280,12 @@ export function FinancialNews() {
   };
 
   const calendarData = calendar || edition?.calendar || null;
-  const activeType = edition?.editionType || requestedType || currentBeijingEditionType();
+  const requestedKeyType = requestedEditionKey.endsWith("-morning")
+    ? "morning"
+    : requestedEditionKey.endsWith("-evening")
+      ? "evening"
+      : undefined;
+  const activeType = requestedKeyType || requestedType || edition?.editionType || currentBeijingEditionType();
   const aiContext = useMemo(
     () =>
       JSON.stringify(
@@ -497,7 +502,7 @@ export function FinancialNews() {
                       {edition.marketStrip.items.map((item) => (
                         <div key={item.name} className="rounded-xl border border-border bg-card px-3 py-2.5">
                           <div className="text-xs text-muted-foreground">{item.name}</div>
-                          <div className="mt-0.5 font-mono text-base font-bold">{item.value}</div>
+                          <div className="mt-0.5 whitespace-nowrap font-mono text-sm font-bold tabular-nums sm:text-base">{item.value}</div>
                           <div
                             className={`mt-0.5 font-mono text-xs ${
                               item.direction === "up"
