@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v3"
+PROMPT_VERSION = "financial-daily-v3.1"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -201,6 +201,12 @@ def _clean_text(value: Any, *, max_len: int = 240) -> str:
     text = re.sub(r"具体情况如下[：:]\s*$", "", text).strip()
     text = re.sub(r"^原标题[：:]\s*", "", text).strip()
     if len(text) <= max_len:
+        # Trim dangling truncated RSS fragments (e.g. "...利益，双方") cleanly to last sentence end
+        if len(text) >= 90 and not re.search(r"[。！？.!?…\"”」』）)]$", text):
+            for sep in ("。", "！", "？"):
+                pos = text.rfind(sep)
+                if pos >= int(len(text) * 0.6):
+                    return text[: pos + 1].strip()
         return text
     cut = text[:max_len]
     for sep in ("。", "！", "？", ";", "；", ". "):
@@ -1049,7 +1055,7 @@ class FinancialDailyService:
                     {
                         "reportKey": it["reportKey"],
                         "title": it["title"][:160],
-                        "material": (str(it.get("bodyText") or it.get("summary") or it["title"]))[:1500],
+                        "material": (str(it.get("bodyText") or it.get("summary") or it["title"]))[:900],
                     }
                     for it in chunk
                 ]
@@ -1058,24 +1064,25 @@ class FinancialDailyService:
                         "你是严格遵循 AIHOT 答案前置规则的中文财经日报编辑。只输出严格 JSON 数组，绝不编造输入以外的数字、事实或投资建议。",
                         (
                             "请根据提供的标题和原文材料，为每条新闻生成高质量中文标题与答案前置事实摘要：\n"
-                            "1. titleZh：100%自然简练的中文标题（英文新闻必须完整译成中文，保留 Nvidia/OpenAI/CPI/PCE/GDP 等常见缩写与原数字，不换算单位）。\n"
+                            "1. titleZh：100%自然简练的中文标题（英文新闻必须完整译成中文，保留 Nvidia/OpenAI/Meta/CPI/PCE/GDP 等常见缩写与原数字，不换算单位）。\n"
                             "2. summaryZh：80-160字答案前置中文摘要，2-3个紧凑陈述句。第一句直接交代「谁做了什么、核心数字或结果是什么」；"
                             "后接1-2句原文中最关键的支撑事实、背景原因或市场反应。禁用「据报道」「本文介绍」「文章讨论」等套话，不得短于标题，不得预测涨跌或给买卖建议。\n"
                             "返回严格 JSON 数组，每项字段：reportKey, titleZh, summaryZh：\n"
                             + json.dumps(payload, ensure_ascii=False)
                         ),
+                        timeout_seconds=60,
                     )
                     return rows if isinstance(rows, list) else []
                 except Exception:  # noqa: BLE001
                     logger.exception("answer-first writing chunk failed")
                     return []
 
-            chunks = [items[i : i + 7] for i in range(0, len(items), 7)]
+            chunks = [items[i : i + 4] for i in range(0, len(items), 4)]
             written_rows: list[dict[str, Any]] = []
             if len(chunks) == 1:
                 written_rows = _write_chunk(chunks[0])
             else:
-                with ThreadPoolExecutor(max_workers=min(3, len(chunks))) as pool:
+                with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
                     for part in pool.map(_write_chunk, chunks):
                         written_rows.extend(part)
 
@@ -1097,6 +1104,28 @@ class FinancialDailyService:
                 if s_zh and len(s_zh) >= max(28, len(it["title"])) and _passes_guardrails(s_zh, corpus):
                     it["summary"] = s_zh
                     changed = True
+
+            # Targeted retry for any remaining untranslated English titles so zero English leaks to Level 1
+            still_en = [it for it in items if _is_mostly_english(it["title"])]
+            if still_en:
+                retry_rows = _write_chunk(still_en[:6])
+                for row in retry_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    rk = str(row.get("reportKey") or "")
+                    it = by_key.get(rk)
+                    if not it:
+                        continue
+                    corpus = f"{it['title']} {it.get('summary', '')} {str(it.get('bodyText') or '')[:3000]}"
+                    t_zh = _clean_text(row.get("titleZh") or "", max_len=140)
+                    s_zh = _clean_text(row.get("summaryZh") or "", max_len=240)
+                    if t_zh and not _is_mostly_english(t_zh) and _passes_guardrails(t_zh, corpus):
+                        it.setdefault("originalTitle", it["title"])
+                        it["title"] = t_zh
+                        changed = True
+                    if s_zh and not _is_mostly_english(s_zh) and len(s_zh) >= max(24, len(it["title"])) and _passes_guardrails(s_zh, corpus):
+                        it["summary"] = s_zh
+                        changed = True
 
         # Cap English long-body GLM translations to top 4 stories to keep compose fast & predictable
         en_translate_keys: set[str] = set()
@@ -1354,6 +1383,8 @@ class FinancialDailyService:
                 continue
             sc = score_map.get(cand["reportKey"]) or {"score": 50.0, "bucket": cand["bucket"]}
             cand["bucket"] = sc["bucket"]
+            if re.search(r"Q[1-4]营收|季报|财报|交付指引|营收同增|营收同比|earnings|quarterly results", cand["title"], re.I):
+                cand["bucket"] = "companies"
             cand["finalScore"] = round(float(sc["score"]) + min(10.0, (cand["independentCount"] - 1) * 3.0), 2)
             filtered.append(cand)
         filtered.sort(key=lambda item: (item["finalScore"], item["independentCount"]), reverse=True)

@@ -343,12 +343,72 @@ def _akshare_rows(
     )
 
 
+_TENCENT_GLOBAL_SYMBOLS = {
+    "DJI": "us.DJI",
+    "SPX": "us.INX",
+    "NDX": "us.IXIC",
+    "HSI": "hkHSI",
+    "HSTECH": "hkHSTECH",
+}
+
+
+def _fetch_global_index_tencent(
+    code: str,
+    period: str,
+    count: int = 60,
+    scope: str = "recent",
+) -> list[dict[str, Any]]:
+    import requests
+
+    sym = _TENCENT_GLOBAL_SYMBOLS.get(code)
+    if not sym:
+        return []
+    freq = {"daily": "day", "weekly": "week", "monthly": "month"}.get(period, "day")
+    lmt = 500 if scope == "full" else max(20, min(int(count or 60), 250))
+    resp = requests.get(
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+        params={"param": f"{sym},{freq},,,{lmt},qfq"},
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+        timeout=8,
+    )
+    resp.raise_for_status()
+    node = ((resp.json().get("data") or {}).get(sym)) or {}
+    rows = node.get(freq) or node.get(f"qfq{freq}") or []
+    points: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        t_str = str(row[0]).strip()
+        op, cl, hi, lo = _number(row[1]), _number(row[2]), _number(row[3]), _number(row[4])
+        vol = _number(row[5]) if len(row) >= 6 else 0.0
+        if cl <= 0:
+            continue
+        points.append({
+            "time": t_str,
+            "open": op or cl,
+            "high": hi or max(op or cl, cl),
+            "low": lo or min(op or cl, cl),
+            "close": cl,
+            "average": None,
+            "volume": vol,
+            "amount": 0.0,
+        })
+    return points
+
+
 def _fetch_global_index(
     code: str,
     period: str,
     count: int = 60,
     scope: str = "recent",
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        tx_points = _fetch_global_index_tencent(code, period, count, scope)
+        if tx_points:
+            return "腾讯财经", tx_points, list(tx_points)
+    except Exception:  # noqa: BLE001
+        pass
+
     import astock
 
     _, secid = GLOBAL_INDEX_CODES[code]
