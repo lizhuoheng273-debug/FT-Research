@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v4"
+PROMPT_VERSION = "financial-daily-v4.1"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -680,15 +680,25 @@ class FinancialDailyService:
         return decisions
 
     def _consolidate_story_milestones(self, story: dict[str, Any]) -> bool:
-        """Fold redundant same-day / overlapping commentary milestones into one representative node."""
+        """Fold redundant same-day / overlapping commentary milestones and detach off-topic legacy links."""
         milestones = story.get("milestones") or []
         if len(milestones) < 2:
             return False
+        story_ents = extract_entities(story.get("title") or "") - _GENERIC_ENTITIES
+        story_bg = _bigrams(headline(story.get("title") or ""))
         kept: list[dict[str, Any]] = []
         merges: dict[str, list[str]] = {}
+        changed = False
         for ms in milestones:
+            ms_title = ms.get("title") or ""
+            ms_ents = extract_entities(ms_title) - _GENERIC_ENTITIES
+            ms_bg = _bigrams(headline(ms_title))
+            # Evict obviously off-topic legacy milestones (e.g. Ukraine security inside a tariff story)
+            if kept and story_ents and not (ms_ents & story_ents) and _dice(ms_bg, story_bg) < 0.12:
+                self.store.unlink_milestone(story_id=story["storyId"], milestone_id=ms["milestoneId"])
+                changed = True
+                continue
             ms_dt = _parse(ms.get("occurredAt"))
-            ms_bg = _bigrams(headline(ms.get("title") or ""))
             merged_into = None
             for anchor in kept:
                 an_dt = _parse(anchor.get("occurredAt"))
@@ -702,7 +712,6 @@ class FinancialDailyService:
                 merges.setdefault(merged_into, []).append(ms["milestoneId"])
             else:
                 kept.append(ms)
-        changed = False
         for keep_id, drop_ids in merges.items():
             self.store.merge_milestones(
                 story_id=story["storyId"],
@@ -965,21 +974,24 @@ class FinancialDailyService:
         ]
         inputs_hash = hashlib.sha1(json.dumps(corpus_material, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
         existing_overview = story.get("overview") or {}
-        if existing_overview.get("paragraphs") and story.get("overviewInputsHash") == inputs_hash:
+        existing_paras = existing_overview.get("paragraphs") or []
+        existing_is_en = _is_mostly_english(" ".join(str(p) for p in existing_paras))
+        if existing_paras and story.get("overviewInputsHash") == inputs_hash and not existing_is_en:
             return existing_overview, inputs_hash, False
 
         latest_ms = milestones[0] if milestones else {}
         latest_line = f"{_format_beijing(latest_ms.get('occurredAt'))} · {latest_ms.get('title', story['title'])}" if latest_ms else ""
+        zh_fallback_paras = [
+            _clean_text(r.get("summary") or r.get("title"), max_len=260)
+            for r in sorted(reports, key=lambda item: item.get("publishedAt") or "", reverse=True)
+            if (r.get("summary") or r.get("title")) and not _is_mostly_english(r.get("summary") or r.get("title") or "")
+        ][:2]
         fallback = {
-            "paragraphs": [
-                _clean_text(r.get("summary") or r.get("title"), max_len=260)
-                for r in sorted(reports, key=lambda item: item.get("publishedAt") or "", reverse=True)[:2]
-                if r.get("summary") or r.get("title")
-            ] or [_clean_text(story["title"], max_len=160)],
+            "paragraphs": zh_fallback_paras or [_clean_text(story["title"], max_len=160)],
             "latestMilestoneSummary": latest_line,
             "generatedBy": "rule",
         }
-        if not allow_llm or not reports or len(milestones) < 2:
+        if not allow_llm or not reports or (len(milestones) < 2 and not existing_is_en):
             return fallback, inputs_hash, True
 
         source_corpus = " ".join(f"{r.get('title', '')} {r.get('summary', '')}" for r in reports)
@@ -1192,12 +1204,16 @@ class FinancialDailyService:
                     it.setdefault("originalTitle", it["title"])
                     it["title"] = t_zh
                     changed = True
-                if s_zh and len(s_zh) >= max(28, len(it["title"])) and _passes_guardrails(s_zh, corpus):
+                min_sum_len = 18 if _is_mostly_english(it.get("summary") or "") else max(28, len(it["title"]))
+                if s_zh and len(s_zh) >= min_sum_len and _passes_guardrails(s_zh, corpus):
                     it["summary"] = s_zh
                     changed = True
 
-            # Targeted retry for any remaining untranslated English titles so zero English leaks to Level 1
-            still_en = [it for it in items if _is_mostly_english(it["title"])]
+            # Targeted retry for any remaining untranslated English titles or summaries so zero English leaks to Level 1
+            still_en = [
+                it for it in items
+                if _is_mostly_english(it["title"]) or _is_mostly_english(it.get("summary") or "")
+            ]
             if still_en:
                 retry_rows = _write_chunk(still_en[:6])
                 for row in retry_rows:
@@ -1214,7 +1230,7 @@ class FinancialDailyService:
                         it.setdefault("originalTitle", it["title"])
                         it["title"] = t_zh
                         changed = True
-                    if s_zh and not _is_mostly_english(s_zh) and len(s_zh) >= max(24, len(it["title"])) and _passes_guardrails(s_zh, corpus):
+                    if s_zh and not _is_mostly_english(s_zh) and len(s_zh) >= 18 and _passes_guardrails(s_zh, corpus):
                         it["summary"] = s_zh
                         changed = True
 
@@ -1894,7 +1910,9 @@ class FinancialDailyService:
             if self._translate_english_titles(en_ms, persist=True):
                 story = self.store.get_tracked_story(story_id) or story
         now_utc = self.now_fn().astimezone(UTC)
-        overview, inputs_hash, changed = self._prepare_event_overview(story, allow_llm=False)
+        ex_ov = story.get("overview") or {}
+        need_zh_ov = _is_mostly_english(" ".join(str(p) for p in (ex_ov.get("paragraphs") or [])))
+        overview, inputs_hash, changed = self._prepare_event_overview(story, allow_llm=need_zh_ov)
         if changed:
             self.store.update_tracked_overview(story_id, overview, inputs_hash)
         why_hot = self.compute_heat_and_why_hot(story, now=now_utc)

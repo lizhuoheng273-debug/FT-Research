@@ -793,6 +793,13 @@ class FinancialNewsStore:
         self._conn.commit()
 
     @_locked
+    def unlink_milestone(self, *, story_id: str, milestone_id: str) -> None:
+        """Detach an off-topic legacy milestone from a tracked story."""
+        self._conn.execute("DELETE FROM milestone_reports WHERE story_id = ? AND milestone_id = ?", (story_id, milestone_id))
+        self._conn.execute("DELETE FROM story_milestones WHERE story_id = ? AND milestone_id = ?", (story_id, milestone_id))
+        self._conn.commit()
+
+    @_locked
     def clear_dirty_bodies(self, markers: tuple[str, ...]) -> int:
         """Clear previously cached article bodies that contain site nav/login boilerplate."""
         rows = self._conn.execute("SELECT report_id, metadata_json FROM reports WHERE metadata_json LIKE '%bodyMarkdown%' OR metadata_json LIKE '%bodyText%'").fetchall()
