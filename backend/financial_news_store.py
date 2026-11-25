@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -59,15 +61,25 @@ def _report_key(report: dict[str, Any]) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
+def _locked(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class FinancialNewsStore:
     def __init__(self, path: str | Path, retention_hours: int = 72, now_fn: Callable[[], datetime] = _now):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.retention_hours = max(24, int(retention_hours))
         self.now_fn = now_fn
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(self.path, timeout=30.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=15000")
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -182,6 +194,7 @@ class FinancialNewsStore:
             pass
         self._conn.commit()
 
+    @_locked
     def _prune(self) -> None:
         cutoff = (self.now_fn().astimezone(UTC) - timedelta(hours=self.retention_hours)).isoformat()
         tracked_cutoff = (self.now_fn().astimezone(UTC) - timedelta(days=30)).isoformat()
@@ -195,6 +208,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def upsert_reports(self, reports: list[dict[str, Any]]) -> list[str]:
         observed = self.now_fn().astimezone(UTC).isoformat()
         ids: list[str] = []
@@ -209,13 +223,14 @@ class FinancialNewsStore:
                     related_stocks_json, metadata_json, first_seen_at, last_seen_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(report_id) DO UPDATE SET
-                    title=excluded.title, summary=excluded.summary,
+                    title=CASE WHEN reports.metadata_json LIKE '%"translatedZh": true%' THEN reports.title ELSE excluded.title END,
+                    summary=CASE WHEN reports.metadata_json LIKE '%"translatedZh": true%' THEN reports.summary ELSE excluded.summary END,
                     published_at=COALESCE(excluded.published_at, reports.published_at),
                     source=excluded.source, source_tier=excluded.source_tier,
                     source_level=excluded.source_level, original_url=excluded.original_url,
                     normalized_url=excluded.normalized_url, category=excluded.category,
                     track=excluded.track, related_stocks_json=excluded.related_stocks_json,
-                    metadata_json=excluded.metadata_json,
+                    metadata_json=CASE WHEN reports.metadata_json LIKE '%"translatedZh": true%' THEN reports.metadata_json ELSE excluded.metadata_json END,
                     last_seen_at=excluded.last_seen_at""",
                 (
                     report_id, str(report.get("title") or "").strip(), str(report.get("summary") or ""),
@@ -246,6 +261,7 @@ class FinancialNewsStore:
             pass
         return result
 
+    @_locked
     def load_reports(self, hours: int = 72) -> list[dict[str, Any]]:
         cutoff = (self.now_fn().astimezone(UTC) - timedelta(hours=max(24, int(hours)))).isoformat()
         rows = self._conn.execute(
@@ -253,6 +269,7 @@ class FinancialNewsStore:
         ).fetchall()
         return [self._row_to_report(row) for row in rows]
 
+    @_locked
     def save_events(self, events: list[dict[str, Any]]) -> None:
         updated = self.now_fn().astimezone(UTC).isoformat()
         for event in events:
@@ -274,6 +291,7 @@ class FinancialNewsStore:
         self._conn.commit()
         self._prune()
 
+    @_locked
     def load_events(self, hours: int = 72) -> list[dict[str, Any]]:
         cutoff = (self.now_fn().astimezone(UTC) - timedelta(hours=max(24, int(hours)))).isoformat()
         events = self._conn.execute(
@@ -290,10 +308,12 @@ class FinancialNewsStore:
             output.append(event)
         return output
 
+    @_locked
     def get_ai_cache(self, content_hash: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT payload_json FROM ai_cache WHERE content_hash = ?", (content_hash,)).fetchone()
         return json.loads(row["payload_json"]) if row else None
 
+    @_locked
     def put_ai_cache(self, content_hash: str, value: dict[str, Any]) -> None:
         self._conn.execute(
             "INSERT INTO ai_cache(content_hash, payload_json, created_at) VALUES (?, ?, ?) ON CONFLICT(content_hash) DO UPDATE SET payload_json=excluded.payload_json",
@@ -301,6 +321,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def save_market_observation(self, observation_id: str, payload: dict[str, Any]) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO market_observations(observation_id, observed_at, payload_json) VALUES (?, ?, ?)",
@@ -308,6 +329,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def upsert_tracked_story(
         self,
         *,
@@ -354,6 +376,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def update_tracked_overview(self, story_id: str, overview: dict[str, Any], inputs_hash: str) -> None:
         now_iso = self.now_fn().astimezone(UTC).isoformat()
         self._conn.execute(
@@ -362,6 +385,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def upsert_milestone(
         self,
         *,
@@ -390,6 +414,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def link_milestone_report(self, *, milestone_id: str, story_id: str, report_key: str, role: str = "report") -> None:
         self._conn.execute(
             """INSERT INTO milestone_reports (milestone_id, story_id, report_key, role)
@@ -403,6 +428,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def record_signal(
         self,
         *,
@@ -422,6 +448,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def upsert_heat_snapshot(
         self,
         *,
@@ -442,6 +469,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def list_active_stories(self, days: int = 30) -> list[dict[str, Any]]:
         cutoff = (self.now_fn().astimezone(UTC) - timedelta(days=max(1, int(days)))).isoformat()
         rows = self._conn.execute(
@@ -532,12 +560,14 @@ class FinancialNewsStore:
             ],
         }
 
+    @_locked
     def get_tracked_story(self, story_id: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT * FROM tracked_stories WHERE story_id = ?", (story_id,)).fetchone()
         if not row:
             return None
         return self._hydrate_tracked_story(row, include_reports=True)
 
+    @_locked
     def get_report_detail(self, report_key: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_key,)).fetchone()
         if not row:
@@ -554,6 +584,104 @@ class FinancialNewsStore:
             report["role"] = link["role"]
         return report
 
+    @_locked
+    def apply_report_translation(self, report_key: str, *, title_zh: str = "", summary_zh: str = "") -> None:
+        """Persist validated GLM Chinese translations to reports, milestones, and tracked stories."""
+        if not title_zh and not summary_zh:
+            return
+        row = self._conn.execute(
+            "SELECT title, summary, metadata_json FROM reports WHERE report_id = ?",
+            (report_key,),
+        ).fetchone()
+        if not row:
+            return
+        old_title = row["title"]
+        old_summary = row["summary"]
+        try:
+            meta = json.loads(row["metadata_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        if title_zh and not meta.get("originalTitle"):
+            meta["originalTitle"] = old_title
+        meta["translatedZh"] = True
+        new_title = title_zh or old_title
+        new_summary = summary_zh or old_summary
+        now_iso = self.now_fn().astimezone(UTC).isoformat()
+        self._conn.execute(
+            "UPDATE reports SET title = ?, summary = ?, metadata_json = ? WHERE report_id = ?",
+            (new_title, new_summary, json.dumps(meta, ensure_ascii=False), report_key),
+        )
+        if title_zh:
+            self._conn.execute(
+                "UPDATE story_milestones SET title = ? WHERE representative_report_key = ?",
+                (title_zh, report_key),
+            )
+            linked = self._conn.execute(
+                "SELECT DISTINCT story_id FROM milestone_reports WHERE report_key = ?",
+                (report_key,),
+            ).fetchall()
+            for link in linked:
+                self._conn.execute(
+                    "UPDATE tracked_stories SET title = ?, updated_at = ? WHERE story_id = ? AND (title = ? OR story_id IN (SELECT story_id FROM story_milestones WHERE representative_report_key = ?))",
+                    (title_zh, now_iso, link["story_id"], old_title, report_key),
+                )
+        self._conn.commit()
+
+    @_locked
+    def merge_tracked_stories(self, *, target_story_id: str, duplicate_story_id: str) -> None:
+        """Fold a duplicate cross-outlet tracked story into the surviving story."""
+        if not target_story_id or not duplicate_story_id or target_story_id == duplicate_story_id:
+            return
+        target = self._conn.execute("SELECT * FROM tracked_stories WHERE story_id = ?", (target_story_id,)).fetchone()
+        dup = self._conn.execute("SELECT * FROM tracked_stories WHERE story_id = ?", (duplicate_story_id,)).fetchone()
+        if not target or not dup:
+            return
+        target_ms = self._conn.execute(
+            "SELECT milestone_id FROM story_milestones WHERE story_id = ? ORDER BY occurred_at DESC LIMIT 1",
+            (target_story_id,),
+        ).fetchone()
+        if not target_ms:
+            return
+        target_mid = target_ms["milestone_id"]
+        dup_links = self._conn.execute(
+            "SELECT report_key, role FROM milestone_reports WHERE story_id = ?",
+            (duplicate_story_id,),
+        ).fetchall()
+        for link in dup_links:
+            self._conn.execute(
+                """INSERT INTO milestone_reports (milestone_id, story_id, report_key, role)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(milestone_id, report_key) DO NOTHING""",
+                (target_mid, target_story_id, link["report_key"], link["role"]),
+            )
+        dup_signals = self._conn.execute(
+            "SELECT participant_key, source_name, source_tier, kind, observed_at FROM story_signals WHERE story_id = ?",
+            (duplicate_story_id,),
+        ).fetchall()
+        for sig in dup_signals:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO story_signals (
+                    story_id, participant_key, source_name, source_tier, kind, observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (target_story_id, sig["participant_key"], sig["source_name"], sig["source_tier"], sig["kind"], sig["observed_at"]),
+            )
+        self._conn.execute(
+            "UPDATE story_milestones SET report_count = (SELECT COUNT(*) FROM milestone_reports WHERE milestone_id = ?) WHERE milestone_id = ?",
+            (target_mid, target_mid),
+        )
+        now_iso = self.now_fn().astimezone(UTC).isoformat()
+        self._conn.execute(
+            """UPDATE tracked_stories
+            SET first_report_at = MIN(COALESCE(first_report_at, ?), COALESCE(?, first_report_at)),
+                latest_at = MAX(COALESCE(latest_at, ?), COALESCE(?, latest_at)),
+                updated_at = ?
+            WHERE story_id = ?""",
+            (dup["first_report_at"], dup["first_report_at"], dup["latest_at"], dup["latest_at"], now_iso, target_story_id),
+        )
+        self._conn.execute("DELETE FROM tracked_stories WHERE story_id = ?", (duplicate_story_id,))
+        self._conn.commit()
+
+    @_locked
     def save_daily_edition(
         self,
         *,
@@ -588,6 +716,7 @@ class FinancialNewsStore:
         )
         self._conn.commit()
 
+    @_locked
     def get_daily_edition(self, edition_key: str) -> dict[str, Any] | None:
         row = self._conn.execute("SELECT payload_json FROM daily_editions WHERE edition_key = ?", (edition_key,)).fetchone()
         if not row:
@@ -597,6 +726,7 @@ class FinancialNewsStore:
         except (json.JSONDecodeError, TypeError):
             return None
 
+    @_locked
     def get_latest_daily_edition(self, edition_type: str | None = None) -> dict[str, Any] | None:
         if edition_type in {"morning", "evening"}:
             row = self._conn.execute(
@@ -615,6 +745,7 @@ class FinancialNewsStore:
         except (json.JSONDecodeError, TypeError):
             return None
 
+    @_locked
     def list_daily_editions(self, limit: int = 60) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             """SELECT edition_key, edition_date, edition_type, payload_json, updated_at
@@ -640,10 +771,12 @@ class FinancialNewsStore:
             })
         return editions
 
+    @_locked
     def prune_tracked(self, days: int = 30) -> None:
         cutoff = (self.now_fn().astimezone(UTC) - timedelta(days=max(1, int(days)))).isoformat()
         self._conn.execute("DELETE FROM tracked_stories WHERE COALESCE(latest_at, updated_at) < ?", (cutoff,))
         self._conn.commit()
 
+    @_locked
     def close(self) -> None:
         self._conn.close()

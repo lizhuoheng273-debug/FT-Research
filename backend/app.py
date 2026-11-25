@@ -847,7 +847,7 @@ def financial_daily_edition(edition_key: str):
 def financial_daily_refresh(edition: str | None = Query(None)):
     edition_type = edition if edition in {"morning", "evening"} else None
     try:
-        return {"data": financial_daily_service.refresh_now(edition_type=edition_type)}
+        return {"data": financial_daily_service.request_refresh(edition_type=edition_type)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"金融日报刷新失败：{exc}") from exc
 

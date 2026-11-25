@@ -560,6 +560,92 @@ def test_bucket_precedence_noise_clickbait_and_glm_translation_dedup(tmp_path):
     assert len(nvda_items) == 1
     assert nvda_items[0]["title"] == "Nvidia quarterly revenue reaches 35.1 billion dollars"
 
+    # P1 verification: GLM Chinese translation AND duplicateOf cross-outlet merge must persist to Level 2 & Level 3
+    bbc_key = tariff_items[0]["reportKey"]
+    bbc_story_id = tariff_items[0]["storyId"]
+    detail = daily.get_report_detail(bbc_key)
+    assert detail is not None
+    assert detail["title"] == "美国拟对 12 个贸易伙伴推出新关税方案"
+    assert detail["summary"] == "美方正拟定针对 12 个贸易伙伴的新关税提案。"
+    assert any(f["sourceName"] == "Financial Times" for f in detail["followups"])
+
+    tracked = daily.get_tracked_event(bbc_story_id)
+    assert tracked is not None
+    assert tracked["title"] == "美国拟对 12 个贸易伙伴推出新关税方案"
+    assert len(tracked["reports"]) >= 2
+    assert {"BBC财经", "Financial Times"}.issubset({r["sourceName"] for r in tracked["reports"]})
+
+
+def test_latest_edition_never_blocks_and_never_fabricates_premature_evening(tmp_path):
+    import threading
+    import time
+
+    now = datetime(2026, 11, 25, 14, 10, tzinfo=SHANGHAI)
+    svc = _make_news_service(tmp_path, lambda: now)
+    svc.store.upsert_reports([
+        {
+            "title": "中国人民银行公开市场净投放 2000 亿元",
+            "summary": "维护月末流动性平稳。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "中国人民银行",
+            "sourceLevel": "S",
+            "official": True,
+            "originalUrl": "https://www.pbc.gov.cn/omo-2000",
+        }
+    ])
+    daily = FinancialDailyService(svc, official_fetcher=_StubOfficial([]), now_fn=lambda: now)
+    morning = daily.compose_edition(edition_type="morning", refresh_upstream=False, allow_llm=False)
+    assert morning["editionKey"] == "2026-11-25-morning"
+
+    # Simulate an active slow refresh holding daily._lock in another thread
+    lock_acquired = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock():
+        with daily._lock:
+            daily._compose_active = True
+            lock_acquired.set()
+            release_lock.wait(5)
+            daily._compose_active = False
+
+    t = threading.Thread(target=hold_lock, daemon=True)
+    t.start()
+    assert lock_acquired.wait(2)
+    try:
+        t0 = time.monotonic()
+        res = daily.latest_edition()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5
+        assert res["editionKey"] == "2026-11-25-morning"
+        assert res["refreshing"] is True
+
+        # Clicking evening tab at 14:10 must NOT fabricate a fake evening edition
+        ev_res = daily.latest_edition(edition_type="evening")
+        assert ev_res["editionKey"] == "2026-11-25-morning"
+        assert ev_res["requestedEditionPending"]["editionType"] == "evening"
+        assert daily.get_edition("2026-11-25-evening") is None
+    finally:
+        release_lock.set()
+        t.join(2)
+
+
+def test_request_refresh_is_non_blocking(tmp_path, monkeypatch):
+    import threading
+
+    now = datetime(2026, 11, 25, 14, 15, tzinfo=SHANGHAI)
+    svc = _make_news_service(tmp_path, lambda: now)
+    daily = FinancialDailyService(svc, official_fetcher=_StubOfficial([]), now_fn=lambda: now)
+    daily.compose_edition(edition_type="morning", refresh_upstream=False, allow_llm=False)
+
+    done = threading.Event()
+    monkeypatch.setattr(daily, "compose_edition", lambda **kwargs: (done.set() or daily.get_edition("2026-11-25-morning")))
+    res = daily.request_refresh(edition_type="evening")
+    assert res["refreshing"] is True
+    assert res["refreshOutcome"] == "started"
+    assert done.wait(2)
+    if daily._refresh_thread:
+        daily._refresh_thread.join(2)
+
 
 def test_scheduler_passes_refresh_upstream_flag(tmp_path):
     now = datetime(2026, 11, 25, 8, 5, tzinfo=SHANGHAI)

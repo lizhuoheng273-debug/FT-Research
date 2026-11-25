@@ -261,6 +261,12 @@ class FinancialDailyService:
         self.llm_call = llm_call
         self.config_loader = config_loader
         self._lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
+        self._refresh_thread: threading.Thread | None = None
+        self._compose_active = False
+
+    def is_refreshing(self) -> bool:
+        return bool(self._refresh_lock.locked() or self._compose_active)
 
     def _call_llm_json(self, system_prompt: str, user_prompt: str) -> Any:
         if self.llm_call is not None:
@@ -329,19 +335,46 @@ class FinancialDailyService:
 
     def _collect_unified_pool(self, *, refresh_upstream: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if refresh_upstream:
-            try:
-                self.news_service.refresh_hotlists(force=True)
-            except Exception:  # noqa: BLE001
-                logger.exception("hotlist refresh failed during daily refresh")
-            try:
-                self.news_service.refresh_rss()
-            except Exception:  # noqa: BLE001
-                logger.exception("rss refresh failed during daily refresh")
-            try:
-                self.news_service.refresh_quick()
-            except Exception:  # noqa: BLE001
-                logger.exception("quick refresh failed during daily refresh")
-            official_payload = self.official_fetcher.fetch()
+            now_utc = self.now_fn().astimezone(UTC)
+            current_ov = self.news_service.overview() or {}
+            freshness = current_ov.get("freshness") or {}
+            rss_ok_at = _parse((freshness.get("rss") or {}).get("lastSuccessAt"))
+            quick_ok_at = _parse((freshness.get("quick") or {}).get("lastSuccessAt"))
+            need_rss = not rss_ok_at or (now_utc - rss_ok_at).total_seconds() >= 300
+            need_quick = not quick_ok_at or (now_utc - quick_ok_at).total_seconds() >= 90
+
+            def _run_hot() -> None:
+                try:
+                    self.news_service.refresh_hotlists(force=True)
+                except Exception:  # noqa: BLE001
+                    logger.exception("hotlist refresh failed during daily refresh")
+
+            def _run_quick_and_rss() -> None:
+                if need_quick:
+                    try:
+                        self.news_service.refresh_quick()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("quick refresh failed during daily refresh")
+                if need_rss:
+                    try:
+                        self.news_service.refresh_rss()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("rss refresh failed during daily refresh")
+
+            def _run_official() -> dict[str, Any]:
+                try:
+                    return self.official_fetcher.fetch()
+                except Exception:  # noqa: BLE001
+                    logger.exception("official fetch failed during daily refresh")
+                    return self.official_fetcher.load_cached()
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                f_hot = pool.submit(_run_hot)
+                f_news = pool.submit(_run_quick_and_rss)
+                f_off = pool.submit(_run_official)
+                f_hot.result()
+                f_news.result()
+                official_payload = f_off.result()
         else:
             official_payload = self.official_fetcher.load_cached()
             if not official_payload.get("reports"):
@@ -1055,6 +1088,26 @@ class FinancialDailyService:
     ) -> dict[str, Any]:
         """Run 2-stage funnel + strict newspaper layout and persist edition archive."""
         with self._lock:
+            self._compose_active = True
+            try:
+                return self._compose_edition_locked(
+                    edition_date=edition_date,
+                    edition_type=edition_type,
+                    refresh_upstream=refresh_upstream,
+                    allow_llm=allow_llm,
+                )
+            finally:
+                self._compose_active = False
+
+    def _compose_edition_locked(
+        self,
+        *,
+        edition_date: str | None = None,
+        edition_type: str | None = None,
+        refresh_upstream: bool = False,
+        allow_llm: bool = True,
+    ) -> dict[str, Any]:
+        if True:
             now_bj = self.now_fn().astimezone(SHANGHAI)
             now_utc = now_bj.astimezone(UTC)
             target_date = edition_date or now_bj.strftime("%Y-%m-%d")
@@ -1133,14 +1186,26 @@ class FinancialDailyService:
             rerank_map, llm_rerank_used = self._rerank_with_glm(recalled, allow_llm=allow_llm)
             by_key = {c["reportKey"]: c for c in recalled}
             dropped_keys: set[str] = set()
+            merged_any = False
+            translated_any = False
             for cand in recalled:
                 rk = rerank_map.get(cand["reportKey"]) or {}
                 dup_target = str(rk.get("duplicateOf") or "").strip()
                 if dup_target and dup_target != cand["reportKey"] and dup_target in by_key:
-                    # Avoid mutual/cyclic drops: resolve up to 2 hops and never drop if target is already dropped
                     if dup_target not in dropped_keys and cand["reportKey"] not in dropped_keys:
-                        by_key[dup_target]["independentCount"] += 1
+                        target_cand = by_key[dup_target]
+                        target_cand["independentCount"] += 1
                         dropped_keys.add(cand["reportKey"])
+                        if target_cand["storyId"] != cand["storyId"]:
+                            self.store.merge_tracked_stories(
+                                target_story_id=target_cand["storyId"],
+                                duplicate_story_id=cand["storyId"],
+                            )
+                            merged_story = self.store.get_tracked_story(target_cand["storyId"])
+                            if merged_story:
+                                target_cand["reportCount"] = len(merged_story.get("reports") or [])
+                                target_cand["milestoneCount"] = len(merged_story.get("milestones") or [])
+                            merged_any = True
 
             filtered_recalled: list[dict[str, Any]] = []
             for cand in recalled:
@@ -1148,11 +1213,20 @@ class FinancialDailyService:
                     continue
                 rk = rerank_map.get(cand["reportKey"]) or {"breadth": 3.0, "novelty": 3.0, "evidence": 3.0, "bucket": cand["bucket"]}
                 cand["bucket"] = rk["bucket"]
-                if rk.get("titleZh"):
-                    cand["originalTitle"] = cand["title"]
-                    cand["title"] = rk["titleZh"]
-                if rk.get("summaryZh"):
-                    cand["summary"] = rk["summaryZh"]
+                title_zh = str(rk.get("titleZh") or "").strip()
+                summary_zh = str(rk.get("summaryZh") or "").strip()
+                if title_zh or summary_zh:
+                    if title_zh:
+                        cand["originalTitle"] = cand["title"]
+                        cand["title"] = title_zh
+                    if summary_zh:
+                        cand["summary"] = summary_zh
+                    self.store.apply_report_translation(
+                        cand["reportKey"],
+                        title_zh=title_zh,
+                        summary_zh=summary_zh,
+                    )
+                    translated_any = True
                 hot_pts = 5.0 if cand.get("hotlistSignal") else min(5.0, float(cand["independentCount"]))
                 cand["finalScore"] = round(
                     rk["breadth"] * 0.35 * 20.0
@@ -1164,6 +1238,8 @@ class FinancialDailyService:
                 cand["evidenceScore"] = rk["evidence"]
                 filtered_recalled.append(cand)
             recalled = filtered_recalled
+            if merged_any or translated_any:
+                stories = self.store.list_active_stories(days=TRACKED_WINDOW_DAYS)
 
             recalled.sort(key=lambda item: (item["finalScore"], item["official"], item["independentCount"]), reverse=True)
 
@@ -1364,18 +1440,139 @@ class FinancialDailyService:
     def list_editions(self, limit: int = 60) -> list[dict[str, Any]]:
         return self.store.list_daily_editions(limit=limit)
 
+    def _initializing_skeleton(self, edition_type: str | None = None) -> dict[str, Any]:
+        now_bj = self.now_fn().astimezone(SHANGHAI)
+        now_utc = now_bj.astimezone(UTC)
+        target_date = now_bj.strftime("%Y-%m-%d")
+        target_type = edition_type if edition_type in {"morning", "evening"} else ("evening" if now_bj.hour >= 18 else "morning")
+        weekday_names = ["一", "二", "三", "四", "五", "六", "日"]
+        date_label = f"{now_bj.year} 年 {now_bj.month} 月 {now_bj.day} 日 · 星期{weekday_names[now_bj.weekday()]}"
+        calendar_data = (
+            self.news_service.calendar.overview()
+            if hasattr(self.news_service, "calendar")
+            else {"items": [], "partial": False, "stale": False, "sources": []}
+        )
+        return {
+            "editionKey": f"{target_date}-{target_type}",
+            "editionDate": target_date,
+            "editionType": target_type,
+            "editionTag": "早刊" if target_type == "morning" else "晚刊",
+            "publishTimeLabel": "08:00 定时出刊" if target_type == "morning" else "18:00 定时出刊",
+            "dateLabel": date_label,
+            "dayNumber": f"{now_bj.day:02d}",
+            "generatedAt": now_utc.isoformat(),
+            "overview": "正在拉取各路金融信源并用 GLM 编排首期金融日报，请稍候片刻，页面将自动刷新。",
+            "marketStrip": self._build_market_strip(target_type),
+            "urgentBanner": None,
+            "lead": None,
+            "keyPicks": [],
+            "sections": [
+                {"key": meta["key"], "code": meta["code"], "name": meta["name"], "note": meta["note"], "items": []}
+                for meta in FINANCE_BUCKETS
+            ],
+            "calendar": calendar_data,
+            "coverage": {
+                "activeSources": 0,
+                "totalSources": 0,
+                "rawReports": 0,
+                "trackedStories": 0,
+                "selectedCount": 0,
+                "editorialEngine": "rule",
+                "sources": [],
+            },
+            "refreshing": True,
+            "initializing": True,
+        }
+
     def latest_edition(self, edition_type: str | None = None) -> dict[str, Any]:
-        with self._lock:
-            stored = self.store.get_latest_daily_edition(edition_type=edition_type)
-            if stored:
-                return stored
-            return self.compose_edition(edition_type=edition_type, refresh_upstream=False, allow_llm=False)
+        """Cache-first read that never blocks behind long-running upstream/GLM refreshes."""
+        stored = self.store.get_latest_daily_edition(edition_type=edition_type)
+        if stored:
+            return {**stored, "refreshing": self.is_refreshing()}
+
+        now_bj = self.now_fn().astimezone(SHANGHAI)
+        if edition_type == "evening" and now_bj.hour < 18:
+            fallback = self.store.get_latest_daily_edition(edition_type=None)
+            if fallback:
+                return {
+                    **fallback,
+                    "refreshing": self.is_refreshing(),
+                    "requestedEditionPending": {
+                        "editionType": "evening",
+                        "message": "今日晚报将于 18:00 定时出刊，当前为您展示已出刊的早报",
+                    },
+                }
+        if edition_type == "morning" and now_bj.hour < 8:
+            fallback = self.store.get_latest_daily_edition(edition_type=None)
+            if fallback:
+                return {
+                    **fallback,
+                    "refreshing": self.is_refreshing(),
+                    "requestedEditionPending": {
+                        "editionType": "morning",
+                        "message": "今日早报将于 08:00 定时出刊，当前为您展示上一期晚报",
+                    },
+                }
+
+        # No cached edition exists yet. Avoid stalling HTTP workers if a build is already running.
+        acquired = self._lock.acquire(blocking=False)
+        if not acquired:
+            return self._initializing_skeleton(edition_type=edition_type)
+        try:
+            stored_again = self.store.get_latest_daily_edition(edition_type=edition_type)
+            if stored_again:
+                return {**stored_again, "refreshing": self.is_refreshing()}
+            built = self.compose_edition(edition_type=edition_type, refresh_upstream=False, allow_llm=False)
+            return {**built, "refreshing": self.is_refreshing()}
+        finally:
+            self._lock.release()
 
     def get_edition(self, edition_key: str) -> dict[str, Any] | None:
-        return self.store.get_daily_edition(edition_key)
+        item = self.store.get_daily_edition(edition_key)
+        if not item:
+            return None
+        return {**item, "refreshing": self.is_refreshing()}
 
     def refresh_now(self, edition_type: str | None = None) -> dict[str, Any]:
         return self.compose_edition(edition_type=edition_type, refresh_upstream=True, allow_llm=True)
+
+    def request_refresh(self, edition_type: str | None = None) -> dict[str, Any]:
+        """Start one background refresh and immediately return the current usable edition."""
+        now_bj = self.now_fn().astimezone(SHANGHAI)
+        target_type = (
+            edition_type
+            if edition_type in {"morning", "evening"}
+            else ("evening" if now_bj.hour >= 18 else "morning")
+        )
+        # Never fabricate a premature evening edition before 18:00 via manual refresh.
+        if target_type == "evening" and now_bj.hour < 18:
+            target_type = "morning"
+
+        started = self._refresh_lock.acquire(blocking=False)
+        if started:
+            def _worker() -> None:
+                try:
+                    self.compose_edition(edition_type=target_type, refresh_upstream=True, allow_llm=True)
+                except Exception:  # noqa: BLE001
+                    logger.exception("background financial daily refresh failed")
+                finally:
+                    self._refresh_lock.release()
+
+            self._refresh_thread = threading.Thread(
+                target=_worker,
+                name="financial-daily-manual-refresh",
+                daemon=True,
+            )
+            self._refresh_thread.start()
+
+        current = self.store.get_latest_daily_edition(edition_type=target_type) or self.store.get_latest_daily_edition()
+        if not current:
+            current = self._initializing_skeleton(edition_type=target_type)
+        return {
+            **current,
+            "refreshing": True,
+            "refreshOutcome": "started" if started else "already_running",
+        }
 
     def get_report_detail(self, report_key: str) -> dict[str, Any] | None:
         report = self.store.get_report_detail(report_key)

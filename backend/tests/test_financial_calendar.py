@@ -216,3 +216,46 @@ def test_successful_bls_cache_stays_fresh_for_eight_days(tmp_path):
     assert svc.overview()["stale"] is False
     clock[0] += timedelta(hours=2)
     assert svc.overview()["stale"] is True
+
+
+def test_bea_and_nvidia_calendar_titles_localized_in_parse_and_cached_overview(tmp_path):
+    bea_html = (
+        '<table id="release-schedule-table"><thead><th>Year 2026</th></thead><tbody>'
+        '<tr><td class="scheduled-date"><div class="release-date">November 25</div><small>8:30 AM</small></td>'
+        '<td class="release-title">GDP (Second Estimate) and Corporate Profits, 3rd Quarter 2026</td></tr>'
+        '<tr><td class="scheduled-date"><div class="release-date">November 26</div><small>10:00 AM</small></td>'
+        '<td class="release-title">Personal Income and Outlays, October 2026</td></tr>'
+        '<tr><td class="scheduled-date"><div class="release-date">December 3</div></td>'
+        '<td class="release-title">GDP by County and Personal Income by County, 2025</td></tr>'
+        '</tbody></table>'
+    )
+    rows = cal.parse_bea(bea_html)
+    assert rows[0]["title"] == "美国 GDP（二次修正值）与企业利润（2026 年三季度）"
+    assert rows[1]["title"] == "美国个人收入与支出（含 PCE）（2026 年 10月）"
+    assert rows[2]["title"] == "美国县域 GDP 与个人收入数据（2025 年）"
+
+    nv_xml = '<rss><channel><item><title>12/2/2026 : UBS Global Technology and AI Conference</title><link>https://investor.nvidia.com/events/ubs</link></item></channel></rss>'
+    assert cal.parse_nvidia(nv_xml)[0]["title"] == "英伟达 · 瑞银全球科技与 AI 大会"
+
+    # Cached legacy mixed-language titles are also localized on overview() read
+    now = datetime(2026, 11, 25, 2, 0, tzinfo=timezone.utc)
+    svc = cal.FinancialCalendar(tmp_path, now_fn=lambda: now, fetchers={"bea": lambda: [], "nvidia": lambda: []})
+    svc.path.write_text(json.dumps({
+        "generatedAt": now.isoformat(),
+        "sources": {
+            "bea": {
+                "ok": True,
+                "lastSuccessAt": now.isoformat(),
+                "items": [cal.calendar_event("k1", "美国个人收入与支出（含 PCE）, October 2026", "经济数据", "2026-11-26", "08:30:00", "America/New_York", cal.BEA_URL)],
+            },
+            "nvidia": {
+                "ok": True,
+                "lastSuccessAt": now.isoformat(),
+                "items": [cal.calendar_event("k2", "英伟达 · UBS Global Technology and AI Conference", "重大会议", "2026-12-02", None, "America/Los_Angeles", cal.NVIDIA_FEED)],
+            },
+        },
+    }, ensure_ascii=False), encoding="utf-8")
+    ov = svc.overview()
+    titles = [item["title"] for item in ov["items"]]
+    assert "美国个人收入与支出（含 PCE）（2026 年 10月）" in titles
+    assert "英伟达 · 瑞银全球科技与 AI 大会" in titles

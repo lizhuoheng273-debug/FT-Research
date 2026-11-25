@@ -439,8 +439,16 @@ export interface FinancialDailyEdition {
     rawReports: number;
     trackedStories: number;
     selectedCount: number;
+    editorialEngine?: "glm" | "rule";
     sources: Array<{ name: string; ok: boolean; count: number; cache: string; error?: string | null }>;
   };
+  refreshing?: boolean;
+  initializing?: boolean;
+  refreshOutcome?: "started" | "already_running";
+  requestedEditionPending?: {
+    editionType: "morning" | "evening";
+    message: string;
+  } | null;
 }
 export interface FinancialDailyEditionSummary {
   editionKey: string;

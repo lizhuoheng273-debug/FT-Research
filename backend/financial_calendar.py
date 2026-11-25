@@ -118,6 +118,77 @@ def parse_fed(html, year, month, url):
     return output
 
 
+_MONTH_ZH = {
+    "January": "1月", "February": "2月", "March": "3月", "April": "4月",
+    "May": "5月", "June": "6月", "July": "7月", "August": "8月",
+    "September": "9月", "October": "10月", "November": "11月", "December": "12月",
+}
+_QUARTER_ZH = {"1st": "一季度", "2nd": "二季度", "3rd": "三季度", "4th": "四季度"}
+
+
+def _localize_bea_period(text: str) -> str:
+    m_q = re.search(r"\b(1st|2nd|3rd|4th)\s+Quarter\s+(\d{4})\b", text, re.I)
+    if m_q:
+        return f"{m_q.group(2)} 年{_QUARTER_ZH.get(m_q.group(1).lower(), m_q.group(1))}"
+    m_ym = re.search(
+        r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b",
+        text,
+    )
+    if m_ym:
+        return f"{m_ym.group(2)} 年 {_MONTH_ZH[m_ym.group(1)]}"
+    m_y = re.search(r",\s*(\d{4})\b", text)
+    if m_y:
+        return f"{m_y.group(1)} 年"
+    return ""
+
+
+def _localize_bea_title(original: str) -> str:
+    period = _localize_bea_period(original)
+    suffix = f"（{period}）" if period else ""
+    if "GDP by County" in original:
+        return f"美国县域 GDP 与个人收入数据{suffix}"
+    if "Gross Domestic Product" in original or original.startswith("GDP"):
+        est = (
+            "初值" if "Advance" in original
+            else "二次修正值" if "Second" in original
+            else "终值" if "Third" in original
+            else ""
+        )
+        corp = "与企业利润" if "Corporate Profits" in original else ""
+        est_part = f"（{est}）" if est else ""
+        return f"美国 GDP{est_part}{corp}{suffix}"
+    if "Personal Income and Outlays" in original or "美国个人收入与支出" in original:
+        return f"美国个人收入与支出（含 PCE）{suffix}"
+    if "International Trade in Goods and Services" in original or "美国商品与服务贸易数据" in original:
+        return f"美国商品与服务贸易数据{suffix}"
+    return original
+
+
+def _localize_nvidia_title(title: str) -> str:
+    cleaned = title.strip()
+    if re.search(r"financial results|earnings", cleaned, re.I):
+        q = re.search(r"Q([1-4])\s*FY(\d{2,4})", cleaned, re.I)
+        if q:
+            return f"英伟达 · FY{q.group(2)} Q{q.group(1)} 季度财报电话会"
+        return "英伟达 · 季度财报电话会"
+    if re.search(r"annual meeting of stockholders", cleaned, re.I):
+        return "英伟达 · 年度股东大会"
+    replacements = [
+        ("UBS Global Technology and AI Conference", "瑞银全球科技与 AI 大会"),
+        ("UBS Global Technology Conference", "瑞银全球科技大会"),
+        ("Goldman Sachs Technology Conference", "高盛科技大会"),
+        ("Goldman Sachs Communacopia", "高盛科技与通信大会"),
+        ("Morgan Stanley Technology", "摩根士丹利科技大会"),
+        ("J.P. Morgan Global Technology", "摩根大通全球科技大会"),
+        ("Bank of America Global Technology", "美银全球科技大会"),
+        ("GTC Keynote", "GTC 主题演讲"),
+    ]
+    for en, zh in replacements:
+        if en.lower() in cleaned.lower():
+            return f"英伟达 · {zh}"
+    return f"英伟达 · {cleaned}"
+
+
 def parse_nvidia(xml):
     try:
         root = ET.fromstring(xml)
@@ -136,7 +207,7 @@ def parse_nvidia(xml):
             continue
         kind = "公司财报" if re.search(r"financial results|earnings", title, re.I) else "重大会议"
         day = datetime.strptime(match.group(1), "%m/%d/%Y").date().isoformat()
-        rows.append(calendar_event(f"nvidia:{title}:{day}", "英伟达 · " + title, kind, day, None, "America/Los_Angeles", node.findtext("link")))
+        rows.append(calendar_event(f"nvidia:{title}:{day}", _localize_nvidia_title(title), kind, day, None, "America/Los_Angeles", node.findtext("link")))
     return rows
 
 
@@ -155,7 +226,7 @@ def parse_bea(html):
         if not re.search(r"GDP|Personal Income and Outlays|International Trade in Goods and Services", original):
             continue
         day = datetime.strptime(f"{year} {d.get_text(strip=True)}", "%Y %B %d").date().isoformat()
-        title = original.replace("U.S. International Trade in Goods and Services", "美国商品与服务贸易数据").replace("Personal Income and Outlays", "美国个人收入与支出（含 PCE）")
+        title = _localize_bea_title(original)
         output.append(calendar_event(f"bea:{original}:{day}", title, "经济数据", day, _clock(clock.get_text()) if clock else None, "America/New_York", BEA_URL))
     return output
 
@@ -269,7 +340,12 @@ class FinancialCalendar:
                 local_zone = ZoneInfo(row.get("sourceTimezone") or "UTC")
                 eligible = now <= starts <= end if starts else now.astimezone(local_zone).date().isoformat() <= row["date"] <= end.astimezone(local_zone).date().isoformat()
                 if eligible:
-                    items.append({**row, "source": name, "stale": stale, "fetchedAt": fetched})
+                    title = row["title"]
+                    if source == "bea":
+                        title = _localize_bea_title(title)
+                    elif source == "nvidia" and title.startswith("英伟达 · "):
+                        title = _localize_nvidia_title(title[len("英伟达 · "):])
+                    items.append({**row, "title": title, "source": name, "stale": stale, "fetchedAt": fetched})
         items = list({r["id"]: r for r in items}.values())
         items.sort(key=lambda r: (r["date"], r.get("startsAt") or r["date"] + "T23:59", r["title"]))
         return {"items": items, "windowStart": now.isoformat(), "windowEnd": end.isoformat(), "timezone": "Asia/Shanghai",

@@ -95,6 +95,11 @@ function FinanceArchive({
   );
 }
 
+function currentBeijingEditionType(): "morning" | "evening" {
+  const bjHour = new Date(Date.now() + 8 * 3600_000).getUTCHours();
+  return bjHour >= 18 ? "evening" : "morning";
+}
+
 export function FinancialNews() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -115,30 +120,114 @@ export function FinancialNews() {
 
   useEffect(() => {
     const controller = new AbortController();
+    let timedOut = false;
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 15000);
     setLoading(true);
     setError(null);
+
+    let fallbackList: FinancialDailyEditionSummary[] = [];
+    const listPromise = api
+      .financialDailyEditions(controller.signal)
+      .then((list) => {
+        if (cancelled) return list;
+        fallbackList = list;
+        setEditions(list);
+        return list;
+      })
+      .catch(() => [] as FinancialDailyEditionSummary[]);
+
+    api
+      .financialNewsCalendar(controller.signal)
+      .then((cal) => {
+        if (!cancelled) setCalendar(cal);
+      })
+      .catch(() => undefined);
+
     const editionReq = requestedEditionKey
       ? api.financialDailyEdition(requestedEditionKey, controller.signal)
       : api.financialDailyLatest(requestedType, controller.signal);
 
-    Promise.allSettled([
-      editionReq,
-      api.financialDailyEditions(controller.signal),
-      api.financialNewsCalendar(controller.signal),
-    ]).then(([edRes, listRes, calRes]) => {
-      if (controller.signal.aborted) return;
-      if (edRes.status === "fulfilled") {
-        setEdition(edRes.value);
-      } else {
-        setError(edRes.reason instanceof Error ? edRes.reason.message : "金融日报暂不可用");
-      }
-      if (listRes.status === "fulfilled") setEditions(listRes.value);
-      if (calRes.status === "fulfilled") setCalendar(calRes.value);
-      setLoading(false);
-    });
+    editionReq
+      .then((ed) => {
+        if (cancelled) return;
+        setEdition(ed);
+        setLoading(false);
+      })
+      .catch(async (reason) => {
+        if (cancelled) return;
+        if (timedOut) {
+          const list = fallbackList.length > 0 ? fallbackList : await listPromise;
+          if (cancelled) return;
+          if (list.length > 0 && !requestedEditionKey) {
+            try {
+              const archived = await api.financialDailyEdition(list[0].editionKey);
+              if (cancelled) return;
+              setEdition(archived);
+              setError("最新排刊响应较慢，已先为您展示最近一期归档日报");
+              setLoading(false);
+              return;
+            } catch {
+              // Fall through to timeout message
+            }
+          }
+          setError("加载金融日报超时，请点击重试或从左侧切换往期日报");
+          setLoading(false);
+          return;
+        }
+        setError(reason instanceof Error ? reason.message : "金融日报暂不可用");
+        setLoading(false);
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+      });
 
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, [requestedEditionKey, requestedType, revision]);
+
+  // Auto-poll gently while background GLM refresh or first-boot initialization is active.
+  useEffect(() => {
+    if (!edition?.refreshing && !edition?.initializing) return;
+    const baseGeneratedAt = edition.generatedAt;
+    let active = true;
+    let attempts = 0;
+    const timer = window.setInterval(async () => {
+      attempts += 1;
+      if (!active || attempts > 40) {
+        window.clearInterval(timer);
+        setRefreshing(false);
+        return;
+      }
+      try {
+        const next = requestedEditionKey
+          ? await api.financialDailyEdition(requestedEditionKey)
+          : await api.financialDailyLatest(requestedType);
+        if (!active) return;
+        setEdition(next);
+        if (!next.refreshing && !next.initializing) {
+          window.clearInterval(timer);
+          setRefreshing(false);
+          if (next.generatedAt !== baseGeneratedAt) {
+            setRefreshMessage("本期金融日报已更新");
+            api.financialDailyEditions().then(setEditions).catch(() => undefined);
+          }
+        }
+      } catch {
+        // Ignore transient poll error and keep current readable edition on screen.
+      }
+    }, 4000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [edition?.refreshing, edition?.initializing, edition?.generatedAt, requestedEditionKey, requestedType]);
 
   const selectEditionKey = (key: string) => {
     setUrgentDismissed(false);
@@ -170,12 +259,16 @@ export function FinancialNews() {
       ]);
       setEdition(updated);
       setUrgentDismissed(false);
-      setRefreshMessage("本期金融日报与日程已更新");
-      setRevision((value) => value + 1);
+      if (updated.refreshing) {
+        setRefreshMessage("后台正在更新信源并用 GLM 编排，完成后自动刷新…");
+      } else {
+        setRefreshMessage("本期金融日报与日程已更新");
+        setRevision((value) => value + 1);
+      }
     } catch (reason) {
       setRefreshMessage(
         controller.signal.aborted
-          ? "刷新超时，请稍后重试"
+          ? "刷新请求超时，请稍后重试"
           : reason instanceof Error
             ? reason.message
             : "刷新失败，请稍后重试",
@@ -187,7 +280,7 @@ export function FinancialNews() {
   };
 
   const calendarData = calendar || edition?.calendar || null;
-  const activeType = edition?.editionType || requestedType || "evening";
+  const activeType = edition?.editionType || requestedType || currentBeijingEditionType();
   const aiContext = useMemo(
     () =>
       JSON.stringify(
@@ -270,8 +363,22 @@ export function FinancialNews() {
           )}
 
           {error && (
-            <p className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-muted-foreground">
-              {error}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-muted-foreground">
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={() => setRevision((value) => value + 1)}
+                className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium text-primary hover:border-primary"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                重试
+              </button>
+            </div>
+          )}
+
+          {edition?.requestedEditionPending?.message && (
+            <p className="rounded-xl border border-border bg-card px-3.5 py-2.5 text-xs text-muted-foreground">
+              {edition.requestedEditionPending.message}
             </p>
           )}
 
