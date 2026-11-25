@@ -133,17 +133,18 @@ export function FinancialNews() {
     const listPromise = api
       .financialDailyEditions(controller.signal)
       .then((list) => {
-        if (cancelled) return list;
-        fallbackList = list;
-        setEditions(list);
-        return list;
+        const safeList = Array.isArray(list) ? list : [];
+        if (cancelled) return safeList;
+        fallbackList = safeList;
+        setEditions(safeList);
+        return safeList;
       })
       .catch(() => [] as FinancialDailyEditionSummary[]);
 
     api
       .financialNewsCalendar(controller.signal)
       .then((cal) => {
-        if (!cancelled) setCalendar(cal);
+        if (!cancelled && cal) setCalendar(cal);
       })
       .catch(() => undefined);
 
@@ -154,7 +155,11 @@ export function FinancialNews() {
     editionReq
       .then((ed) => {
         if (cancelled) return;
-        setEdition(ed);
+        if (ed && typeof ed === "object") {
+          setEdition(ed);
+        } else {
+          setError("金融日报数据格式异常，请点击重试");
+        }
         setLoading(false);
       })
       .catch(async (reason) => {
@@ -162,14 +167,16 @@ export function FinancialNews() {
         if (timedOut) {
           const list = fallbackList.length > 0 ? fallbackList : await listPromise;
           if (cancelled) return;
-          if (list.length > 0 && !requestedEditionKey) {
+          if (Array.isArray(list) && list.length > 0 && !requestedEditionKey) {
             try {
               const archived = await api.financialDailyEdition(list[0].editionKey);
               if (cancelled) return;
-              setEdition(archived);
-              setError("最新排刊响应较慢，已先为您展示最近一期归档日报");
-              setLoading(false);
-              return;
+              if (archived && typeof archived === "object") {
+                setEdition(archived);
+                setError("最新排刊响应较慢，已先为您展示最近一期归档日报");
+                setLoading(false);
+                return;
+              }
             } catch {
               // Fall through to timeout message
             }
@@ -308,7 +315,7 @@ export function FinancialNews() {
     [edition, calendarData],
   );
 
-  const activeSections = (edition?.sections || []).filter((sec) => sec.items.length > 0);
+  const activeSections = (edition?.sections || []).filter((sec) => (sec?.items || []).length > 0);
   const urgent = edition?.urgentBanner;
 
   return (
@@ -497,7 +504,7 @@ export function FinancialNews() {
                     <span className="font-semibold">{edition.marketStrip.title}</span>
                     <span>{edition.marketStrip.note}</span>
                   </div>
-                  {edition.marketStrip.items.length > 0 ? (
+                  {(edition.marketStrip.items || []).length > 0 ? (
                     <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
                       {edition.marketStrip.items.map((item) => (
                         <div key={item.name} className="rounded-xl border border-border bg-card px-3 py-2.5">
@@ -600,9 +607,9 @@ export function FinancialNews() {
                       <span className="font-semibold tracking-wider">本期看点</span>
                       <span>精选自各版面</span>
                     </div>
-                    {edition.keyPicks.length > 0 ? (
+                    {(edition.keyPicks || []).length > 0 ? (
                       <ol className="space-y-3 text-xs leading-relaxed">
-                        {edition.keyPicks.map((pick, index) => (
+                        {(edition.keyPicks || []).map((pick, index) => (
                           <li key={pick.reportKey}>
                             <Link
                               to={`/finance/news/story/${pick.reportKey}`}

@@ -466,6 +466,9 @@ class FinancialDailyService:
                     "stale": bool(item.get("stale")),
                 })
 
+        rolling_keys = {str(r.get("id") or "") for r in rolling_reports if r.get("id")}
+        hot_bigrams = [(h_norm, _bigrams(h_norm), h_val) for h_norm, h_val in hot_by_title.items() if h_norm]
+
         combined_raw = official_reports + rolling_reports + hotlist_reports
         deduped: dict[str, dict[str, Any]] = {}
         for raw in combined_raw:
@@ -488,10 +491,10 @@ class FinancialDailyService:
             # Attach hotlist signal if matched
             norm = _normalized(headline(title))
             hot_info = hot_by_title.get(norm)
-            if not hot_info and norm:
+            if not hot_info and norm and hot_bigrams:
                 bg = _bigrams(norm)
-                for h_norm, h_val in hot_by_title.items():
-                    if _dice(bg, _bigrams(h_norm)) >= 0.72:
+                for _, h_bg, h_val in hot_bigrams:
+                    if _dice(bg, h_bg) >= 0.72:
                         hot_info = h_val
                         break
             if hot_info:
@@ -500,10 +503,11 @@ class FinancialDailyService:
             if rkey not in deduped or (item.get("official") and not deduped[rkey].get("official")):
                 deduped[rkey] = item
 
-        # Persist merged reports into SQLite so Level 2 detail queries always find them
+        # Only persist newly materialized official/hotlist reports into SQLite (avoid re-upserting thousands of existing rolling rows)
         reports_list = list(deduped.values())
-        if reports_list:
-            self.store.upsert_reports(reports_list)
+        to_persist = [item for item in reports_list if item["reportKey"] not in rolling_keys or item.get("official")]
+        if to_persist:
+            self.store.upsert_reports(to_persist)
 
         # Combine source health statuses
         news_status = list(overview.get("sourceStatus") or [])
@@ -683,16 +687,22 @@ class FinancialDailyService:
 
             admitted: list[dict[str, Any]] = []
             for rep in sorted(reports, key=lambda r: r.get("publishedAt") or "", reverse=True):
+                if rep["reportKey"] in known_report_keys:
+                    continue
+                pub_dt = _parse(rep.get("publishedAt"))
+                if pub_dt and (now_dt - pub_dt).total_seconds() > 48 * 3600:
+                    continue
                 norm = _normalized(headline(rep["title"]))
                 peers = title_groups.get(norm) or [rep]
                 indep_count = len(independent_sources(peers))
-                matches_active = bool(self._recall_candidates(rep, active_stories))
-                if not self.admit_report(rep, corroborating_count=indep_count, matches_active_story=matches_active):
-                    continue
-                if rep["reportKey"] in known_report_keys:
-                    # Still refresh heat signal if newly seen
-                    continue
+                direct_ok = self.admit_report(rep, corroborating_count=indep_count, matches_active_story=False)
+                if not direct_ok:
+                    matches_active = bool(self._recall_candidates(rep, active_stories))
+                    if not self.admit_report(rep, corroborating_count=indep_count, matches_active_story=matches_active):
+                        continue
                 admitted.append(rep)
+                if len(admitted) >= 150:
+                    break
 
             if admitted:
                 decisions = self._classify_story_links(admitted, active_stories, allow_llm=allow_llm)
