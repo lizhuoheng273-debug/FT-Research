@@ -923,6 +923,22 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
             "originalUrl": "https://cn.investing.com/k33-q3",
         },
         {
+            "title": "Schoeller-Bleck精密技术部门订单强劲，推动股价大涨",
+            "summary": "Schoeller-Bleck精密技术部门订单表现强劲，推动公司股价大幅上涨。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "英为财情",
+            "sourceLevel": "A",
+            "originalUrl": "https://cn.investing.com/schoeller-bleck",
+        },
+        {
+            "title": "（财经天下）美国通胀超预期 加息“箭在弦上”",
+            "summary": "美国最新关键通胀指标进一步偏离美联储2%的目标，市场重估12月加息节奏。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "中新网财经",
+            "sourceLevel": "A",
+            "originalUrl": "https://chinanews.com.cn/us-inflation-rate-hike",
+        },
+        {
             "title": "商务部：坚决反对美对中国等经济体加征301关税",
             "summary": "商务部：坚决反对美对中国等经济体加征301关税",
             "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
@@ -949,6 +965,12 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
                 elif "K33" in r["title"]:
                     # Obscure small cap: low reson (30) -> MUST be vetoed!
                     out.append({"reportKey": r["reportKey"], "sig": 60, "nov": 65, "reson": 30, "cred": 75, "bucket": "companies"})
+                elif "Schoeller-Bleck" in r["title"]:
+                    # Even if GLM generously scores an obscure small-cap >= 62, code-level major-company gate MUST drop it!
+                    out.append({"reportKey": r["reportKey"], "sig": 75, "nov": 74, "reson": 70, "cred": 78, "bucket": "companies"})
+                elif "美国通胀超预期" in r["title"]:
+                    # Even if GLM misclassifies pure macro inflation/rate headline as companies, deterministic guard fixes to macro!
+                    out.append({"reportKey": r["reportKey"], "sig": 82, "nov": 76, "reson": 80, "cred": 82, "bucket": "companies"})
                 elif "苹果" in r["title"]:
                     # High resonance (90) but low sig (25) and low nov (20) -> MUST be vetoed!
                     out.append({"reportKey": r["reportKey"], "sig": 25, "nov": 20, "reson": 90, "cred": 50, "bucket": "companies"})
@@ -975,7 +997,12 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
     assert not any("苹果高管" in t for t in titles)
     assert not any("92号汽油" in t for t in titles)
     assert not any("K33" in t for t in titles)
+    assert not any("Schoeller-Bleck" in t for t in titles)  # obscure single-source small cap blocked even if LLM scored >=62!
     assert not any("301关税" in t for t in titles)  # bare 1-line stub without bodyText dropped!
+
+    # Pure macro inflation/rate headline must land in macro even if LLM mislabeled it as companies
+    inflation_item = next(it for it in all_items if "美国通胀超预期" in it["title"])
+    assert inflation_item["bucket"] == "macro"
 
     # Bank strategy call on Japan stocks must land in market, NOT companies
     nikkei_item = next(it for it in all_items if "日股" in it["title"])

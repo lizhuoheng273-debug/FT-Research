@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v5.1"
+PROMPT_VERSION = "financial-daily-v5.2"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -87,12 +87,24 @@ _MARKET_RE = re.compile(
     r"沪指|上证指数|深证成指|深成指|创业板指|科创50|北证50|两市成交额|下跌个股|上涨个股|宽基ETF|"
     r"美股(?:三大股指|收涨|收跌|开盘|收盘|暴跌|大涨|回调|反弹)|纳指|纳斯达克|标普500|道指|道琼斯|"
     r"港股(?:收涨|收跌|大涨|大跌|回调|反弹)|恒生指数|恒指|恒生科技|"
-    r"日股|日经(?:225|平均指数)?|韩股|韩国股市|KOSPI|欧股|亚太(?:股市|市场)|股市(?:回调|大跌|大涨|重挫|崩盘|救市|稳市)|"
+    r"日股|日经(?:225|平均指数)?|韩股|韩国股市|KOSPI|欧股|亚太(?:股市|市场)|全球股市|股市(?:回调|大跌|大涨|重挫|崩盘|救市|稳市)|"
     r"stock market|wall street|s&p\s*500|nasdaq|dow jones|hang seng|nikkei|kospi|equities|stocks rally|stocks tumble|selloff|sell-off|market convulsions",
     re.I,
 )
+_MAJOR_COMPANIES_RE = re.compile(
+    r"英伟达|黄仁勋|苹果|微软|谷歌|亚马逊|特斯拉|马斯克|Meta|OpenAI|Anthropic|xAI|台积电|AMD|超威|英特尔|博通|美光|阿斯麦|戴尔|甲骨文|奈飞|高通|ARM|"
+    r"Palantir|Salesforce|思科|IBM|Adobe|优步|爱彼迎|沃尔玛|开市客|伯克希尔|巴菲特|摩根大通|高盛|摩根士丹利|花旗|美银|瑞银|汇丰|贝莱德|"
+    r"波音|空客|礼来|诺和诺德|辉瑞|埃克森美孚|雪佛龙|沙特阿美|丰田|索尼|软银|三星|SK海力士|"
+    r"小米|雷军|阿里巴巴|阿里|马云|平头哥|腾讯|字节跳动|拼多多|京东|美团|比亚迪|宁德时代|华为|中芯国际|茅台|百度|网易|蔚来|小鹏|理想|吉利|"
+    r"蚂蚁集团|滴滴|携程|快手|哔哩哔哩|联想|海尔|美的|格力|泡泡玛特|寒武纪|中际旭创|工业富联|"
+    r"nvidia|jensen huang|apple|microsoft|google|alphabet|amazon|tesla|elon musk|tsmc|intel|broadcom|micron|asml|dell|oracle|netflix|qualcomm|"
+    r"cisco|uber|airbnb|walmart|costco|berkshire|jpmorgan|goldman sachs|morgan stanley|citigroup|bank of america|blackrock|boeing|airbus|"
+    r"eli lilly|novo nordisk|pfizer|exxon|chevron|aramco|toyota|sony|softbank|samsung|sk hynix|"
+    r"xiaomi|alibaba|tencent|bytedance|pinduoduo|pdd|jd\.com|meituan|byd|catl|huawei|smic|baidu|netease|nio|xpeng|li auto|geely",
+    re.I,
+)
 _COMPANIES_RE = re.compile(
-    r"财报|季报|年报|营收|净利润|每股收益|指引|业绩|不及预期|超预期|暴涨|暴跌|股价|市值|裁员|收购|并购|反垄断|起诉|董事会|CEO|首席执行官|"
+    r"财报|季报|年报|营收|净利润|每股收益|指引|业绩|(?:业绩|盈利|营收|财报|利润)(?:不及预期|超预期)|股价|市值|裁员|收购|并购|反垄断|起诉|董事会|CEO|首席执行官|"
     r"英伟达|黄仁勋|苹果|微软|谷歌|亚马逊|特斯拉|Meta|OpenAI|Anthropic|台积电|AMD|英特尔|博通|美光|戴尔|甲骨文|奈飞|高通|阿斯麦|"
     r"小米|阿里巴巴|阿里|腾讯|字节跳动|拼多多|京东|美团|比亚迪|宁德时代|蔚来|小鹏|理想|华为|"
     r"nvidia|jensen huang|apple|microsoft|google|alphabet|amazon|tesla|tsmc|intel|broadcom|micron|dell|oracle|netflix|qualcomm|asml|"
@@ -278,7 +290,7 @@ def extract_entities(title: str, summary: str = "") -> set[str]:
 
 
 _BANK_COMMENTARY_PREFIX_RE = re.compile(
-    r"^(?:摩根大通|高盛|摩根士丹利|瑞银|巴克莱|美银|花旗|德意志银行|德银|野村|贝莱德|中金|中信证券|华泰证券|开源证券|天风证券)[：:]",
+    r"(?:^|[，,：:\s])(?:摩根大通|高盛|摩根士丹利|瑞银|汇丰|巴克莱|美银|花旗|德意志银行|德银|野村|贝莱德|中金|中信证券|华泰证券|开源证券|天风证券)[：:]",
     re.I,
 )
 
@@ -1139,6 +1151,7 @@ class FinancialDailyService:
                     all_rows.extend(part)
 
         llm_used = False
+        scored_keys: set[str] = set()
         for row in all_rows:
             if not isinstance(row, dict):
                 continue
@@ -1171,7 +1184,13 @@ class FinancialDailyService:
             if dup_of == rkey or dup_of not in cand_by_key:
                 dup_of = ""
             scores[rkey] = {"score": round(val, 1), "bucket": bucket, "drop": drop, "duplicateOf": dup_of}
+            scored_keys.add(rkey)
             llm_used = True
+        if llm_used:
+            # 未被模型返回评分的候选同样卡死 62 分底线，不给漏网通行证
+            for rkey, sc_row in scores.items():
+                if rkey not in scored_keys and float(sc_row.get("score") or 0.0) < 62.0:
+                    sc_row["drop"] = True
         return scores, llm_used
 
     def _enrich_and_write_selected(self, items: list[dict[str, Any]], *, allow_llm: bool, lead_key: str = "") -> bool:
@@ -1598,6 +1617,12 @@ class FinancialDailyService:
                     cand["bucket"] = "market"
                 elif _MACRO_RE.search(f"{title_txt} {summary_txt[:220]}"):
                     cand["bucket"] = "macro"
+            elif _MACRO_RE.search(title_txt) and not _COMPANIES_RE.search(title_txt) and not _MARKET_RE.search(title_txt):
+                cand["bucket"] = "macro"
+            # 宁缺毋滥硬卡死：03 公司栏目只允许头部知名龙头或 >=2 家独立权威源交叉验证的大事件，彻底挡掉海外冷门小盘股
+            if cand["bucket"] == "companies" and allow_llm:
+                if not _MAJOR_COMPANIES_RE.search(f"{title_txt} {summary_txt[:240]}") and cand["independentCount"] < 2:
+                    continue
             cand["finalScore"] = round(float(sc["score"]) + min(10.0, (cand["independentCount"] - 1) * 3.0), 2)
             filtered.append(cand)
         filtered.sort(key=lambda item: (item["finalScore"], item["independentCount"]), reverse=True)
