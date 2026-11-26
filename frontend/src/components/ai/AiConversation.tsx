@@ -13,6 +13,8 @@ const AssistantMarkdown = memo(function AssistantMarkdown({ content }: { content
 });
 
 export const TOOL_LABEL: Record<string, string> = {
+  search_web: "实时联网搜索",
+  search_financial_news: "查金融新闻库",
   query_quote: "查行情",
   query_valuation: "查估值",
   query_reports: "查研报",

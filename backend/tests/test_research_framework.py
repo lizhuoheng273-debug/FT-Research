@@ -125,3 +125,17 @@ def test_chat_route_rejects_unknown_analysis_scope():
     )
 
     assert response.status_code == 422
+
+
+def test_macro_rate_forecast_question_routes_to_fact_mode_with_web_search_guidance():
+    prompt = chat.build_system_prompt(
+        "金融日报页面上下文（含其他无关新闻）",
+        analysis_scope="general",
+        user_messages=[{"role": "user", "content": "接下来市面上美国权威机构要加息多少"}],
+    )
+
+    assert "回答模式：事实简答" in prompt
+    assert "search_web" in prompt
+    assert "search_financial_news" in prompt
+    assert "忽略无关页面内容" in prompt
+    assert "当前北京时间日期：" in prompt

@@ -63,4 +63,12 @@ def allowed_tools(principal) -> set[str]:
     from tools import TOOL_NAMES
     if getattr(principal, "kind", None) == "owner":
         return set(TOOL_NAMES)
-    return {"query_quote", "query_market", "query_news_radar", "query_global_stock", "query_hk_cashflow"}
+    return {
+        "search_web",
+        "search_financial_news",
+        "query_quote",
+        "query_market",
+        "query_news_radar",
+        "query_global_stock",
+        "query_hk_cashflow",
+    }

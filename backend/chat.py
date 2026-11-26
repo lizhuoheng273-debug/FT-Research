@@ -16,6 +16,7 @@ import os
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import requests
@@ -55,8 +56,9 @@ def _exec_scoped_tool(name: str, args: dict, allowed_tool_names: set[str] | None
 MAX_ROUNDS = 6  # 工具调用最大轮数，防死循环
 _TOOL_RESULT_CAP = 6000  # 单次工具结果注入上限（控 token）
 
-SYSTEM_PROMPT = """你是 FT-Research 里的投研助理。你可以调用工具获取客观数据来支撑回答，A 股工具一律传 6 位代码：
+SYSTEM_PROMPT = """你是 FT-Research 里的客观投研助理。当前北京时间日期：{today_date}。你可以调用工具获取最新权威数据来支撑回答，A 股工具一律传 6 位代码：
 
+- 实时联网与财经新闻（宏观/央行/海外机构预测首选）：search_web（实时联网搜索美联储与华尔街机构最新预测、CME 利率概率、宏观数据与突发事件）/ search_financial_news（检索站内 44 个权威金融源近 30 天报道与正文）
 - 行情估值：query_quote（批量行情）/ query_valuation（前向 PE、PEG）/ query_valuation_percentile（估值历史分位）/ query_kline（个股原有 K 线）/ query_market_chart（个股、指数、板块统一量价摘要）
 - 基本面：query_financials（营收净利 ROE 毛利率）/ query_company_info / query_reports（研报）/ query_news
 - 资金筹码：query_fund_flow（主力净流入）/ query_margin（两融）/ query_holders（股东户数）/ query_block_trade / query_dragon_tiger / query_dividend
@@ -65,16 +67,20 @@ SYSTEM_PROMPT = """你是 FT-Research 里的投研助理。你可以调用工具
 - 市场层：query_market（scope=indices/global/emotion/turnover/overview）/ query_news_radar（赛道资讯）
 - 海外：query_global_stock（美股 AAPL / 港股 00700 / 韩股 005930.KS）/ query_hk_cashflow（港股现金流量表，仅港股）
 
-用工具的方式：**先想清楚要回答什么，再挑最相关的 2-5 个工具**，不要一次把所有工具都调一遍。
-估值贵贱看 query_valuation_percentile，资金动向看 query_fund_flow，风险排查看 query_announcements + query_lockup。
+用工具的原则：
+1. **先想清楚问题缺什么数据，再挑最相关的 1-4 个工具**，不要一次乱调一堆无关工具。
+2. **凡涉及最新宏观数据、央行加息/降息路径、华尔街权威机构预测（高盛/摩根大通/大摩/美银/CME 等）或海外突发动态，必须先调用 `search_web`（必要时配合 `search_financial_news`）检索最新数据**，检索词带上年月份，绝不靠旧记忆硬答。
+3. 估值贵贱看 query_valuation_percentile，资金动向看 query_fund_flow，风险排查看 query_announcements + query_lockup。
 
 {research_guidance}
 
-表达要求：默认用简洁中文，先给结论，再用小标题和短段落解释。每个相关维度通常一两句；
-只展开与问题有关的分析，不机械补齐整套框架。用户要求详细时再充分展开。
-已有上下文足够回答时直接作答；仅为关键数据缺口调用工具，不重复查询相同工具和参数。
+高信息密度表达硬要求：
+- **结论先行，直给数字，拒绝注水**：直接回答用户问的核心问题；涉及多家机构预测或多项数据对比时，优先用紧凑的 Markdown 表格列出「机构 / 预期幅度与时间点 / 关键依据或峰值」，再用 2-3 条短要点补足分歧。
+- **严禁教科书套话凑字数**：除非用户明确追问，否则不要机械展开「影响路径」「不同解释」「潜在风险」「建议密切关注后续 CPI/非农」等泛泛而谈的段落。
+- **严格贴题，忽略无关页面上下文**：下方的「当前页面上下文」仅供参考；如果用户追问的新话题与页面里的其他新闻无关，**直接忽略无关页面内容，严禁把页面里不相干的新闻扯进回答**。
+- 查不到确切最新数据时，用一句话直白标注数据缺口，不绕弯子。
 
-当前页面上下文：
+当前页面上下文（仅在与用户问题直接相关时引用，无关请忽略）：
 {context}"""
 
 
@@ -83,7 +89,9 @@ def build_system_prompt(
     analysis_scope: research_framework.AnalysisScope = "general",
     user_messages: list[dict] | None = None,
 ) -> str:
+    today_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
     return SYSTEM_PROMPT.format(
+        today_date=today_date,
         context=context or "（无）",
         research_guidance=research_framework.build_guidance(analysis_scope, user_messages),
     )

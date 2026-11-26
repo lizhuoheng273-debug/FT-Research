@@ -102,7 +102,20 @@ TOOLS: list[dict] = [
        {"keywords": {"type": "array", "items": {"type": "string"}, "description": "行业关键词，如 ['光模块','算力']"},
         "days": {"type": "integer", "description": "回溯天数，默认 90"}}),
 
-    # —— 市场层 ——
+    # —— 市场层与实时联网检索 ——
+    _t("search_web",
+       "实时联网搜索最新权威财经与宏观信息（美联储/央行利率路径、华尔街机构预测、CME FedWatch 概率、最新 CPI/PCE/非农、海外公司突发事件等）。凡涉及站内上下文没有的最新事实、预测数字或海外动态，必须优先调用本工具。",
+       {"query": {"type": "string", "description": "精确简洁的检索词（中文或英文，不超过 70 字），如 '2026年11月 美联储 加息 高盛 摩根大通 预测'"},
+        "recency": {"type": "string", "enum": ["day", "week", "month", "year", "any"],
+                    "description": "时间范围过滤，默认 month"},
+        "count": {"type": "integer", "description": "返回条数（1-10），默认 8"}},
+       ["query"]),
+    _t("search_financial_news",
+       "检索站内 44 个权威金融信源库（央行/美联储/证监会/华尔街见闻/第一财经/经济观察网/FT/WSJ/CNBC/Bloomberg 等近 30 天已收录报道与完整正文）。",
+       {"query": {"type": "string", "description": "关键词（空格分隔多个词），如 '美联储 加息' 或 '英伟达 黄仁勋'"},
+        "days": {"type": "integer", "description": "回溯天数（1-30），默认 14"},
+        "limit": {"type": "integer", "description": "返回条数（1-12），默认 8"}},
+       ["query"]),
     _t("query_market",
        "查大盘与市场情绪。scope: indices=A股指数 / global=全球指数 / emotion=短线情绪(连板梯队/封板率) / turnover=全市场成交额 TOP20 / overview=大盘总览(指数+情绪+板块资金流)。",
        {"scope": {"type": "string", "enum": ["indices", "global", "emotion", "turnover", "overview"],
@@ -426,8 +439,179 @@ def _radar(args: dict):
             "tracks": [i.get("name") for i in (d.get("industries") or [])], "items": out}
 
 
+def _search_web_zhipu(query: str, *, recency: str = "month", count: int = 8) -> list[dict]:
+    """Call Zhipu BigModel PaaS V4 web_search API using the server's configured GLM_API_KEY."""
+    import os
+    import requests
+    import glm_config
+
+    cfg = glm_config.load_glm_config()
+    api_key = str(cfg.get("apiKey") or "").strip()
+    base_url = str(cfg.get("baseURL") or "").strip().rstrip("/")
+    if not api_key or "bigmodel.cn" not in base_url.lower():
+        return []
+    recency_map = {
+        "day": "oneDay",
+        "week": "oneWeek",
+        "month": "oneMonth",
+        "year": "oneYear",
+        "any": "noLimit",
+    }
+    engine = os.environ.get("GLM_SEARCH_ENGINE", "search_std").strip() or "search_std"
+    endpoint = base_url if base_url.endswith("/web_search") else f"{base_url}/web_search"
+    resp = requests.post(
+        endpoint,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "search_query": query[:70],
+            "search_engine": engine,
+            "count": max(1, min(int(count or 8), 10)),
+            "search_recency_filter": recency_map.get(recency, "oneMonth"),
+            "content_size": "medium",
+        },
+        timeout=14,
+    )
+    if resp.status_code != 200:
+        return []
+    data = resp.json()
+    raw_items = data.get("search_result") or data.get("data") or data.get("results") or []
+    out: list[dict] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        content = str(item.get("content") or item.get("snippet") or "").strip()
+        if not title and not content:
+            continue
+        out.append({
+            "title": title[:140],
+            "source": str(item.get("media") or item.get("site_name") or item.get("name") or "").strip(),
+            "published_at": str(item.get("publish_date") or item.get("publish_time") or "").strip(),
+            "summary": content[:420],
+            "url": str(item.get("link") or item.get("url") or "").strip(),
+        })
+    return out
+
+
+def _search_web_bing_rss(query: str, *, count: int = 8) -> list[dict]:
+    """Public Bing News RSS fallback when Zhipu web_search is unavailable or unconfigured."""
+    import html as html_lib
+    import re
+    import xml.etree.ElementTree as ET
+    import requests
+
+    resp = requests.get(
+        "https://www.bing.com/news/search",
+        params={"q": query[:100], "format": "rss"},
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        timeout=10,
+    )
+    if resp.status_code != 200 or not resp.content:
+        return []
+    root = ET.fromstring(resp.content)
+    out: list[dict] = []
+    for node in root.findall(".//item")[: max(1, min(int(count or 8), 10))]:
+        title = html_lib.unescape(str(node.findtext("title") or "")).strip()
+        desc_raw = html_lib.unescape(str(node.findtext("description") or "")).strip()
+        desc = re.sub(r"<[^>]+>", " ", desc_raw)
+        desc = re.sub(r"\s+", " ", desc).strip()
+        pub = str(node.findtext("pubDate") or "").strip()
+        link = str(node.findtext("link") or "").strip()
+        source = ""
+        for child in node:
+            if child.tag.split("}")[-1].lower() == "source" and child.text:
+                source = child.text.strip()
+                break
+        if title:
+            out.append({
+                "title": title[:140],
+                "source": source,
+                "published_at": pub[:32],
+                "summary": desc[:360],
+                "url": link,
+            })
+    return out
+
+
+def _search_web(args: dict):
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"error": "search_web 缺少查询词 query"}
+    recency = str(args.get("recency") or "month").strip().lower()
+    count = max(1, min(int(args.get("count") or 8), 10))
+    items: list[dict] = []
+    provider = "zhipu_web_search"
+    try:
+        items = _search_web_zhipu(query, recency=recency, count=count)
+    except Exception:  # noqa: BLE001
+        items = []
+    if not items:
+        provider = "bing_news_rss"
+        try:
+            items = _search_web_bing_rss(query, count=count)
+        except Exception as exc:  # noqa: BLE001
+            return {"query": query, "results": [], "data_gap": f"实时联网检索暂不可用：{exc}"}
+    return {
+        "query": query,
+        "provider": provider,
+        "count": len(items),
+        "results": items,
+    }
+
+
+def _search_financial_news(args: dict):
+    """Search the site's 44-source financial news SQLite store (titles, summaries, full bodies)."""
+    import re
+    from data_paths import cache_path
+    from financial_news_store import FinancialNewsStore
+
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"error": "search_financial_news 缺少关键词 query"}
+    days = max(1, min(int(args.get("days") or 14), 30))
+    limit = max(1, min(int(args.get("limit") or 8), 12))
+    tokens = [tok.lower() for tok in re.split(r"[\s,，、/+]+", query) if len(tok.strip()) >= 1][:6]
+    if not tokens:
+        return {"query": query, "results": []}
+
+    db_file = cache_path("financial-news") / "events.db"
+    if not db_file.exists():
+        return {"query": query, "results": [], "note": "金融新闻库尚未初始化"}
+
+    store = FinancialNewsStore(db_file)
+    try:
+        rows = store.load_reports(hours=days * 24)[-800:]
+    finally:
+        store.close()
+
+    scored: list[tuple[int, str, dict]] = []
+    for row in rows:
+        title = str(row.get("title") or "")
+        summary = str(row.get("summary") or "")
+        body = str(row.get("bodyMarkdown") or row.get("bodyText") or "")
+        source = str(row.get("source") or "")
+        blob_title = title.lower()
+        blob_all = f"{title} {summary} {body[:1800]} {source}".lower()
+        hits = sum(2 if tok in blob_title else (1 if tok in blob_all else 0) for tok in tokens)
+        if hits <= 0:
+            continue
+        scored.append((hits, str(row.get("publishedAt") or ""), {
+            "title": title[:140],
+            "source": source,
+            "published_at": row.get("publishedAt"),
+            "summary": summary[:320],
+            "excerpt": body[:360] if body else "",
+            "url": row.get("originalUrl") or "",
+        }))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    results = [item[2] for item in scored[:limit]]
+    return {"query": query, "days": days, "count": len(results), "results": results}
+
+
 # name -> 执行函数。绝大多数是「调后端函数 + 裁剪」，复杂的抽成上面的私有函数。
 _HANDLERS = {
+    "search_web": _search_web,
+    "search_financial_news": _search_financial_news,
     "query_quote": lambda a: astock.tencent_quote([str(c) for c in a.get("codes", [])]),
     "query_valuation": lambda a: astock.full_valuation(str(a["code"])),
     "query_valuation_percentile": lambda a: astock.valuation_percentile(str(a["code"])),
