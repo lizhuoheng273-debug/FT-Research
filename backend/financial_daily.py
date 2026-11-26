@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v5"
+PROMPT_VERSION = "financial-daily-v5.1"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -70,6 +70,7 @@ _NOISE_RE = re.compile(
     r"财经早餐|早报汇总|早间必读|新闻联播|要闻汇总|隔夜外盘|每日必读|"
     r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总|"
     r"开展\d+亿元.*逆回购|公开市场业务交易公告|股东户数|过街码|地铁.*试点|党内法规|地方委员会工作条例|"
+    r"加满一箱.*汽油|92号汽油|95号汽油|成品油调价|国内油价(?:上调|下调|调整)|汽柴油(?:价格|零售价)|"
     r"三峡水运|常态化帮扶资金|thanksgiving|grocery stores|black friday deals|holiday shopping|"
     r"弃皮衣|穿迪奥|棉夹克|售价\d+元.*售罄|同款标价|街拍|衣品|造型首秀|穿搭|"
     r"gta\s*6|video game|declares\s+\$[\d.]+\s+dividend|monthly distribution|quarterly distribution|"
@@ -1113,11 +1114,11 @@ class FinancialDailyService:
                         "   - 高(80-100)：官方正式发布/财报/交易所公告/实盘数据/核心当事人具名表态\n"
                         "   - 中(50-79)：权威媒体援引消息人士或头部投行正式研报量化测算\n"
                         "   - 低(0-49)：未经证实的小作文、模糊猜测或缺乏数据支撑的主观观点\n\n"
-                        "【三栏精确归类规则（核心原则：看「事件主体是谁」，绝不把发研报的投行名当成公司事件！）】\n"
-                        "- macro（宏观数据与政策）：央行货币政策/利率/加息概率、财政政策、国际政局与关税地缘、CPI/PPI/PCE/GDP/非农数据、黄金/原油/美债利率与汇率大势。\n"
+                        "【三栏精确归类与宁缺毋滥硬标准（核心原则：看「事件主体是谁」，绝不凑数！）】\n"
+                        "- macro（宏观数据与政策）：央行货币政策/利率/加息概率、财政政策、国际政局与关税地缘、CPI/PPI/PCE/GDP/非农数据、国际黄金/原油期货/美债利率与汇率大势（民生类国内成品油零售调价直接 drop！）。\n"
                         "- market（市场表现）：A股/美股/港股/日股/韩股/欧股等整体指数走势、回调、大涨大跌、成交额、ETF资金流、股市救市/稳市措施、以及投行对股市大盘/指数的策略研判（如「摩根大通：日股这轮回调还没到头」「高盛看涨标普500」均归 market！）。\n"
-                        "- companies（海外公司事件与财报）：仅限具体实体/科技/消费/金融公司自身发生的事件（财报业绩、评级机构对该公司的信用/股票评级调整如「标普将英伟达列入负面观察」、CEO/董事会变动、并购/反垄断/裁员/重大产品发布）。\n"
-                        "- drop（淘汰）：财经早餐/早报汇总/盘前必读合集、例行公文会议、小盘股琐事、低增量口水评论、花边生活稿。\n"
+                        "- companies（海外公司事件与财报）：宁缺毋滥！仅限全球或中国高关注度大型科技与行业龙头（如英伟达、苹果、微软、谷歌、亚马逊、Meta、特斯拉、台积电、AMD、英特尔、博通、美光、阿斯麦、戴尔、甲骨文、OpenAI、Anthropic、小米、阿里、腾讯、字节、拼多多、比亚迪、宁德时代、华为、美团、京东、平头哥、伯克希尔及大型跨国龙头）的重大事件、财报或权威评级变动（如「标普将英伟达列入负面观察」）。海外冷门小盘/微盘公司（普通投资者不熟悉的小市值工业、加密或地区小公司）的常规季报或订单，一律直接判 drop（sig<40、reson<30）！\n"
+                        "- drop（严格淘汰）：海外冷门小公司财报/订单、国内汽油零售调价等民生稿、财经早餐/早报汇总/盘前必读合集、例行公文会议、小盘股琐事、低增量口水评论、花边生活稿。\n"
                         "若本批次两条新闻讲述同一具体事件，在较弱那条填写 duplicateOf 为更强那条的 reportKey。\n"
                         "返回严格 JSON 数组，每项字段：reportKey, sig, nov, reson, cred (均为 0-100 整数), bucket (macro|market|companies|drop), duplicateOf(可选)：\n"
                         + json.dumps(chunk, ensure_ascii=False)
@@ -1154,7 +1155,8 @@ class FinancialDailyService:
                 except (TypeError, ValueError):
                     continue
                 val = 0.35 * sig + 0.25 * nov + 0.25 * reson + 0.15 * cred
-                veto = sig < 40.0 or nov < 35.0 or cred < 35.0
+                # 宁缺毋滥硬淘汰线：四维单项一票否决
+                veto = sig < 55.0 or nov < 50.0 or reson < 45.0 or cred < 50.0
             else:
                 try:
                     val = max(0.0, min(100.0, float(row.get("score"))))
@@ -1162,7 +1164,8 @@ class FinancialDailyService:
                     continue
                 veto = False
             raw_bucket = str(row.get("bucket") or scores[rkey]["bucket"]).strip().lower()
-            drop = raw_bucket == "drop" or veto or val < 42.0
+            # 宁缺毋滥总分硬门槛：低于 62 分一律淘汰，绝不凑数
+            drop = raw_bucket == "drop" or veto or val < 62.0
             bucket = raw_bucket if raw_bucket in _BUCKET_BY_KEY else scores[rkey]["bucket"]
             dup_of = str(row.get("duplicateOf") or "").strip()
             if dup_of == rkey or dup_of not in cand_by_key:
@@ -1546,7 +1549,8 @@ class FinancialDailyService:
             return out
 
         recalled = _collect_candidates(strict_cutoff=True)
-        if len(recalled) < 6:
+        # 宁缺毋滥：仅当严切窗口内不足 3 条（如极端节假日休市）才回退放宽时间窗，且绝不降低 62 分质量门槛
+        if len(recalled) < 3:
             recalled = _collect_candidates(strict_cutoff=False)
 
         # Stage B: AIHOT-style 4-axis content-value scoring & cross-outlet duplicate folding
@@ -1674,6 +1678,31 @@ class FinancialDailyService:
         )
         for card in selected_cards:
             card.pop("bodyText", None)
+
+        # 宁缺毋滥：若某条既无完整正文、又无 K 线图、且摘要仍等于标题（一句话空壳短讯），直接从版面剔除
+        if allow_llm:
+            def _is_bare_stub(card: dict[str, Any]) -> bool:
+                s = str(card.get("summary") or "").strip()
+                t = str(card.get("title") or "").strip()
+                return (
+                    card.get("bodyMode") != "full"
+                    and not card.get("marketChart")
+                    and (s == t or len(s) <= len(t) + 6)
+                )
+
+            for sec in sections_out:
+                sec["items"] = [it for it in sec["items"] if not _is_bare_stub(it)]
+            all_section_items = [it for sec in sections_out for it in sec["items"]]
+            if lead_clean and _is_bare_stub(lead_clean) and all_section_items:
+                best_sec = max(
+                    (s for s in sections_out if s["items"]),
+                    key=lambda s: float(s["items"][0].get("finalScore") or 0),
+                    default=None,
+                )
+                if best_sec:
+                    lead_clean = best_sec["items"].pop(0)
+                    all_section_items = [it for sec in sections_out for it in sec["items"]]
+            selected_cards = ([lead_clean] if lead_clean else []) + all_section_items
 
         # Guarantee Lead has substantive depth: if Lead still ended up without full body & with a short summary,
         # promote the highest-scoring full-body story from sections and place the old lead into its section.

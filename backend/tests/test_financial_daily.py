@@ -906,6 +906,30 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
             "sourceLevel": "A",
             "originalUrl": "https://cnbc.com/apple-gossip",
         },
+        {
+            "title": "今晚24时起国内油价下调，加满一箱92号汽油少花17.5元",
+            "summary": "国内成品油零售限价下调。",
+            "publishedAt": (now - timedelta(hours=1)).astimezone(UTC).isoformat(),
+            "source": "东方财富资讯",
+            "sourceLevel": "A",
+            "originalUrl": "https://eastmoney.com/gas-retail",
+        },
+        {
+            "title": "K33发布2026年第三季度财报：营收环比增长35%",
+            "summary": "冷门小盘公司常规财报。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "英为财情",
+            "sourceLevel": "A",
+            "originalUrl": "https://cn.investing.com/k33-q3",
+        },
+        {
+            "title": "商务部：坚决反对美对中国等经济体加征301关税",
+            "summary": "商务部：坚决反对美对中国等经济体加征301关税",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "财联社要闻",
+            "sourceLevel": "A",
+            "originalUrl": "https://cls.cn/detail/mofcom-stub",
+        },
     ]
 
     def mock_llm(messages):
@@ -922,14 +946,17 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
                     out.append({"reportKey": r["reportKey"], "sig": 78, "nov": 72, "reson": 76, "cred": 80, "bucket": "companies"})
                 elif "PCE" in r["title"]:
                     out.append({"reportKey": r["reportKey"], "sig": 95, "nov": 92, "reson": 94, "cred": 98, "bucket": "macro"})
+                elif "K33" in r["title"]:
+                    # Obscure small cap: low reson (30) -> MUST be vetoed!
+                    out.append({"reportKey": r["reportKey"], "sig": 60, "nov": 65, "reson": 30, "cred": 75, "bucket": "companies"})
                 elif "苹果" in r["title"]:
                     # High resonance (90) but low sig (25) and low nov (20) -> MUST be vetoed!
                     out.append({"reportKey": r["reportKey"], "sig": 25, "nov": 20, "reson": 90, "cred": 50, "bucket": "companies"})
                 else:
-                    out.append({"reportKey": r["reportKey"], "sig": 70, "nov": 70, "reson": 70, "cred": 70, "bucket": r["bucket"]})
+                    out.append({"reportKey": r["reportKey"], "sig": 75, "nov": 72, "reson": 75, "cred": 80, "bucket": r["bucket"]})
             return out
         if "summaryZh" in user_msg:
-            return []  # Simulate GLM writing failure to test deterministic body-to-summary fallback
+            return []  # Simulate GLM writing failure to test deterministic body-to-summary fallback & bare-stub drop
         return {}
 
     daily = FinancialDailyService(
@@ -946,6 +973,9 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
     titles = [it["title"] for it in all_items]
     assert not any("财经早餐" in t for t in titles)
     assert not any("苹果高管" in t for t in titles)
+    assert not any("92号汽油" in t for t in titles)
+    assert not any("K33" in t for t in titles)
+    assert not any("301关税" in t for t in titles)  # bare 1-line stub without bodyText dropped!
 
     # Bank strategy call on Japan stocks must land in market, NOT companies
     nikkei_item = next(it for it in all_items if "日股" in it["title"])
