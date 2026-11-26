@@ -851,3 +851,109 @@ def test_clean_body_strips_login_menu_fluff_and_company_cap_and_english_followup
     assert removed >= 1
     assert svc.store.get_tracked_story("st-old-huxiu") is None
 
+
+def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_path):
+    # 1. Classification disambiguation on real screenshot edge cases
+    assert classify_bucket("摩根大通：日股这轮回调还没到头", "日经平均指数跌破56500点，CTA面临去杠杆压力。") == "market"
+    assert classify_bucket("一天跌回原形！韩国救市遭质疑", "韩国股市反弹只维持了一天，KOSPI指数重挫6.16%。") == "market"
+    assert classify_bucket("标普将英伟达列入负面观察名单，未来90天内或下调其AA评级", "评级机构标普重新评估英伟达信用状况。") == "companies"
+    assert classify_bucket("摩根大通：美联储或连续三次加息至4.75%", "核心PCE粘性超预期。") == "macro"
+
+    now = datetime(2026, 11, 26, 18, 5, tzinfo=SHANGHAI)
+    svc = _make_news_service(tmp_path, lambda: now)
+
+    # 2. Strict non-overlapping windows: morning = prev 18:00..08:00 (14h), evening = 08:00..18:00 (10h)
+    daily_win = FinancialDailyService(svc, official_fetcher=_StubCollector([]), now_fn=lambda: now)
+    m_start, m_end, m_label = daily_win._edition_window("2026-11-26", "morning", now.astimezone(UTC))
+    e_start, e_end, e_label = daily_win._edition_window("2026-11-26", "evening", now.astimezone(UTC))
+    assert (m_end - m_start) == timedelta(hours=14)
+    assert (e_end - e_start) == timedelta(hours=10)
+    assert m_end == e_start
+    assert "昨18:00" in m_label and "今08:00" in e_label
+
+    # 3. 4-axis sub-score calculation, single-axis veto, roundup filter, and body-to-summary fallback
+    collected = [
+        {
+            "title": "东方财富财经早餐 11月26日周四",
+            "summary": "每日精选，汇总昨日多条新闻。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "东方财富资讯",
+            "sourceLevel": "A",
+            "originalUrl": "https://eastmoney.com/breakfast-1126",
+        },
+        {
+            "title": "摩根大通：日股这轮回调还没到头",
+            "summary": "日经平均指数回落至56500点附近，CTA集中去杠杆或成主要压力。",
+            "publishedAt": (now - timedelta(hours=3)).astimezone(UTC).isoformat(),
+            "source": "华尔街见闻",
+            "sourceLevel": "A",
+            "originalUrl": "https://wallstreetcn.com/jpm-nikkei",
+        },
+        {
+            "title": "美国核心PCE同比涨幅创近三年新高 锁定美联储12月再加息前景",
+            "summary": "美国核心PCE同比涨幅创近三年新高 锁定美联储12月再加息前景",
+            "bodyText": "美国商务部最新公布的数据显示，10月核心PCE物价指数同比上涨3.4%，高于市场一致预期的3.2%。数据公布后，10年期美债收益率快速拉升8个基点至4.92%，利率期货定价12月加息25bp概率升至96%。",
+            "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
+            "source": "财联社要闻",
+            "sourceLevel": "A",
+            "originalUrl": "https://cls.cn/detail/pce-1",
+        },
+        {
+            "title": "苹果高管出差行程引发网友热议",
+            "summary": "社交媒体高讨论度但无任何业绩或产品新事实。",
+            "publishedAt": (now - timedelta(hours=1)).astimezone(UTC).isoformat(),
+            "source": "CNBC",
+            "sourceLevel": "A",
+            "originalUrl": "https://cnbc.com/apple-gossip",
+        },
+    ]
+
+    def mock_llm(messages):
+        user_msg = messages[-1]["content"]
+        if "SAME_NODE" in user_msg:
+            payload = json.loads(user_msg.rsplit("：\n", 1)[1])
+            return [{"reportKey": r["reportKey"], "action": "NEW_STORY"} for r in payload]
+        if "四维打分细则" in user_msg:
+            payload = json.loads(user_msg.rsplit("：\n", 1)[1])
+            out = []
+            for r in payload:
+                if "日股" in r["title"]:
+                    # Even if LLM mislabels bank strategy call as companies, deterministic guard fixes to market
+                    out.append({"reportKey": r["reportKey"], "sig": 78, "nov": 72, "reson": 76, "cred": 80, "bucket": "companies"})
+                elif "PCE" in r["title"]:
+                    out.append({"reportKey": r["reportKey"], "sig": 95, "nov": 92, "reson": 94, "cred": 98, "bucket": "macro"})
+                elif "苹果" in r["title"]:
+                    # High resonance (90) but low sig (25) and low nov (20) -> MUST be vetoed!
+                    out.append({"reportKey": r["reportKey"], "sig": 25, "nov": 20, "reson": 90, "cred": 50, "bucket": "companies"})
+                else:
+                    out.append({"reportKey": r["reportKey"], "sig": 70, "nov": 70, "reson": 70, "cred": 70, "bucket": r["bucket"]})
+            return out
+        if "summaryZh" in user_msg:
+            return []  # Simulate GLM writing failure to test deterministic body-to-summary fallback
+        return {}
+
+    daily = FinancialDailyService(
+        svc,
+        official_fetcher=_StubCollector(collected),
+        now_fn=lambda: now,
+        llm_call=mock_llm,
+        body_fetcher=lambda _url: "",
+    )
+    edition = daily.compose_edition(refresh_upstream=False, allow_llm=True)
+    all_items = ([edition["lead"]] if edition["lead"] else []) + [
+        it for sec in edition["sections"] for it in sec["items"]
+    ]
+    titles = [it["title"] for it in all_items]
+    assert not any("财经早餐" in t for t in titles)
+    assert not any("苹果高管" in t for t in titles)
+
+    # Bank strategy call on Japan stocks must land in market, NOT companies
+    nikkei_item = next(it for it in all_items if "日股" in it["title"])
+    assert nikkei_item["bucket"] == "market"
+
+    # CLS story with summary == title must extract rich summary from bodyText instead of repeating title
+    pce_item = next(it for it in all_items if "核心PCE" in it["title"])
+    assert pce_item["summary"] != pce_item["title"]
+    assert "3.4%" in pce_item["summary"]
+
+

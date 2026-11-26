@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v4.2"
+PROMPT_VERSION = "financial-daily-v5"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -67,6 +67,7 @@ _NUMERIC_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?%?")
 
 _NOISE_RE = re.compile(
     r"在互动平台表示|互动平台回复|投资者互动平台|互动易回复|回复投资者提问|董秘回复|"
+    r"财经早餐|早报汇总|早间必读|新闻联播|要闻汇总|隔夜外盘|每日必读|"
     r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总|"
     r"开展\d+亿元.*逆回购|公开市场业务交易公告|股东户数|过街码|地铁.*试点|党内法规|地方委员会工作条例|"
     r"三峡水运|常态化帮扶资金|thanksgiving|grocery stores|black friday deals|holiday shopping|"
@@ -82,10 +83,11 @@ _CLICKBAIT_RE = re.compile(
 
 _MARKET_RE = re.compile(
     r"A股(?:午评|收评|早评|三大股指|开盘|收盘|大涨|大跌|跳水|反攻|放量|缩量)|"
-    r"沪指|上证指数|深证成指|深成指|创业板指|科创50|北证50|两市成交额|下跌个股|上涨个股|"
+    r"沪指|上证指数|深证成指|深成指|创业板指|科创50|北证50|两市成交额|下跌个股|上涨个股|宽基ETF|"
     r"美股(?:三大股指|收涨|收跌|开盘|收盘|暴跌|大涨|回调|反弹)|纳指|纳斯达克|标普500|道指|道琼斯|"
     r"港股(?:收涨|收跌|大涨|大跌|回调|反弹)|恒生指数|恒指|恒生科技|"
-    r"stock market|wall street|s&p\s*500|nasdaq|dow jones|hang seng|equities|stocks rally|stocks tumble|selloff|sell-off|market convulsions",
+    r"日股|日经(?:225|平均指数)?|韩股|韩国股市|KOSPI|欧股|亚太(?:股市|市场)|股市(?:回调|大跌|大涨|重挫|崩盘|救市|稳市)|"
+    r"stock market|wall street|s&p\s*500|nasdaq|dow jones|hang seng|nikkei|kospi|equities|stocks rally|stocks tumble|selloff|sell-off|market convulsions",
     re.I,
 )
 _COMPANIES_RE = re.compile(
@@ -274,10 +276,31 @@ def extract_entities(title: str, summary: str = "") -> set[str]:
     return found
 
 
+_BANK_COMMENTARY_PREFIX_RE = re.compile(
+    r"^(?:摩根大通|高盛|摩根士丹利|瑞银|巴克莱|美银|花旗|德意志银行|德银|野村|贝莱德|中金|中信证券|华泰证券|开源证券|天风证券)[：:]",
+    re.I,
+)
+
+
 def classify_bucket(title: str, summary: str = "", track: str = "", source: str = "") -> str:
-    """Classify into the 3 fixed thematic sections: macro / market / companies."""
+    """Classify into the 3 fixed thematic sections: macro / market / companies.
+
+    Key disambiguation:
+    - Bank/analyst commentary headlines ('摩根大通：日股回调还没到头', '高盛：标普500...') are classified
+      by the SUBJECT they analyze (market or macro), NOT as 'companies' just because a bank is named.
+    - Explicit market-index / equity-market moves go to 'market' (including Japan/Korea/Asia markets).
+    - Company earnings, ratings on a specific firm, CEO/board/regulatory/M&A events go to 'companies'.
+    """
     blob = f"{title} {summary[:320]}"
-    if _MARKET_RE.search(title) or (_MARKET_RE.search(blob) and not _COMPANIES_RE.search(title)):
+    # Market index / equity-market moves & bank equity strategy calls -> market
+    if _MARKET_RE.search(title):
+        return "market"
+    if _BANK_COMMENTARY_PREFIX_RE.search(title):
+        if _MARKET_RE.search(blob):
+            return "market"
+        if _MACRO_RE.search(blob):
+            return "macro"
+    if _MARKET_RE.search(blob) and not _COMPANIES_RE.search(title):
         return "market"
     if _COMPANIES_RE.search(title):
         return "companies"
@@ -1070,16 +1093,33 @@ class FinancialDailyService:
         def _eval_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
                 rows = self._call_llm_json(
-                    "你是参考 AIHOT 标准的客观金融日报选稿评审。只看事件本身对投资者的实质价值，不按媒体名气给分，只返回严格 JSON 数组。",
+                    "你是严格遵循 AIHOT 分项细则标准的客观金融日报选稿评审。只看事件本身对投资者的实质价值，不按媒体名气给分，只返回严格 JSON 数组。",
                     (
-                        "请对以下候选新闻做 0-100 分的重要性评分（综合考虑：实质份量 35%、信息增量 25%、市场关注与讨论度 25%、证据强度 15%），"
-                        "并判断最适合的栏目 bucket：\n"
-                        "- macro（宏观数据与政策：重磅经济政策/放水救市、国际地缘政局、美联储CPI/PPI/PCE/利率与加息概率、重要贵金属/原油/美债利率变化）\n"
-                        "- market（市场表现：异动的中美港市场整体指数表现与资金面变化）\n"
-                        "- companies（海外公司事件与财报：重点科技/龙头公司引起广泛讨论、对股价有重大利好或利空的事件与财报分析，如英伟达、小米、苹果、微软、戴尔、特斯拉等）\n"
-                        "- drop（低价值噪音、例行公文会议、小盘股琐事、与金融市场无关的生活稿）\n"
+                        "请对以下候选新闻按 4 个维度分别打 0-100 分，并判定准确栏目 bucket：\n"
+                        "【四维打分细则（必须逐项对照低/中/高标准，由程序按 35%/25%/25%/15% 算总分）】\n"
+                        "1. sig（实质份量 35%）：\n"
+                        "   - 高(80-100)：改写大类资产定价逻辑（央行超预期利率/降准、CPI/PCE/非农大幅偏离预期、重大关税/地缘升级、核心龙头重大突发或业绩明显超/不及预期、主要指数单日放量剧烈异动、油金美债利率大幅波动）\n"
+                        "   - 中(50-79)：影响重点赛道或中期预期（头部大行调整利率路径或大盘定调、龙头常规财报或资本开支调整、行业级政策落地）\n"
+                        "   - 低(0-49)：边缘小盘琐事、例行公文会议精神、纯情绪口水、花边生活稿\n"
+                        "2. nov（信息增量 25%）：\n"
+                        "   - 高(80-100)：一手新事实/反共识偏离预期/持续事件出现清晰新阶段转折/首次披露的关键量化数据\n"
+                        "   - 中(50-79)：已有预期事件的新细则/时间表，或头部机构基于新数据的量化测算更新\n"
+                        "   - 低(0-49)：炒冷饭、把昨天已知事实换角度写评论/社论、无新数字的常规盘面口水复述、每日早报/财经早餐汇总\n"
+                        "3. reson（市场关注与讨论度 25%，参考 independentSources 独立报道数）：\n"
+                        "   - 高(80-100)：当下全市场核心交易主线且多家权威源交叉报道（如美联储加息反转、AI算力泡沫争议、中美关税、英伟达/小米等高关注龙头、A股放量异动）\n"
+                        "   - 中(50-79)：机构资金明确关注但未成全场焦点（1-2家权威源跟进）\n"
+                        "   - 低(0-49)：绝大多数投资者不关心的冷门边缘话题\n"
+                        "4. cred（证据强度 15%）：\n"
+                        "   - 高(80-100)：官方正式发布/财报/交易所公告/实盘数据/核心当事人具名表态\n"
+                        "   - 中(50-79)：权威媒体援引消息人士或头部投行正式研报量化测算\n"
+                        "   - 低(0-49)：未经证实的小作文、模糊猜测或缺乏数据支撑的主观观点\n\n"
+                        "【三栏精确归类规则（核心原则：看「事件主体是谁」，绝不把发研报的投行名当成公司事件！）】\n"
+                        "- macro（宏观数据与政策）：央行货币政策/利率/加息概率、财政政策、国际政局与关税地缘、CPI/PPI/PCE/GDP/非农数据、黄金/原油/美债利率与汇率大势。\n"
+                        "- market（市场表现）：A股/美股/港股/日股/韩股/欧股等整体指数走势、回调、大涨大跌、成交额、ETF资金流、股市救市/稳市措施、以及投行对股市大盘/指数的策略研判（如「摩根大通：日股这轮回调还没到头」「高盛看涨标普500」均归 market！）。\n"
+                        "- companies（海外公司事件与财报）：仅限具体实体/科技/消费/金融公司自身发生的事件（财报业绩、评级机构对该公司的信用/股票评级调整如「标普将英伟达列入负面观察」、CEO/董事会变动、并购/反垄断/裁员/重大产品发布）。\n"
+                        "- drop（淘汰）：财经早餐/早报汇总/盘前必读合集、例行公文会议、小盘股琐事、低增量口水评论、花边生活稿。\n"
                         "若本批次两条新闻讲述同一具体事件，在较弱那条填写 duplicateOf 为更强那条的 reportKey。\n"
-                        "返回严格 JSON 数组，每项字段：reportKey, score (0-100), bucket (macro|market|companies|drop), duplicateOf(可选)：\n"
+                        "返回严格 JSON 数组，每项字段：reportKey, sig, nov, reson, cred (均为 0-100 整数), bucket (macro|market|companies|drop), duplicateOf(可选)：\n"
                         + json.dumps(chunk, ensure_ascii=False)
                     ),
                 )
@@ -1104,12 +1144,25 @@ class FinancialDailyService:
             rkey = str(row.get("reportKey") or "")
             if rkey not in scores:
                 continue
-            try:
-                val = max(0.0, min(100.0, float(row.get("score"))))
-            except (TypeError, ValueError):
-                continue
+            sub_keys = ("sig", "nov", "reson", "cred")
+            if all(row.get(k) is not None for k in sub_keys):
+                try:
+                    sig = max(0.0, min(100.0, float(row["sig"])))
+                    nov = max(0.0, min(100.0, float(row["nov"])))
+                    reson = max(0.0, min(100.0, float(row["reson"])))
+                    cred = max(0.0, min(100.0, float(row["cred"])))
+                except (TypeError, ValueError):
+                    continue
+                val = 0.35 * sig + 0.25 * nov + 0.25 * reson + 0.15 * cred
+                veto = sig < 40.0 or nov < 35.0 or cred < 35.0
+            else:
+                try:
+                    val = max(0.0, min(100.0, float(row.get("score"))))
+                except (TypeError, ValueError):
+                    continue
+                veto = False
             raw_bucket = str(row.get("bucket") or scores[rkey]["bucket"]).strip().lower()
-            drop = raw_bucket == "drop" or val < 35.0
+            drop = raw_bucket == "drop" or veto or val < 42.0
             bucket = raw_bucket if raw_bucket in _BUCKET_BY_KEY else scores[rkey]["bucket"]
             dup_of = str(row.get("duplicateOf") or "").strip()
             if dup_of == rkey or dup_of not in cand_by_key:
@@ -1223,13 +1276,15 @@ class FinancialDailyService:
                     it["summary"] = s_zh
                     changed = True
 
-            # Targeted retry for any remaining untranslated English titles or summaries so zero English leaks to Level 1
-            still_en = [
+            # Targeted retry for any remaining untranslated English titles/summaries OR summaries stuck equal to title
+            still_weak = [
                 it for it in items
-                if _is_mostly_english(it["title"]) or _is_mostly_english(it.get("summary") or "")
+                if _is_mostly_english(it["title"])
+                or _is_mostly_english(it.get("summary") or "")
+                or len(str(it.get("summary") or "").strip()) <= len(str(it["title"]).strip()) + 10
             ]
-            if still_en:
-                retry_rows = _write_chunk(still_en[:6])
+            if still_weak:
+                retry_rows = _write_chunk(still_weak[:6])
                 for row in retry_rows:
                     if not isinstance(row, dict):
                         continue
@@ -1247,6 +1302,22 @@ class FinancialDailyService:
                     if s_zh and not _is_mostly_english(s_zh) and len(s_zh) >= 18 and _passes_guardrails(s_zh, corpus):
                         it["summary"] = s_zh
                         changed = True
+
+        # Deterministic lead-paragraph fallback: never leave summary identical to title when a clean bodyText exists
+        for it in items:
+            cur_sum = str(it.get("summary") or "").strip()
+            cur_title = str(it.get("title") or "").strip()
+            raw_b = str(it.get("bodyText") or "").strip()
+            if raw_b and not _is_mostly_english(raw_b) and (cur_sum == cur_title or len(cur_sum) <= len(cur_title) + 10):
+                prose_lines = [
+                    re.sub(r"^[#>\-\s]+", "", ln).strip()
+                    for ln in raw_b.splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+                joined_prose = " ".join(ln for ln in prose_lines if len(ln) >= 16 and ln != cur_title)
+                if len(joined_prose) > len(cur_title) + 15:
+                    it["summary"] = _clean_text(joined_prose, max_len=200)
+                    changed = True
 
         # Prioritize flagship Lead + top-scored English long bodies for Chinese Markdown translation (up to 6)
         en_translate_keys: set[str] = set()
@@ -1350,15 +1421,17 @@ class FinancialDailyService:
         return ent_ov >= 2 and sim >= 0.25
 
     def _edition_window(self, target_date: str, target_type: str, now_utc: datetime) -> tuple[datetime, datetime, str]:
-        """Return (window_start_utc, cutoff_utc, publish_label) enforcing strict 08:00 / 18:00 edition boundaries."""
+        """Return (window_start_utc, cutoff_utc, publish_label) with non-overlapping 18:00->08:00 / 08:00->18:00 windows."""
         dt_day = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=SHANGHAI)
         if target_type == "morning":
+            # 早报 08:00：严格截取 昨日 18:00 ~ 今日 08:00（14 小时，零重叠）
             cutoff_bj = dt_day.replace(hour=8, minute=0, second=0, microsecond=0)
-            start_bj = cutoff_bj - timedelta(hours=36)
-            return start_bj.astimezone(UTC), cutoff_bj.astimezone(UTC), "截至 08:00 截稿"
+            start_bj = cutoff_bj - timedelta(hours=14)
+            return start_bj.astimezone(UTC), cutoff_bj.astimezone(UTC), "昨18:00–今08:00"
+        # 晚报 18:00：严格截取 今日 08:00 ~ 今日 18:00（10 小时，零重叠）
         cutoff_bj = dt_day.replace(hour=18, minute=0, second=0, microsecond=0)
-        start_bj = cutoff_bj - timedelta(hours=24)
-        return start_bj.astimezone(UTC), cutoff_bj.astimezone(UTC), "截至 18:00 截稿"
+        start_bj = dt_day.replace(hour=8, minute=0, second=0, microsecond=0)
+        return start_bj.astimezone(UTC), cutoff_bj.astimezone(UTC), "今08:00–18:00"
 
     def compose_edition(
         self,
@@ -1509,8 +1582,18 @@ class FinancialDailyService:
                 continue
             sc = score_map.get(cand["reportKey"]) or {"score": 50.0, "bucket": cand["bucket"]}
             cand["bucket"] = sc["bucket"]
-            if re.search(r"Q[1-4]营收|季报|财报|交付指引|营收同增|营收同比|earnings|quarterly results", cand["title"], re.I):
+            title_txt = cand["title"]
+            summary_txt = cand.get("summary") or ""
+            # Deterministic post-guards preventing common LLM bucket misclassifications
+            if re.search(r"Q[1-4]营收|季报|财报|交付指引|营收同增|营收同比|earnings|quarterly results", title_txt, re.I):
                 cand["bucket"] = "companies"
+            elif _MARKET_RE.search(title_txt) and not _COMPANIES_RE.search(title_txt):
+                cand["bucket"] = "market"
+            elif _BANK_COMMENTARY_PREFIX_RE.search(title_txt):
+                if _MARKET_RE.search(f"{title_txt} {summary_txt[:220]}"):
+                    cand["bucket"] = "market"
+                elif _MACRO_RE.search(f"{title_txt} {summary_txt[:220]}"):
+                    cand["bucket"] = "macro"
             cand["finalScore"] = round(float(sc["score"]) + min(10.0, (cand["independentCount"] - 1) * 3.0), 2)
             filtered.append(cand)
         filtered.sort(key=lambda item: (item["finalScore"], item["independentCount"]), reverse=True)
