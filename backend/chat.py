@@ -166,29 +166,26 @@ def _call_llm(
     if disable_thinking and is_zhipu:
         payload["thinking"] = {"type": "disabled"}
 
-    last_err: Exception | None = None
-    for attempt in range(3):
-        try:
+    for attempt in range(2):
+        r = requests.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {cfg['apiKey']}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout_seconds,
+        )
+        if r.status_code == 400 and "thinking" in payload:
+            # 某些不支持 thinking 参数的旧模型或中转代理，去掉该字段后立刻重试一次
+            payload.pop("thinking", None)
+            r.close()
             r = requests.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {cfg['apiKey']}", "Content-Type": "application/json"},
                 json=payload,
                 timeout=timeout_seconds,
             )
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            last_err = exc
-            if attempt < 2:
-                time.sleep(2.0 * (attempt + 1))
-                continue
-            raise
-        if r.status_code == 400 and "thinking" in payload:
-            # 某些不支持 thinking 参数的旧模型或中转代理，去掉该字段后立刻重试一次
-            payload.pop("thinking", None)
+        if r.status_code in {429, 502, 503, 504} and attempt == 0:
             r.close()
-            continue
-        if r.status_code in {429, 502, 503, 504} and attempt < 2:
-            r.close()
-            time.sleep(2.5 * (attempt + 1))
+            time.sleep(2.5)
             continue
         if r.status_code != 200:
             status = r.status_code
@@ -196,7 +193,7 @@ def _call_llm(
             r.close()
             raise RuntimeError(f"模型接口 HTTP {status}: {snippet}" if snippet else f"模型接口 HTTP {status}")
         return r.json()
-    raise last_err or RuntimeError("模型接口调用失败")
+    raise RuntimeError("模型接口调用失败")
 
 
 def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None) -> dict:

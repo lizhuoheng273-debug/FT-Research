@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v5.3"
+PROMPT_VERSION = "financial-daily-v5.4"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -451,9 +451,9 @@ class FinancialDailyService:
         system_prompt: str,
         user_prompt: str,
         *,
-        timeout_seconds: int = 75,
+        timeout_seconds: int = 45,
         disable_thinking: bool = True,
-        max_tokens: int | None = 2500,
+        max_tokens: int | None = None,
     ) -> Any:
         if self.llm_call is not None:
             raw = self.llm_call([
@@ -1107,12 +1107,14 @@ class FinancialDailyService:
             {
                 "reportKey": c["reportKey"],
                 "bucket": c["bucket"],
-                "title": c["title"][:130],
-                "summary": c["summary"][:220],
+                "title": c["title"][:120],
+                "summary": c["summary"][:160],
                 "independentSources": c["independentCount"],
             }
-            for c in candidates[:48]
+            for c in sorted(candidates, key=lambda x: x.get("_ruleScore", 0.0), reverse=True)[:24]
         ]
+
+        diag_errors: list[str] = []
 
         def _eval_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
@@ -1121,34 +1123,22 @@ class FinancialDailyService:
                     (
                         "请对以下候选新闻按 4 个维度分别打 0-100 分，并判定准确栏目 bucket：\n"
                         "【四维打分细则（必须逐项对照低/中/高标准，由程序按 35%/25%/25%/15% 算总分）】\n"
-                        "1. sig（实质份量 35%）：\n"
-                        "   - 高(80-100)：改写大类资产定价逻辑（央行超预期利率/降准、CPI/PCE/非农大幅偏离预期、重大关税/地缘升级、核心龙头重大突发或业绩明显超/不及预期、主要指数单日放量剧烈异动、油金美债利率大幅波动）\n"
-                        "   - 中(50-79)：影响重点赛道或中期预期（头部大行调整利率路径或大盘定调、龙头常规财报或资本开支调整、行业级政策落地）\n"
-                        "   - 低(0-49)：边缘小盘琐事、例行公文会议精神、纯情绪口水、花边生活稿\n"
-                        "2. nov（信息增量 25%）：\n"
-                        "   - 高(80-100)：一手新事实/反共识偏离预期/持续事件出现清晰新阶段转折/首次披露的关键量化数据\n"
-                        "   - 中(50-79)：已有预期事件的新细则/时间表，或头部机构基于新数据的量化测算更新\n"
-                        "   - 低(0-49)：炒冷饭、把昨天已知事实换角度写评论/社论、无新数字的常规盘面口水复述、每日早报/财经早餐汇总\n"
-                        "3. reson（市场关注与讨论度 25%，参考 independentSources 独立报道数）：\n"
-                        "   - 高(80-100)：当下全市场核心交易主线且多家权威源交叉报道（如美联储加息反转、AI算力泡沫争议、中美关税、英伟达/小米等高关注龙头、A股放量异动）\n"
-                        "   - 中(50-79)：机构资金明确关注但未成全场焦点（1-2家权威源跟进）\n"
-                        "   - 低(0-49)：绝大多数投资者不关心的冷门边缘话题\n"
-                        "4. cred（证据强度 15%）：\n"
-                        "   - 高(80-100)：官方正式发布/财报/交易所公告/实盘数据/核心当事人具名表态\n"
-                        "   - 中(50-79)：权威媒体援引消息人士或头部投行正式研报量化测算\n"
-                        "   - 低(0-49)：未经证实的小作文、模糊猜测或缺乏数据支撑的主观观点\n\n"
-                        "【三栏精确归类与宁缺毋滥硬标准（核心原则：看「事件主体是谁」，绝不凑数！）】\n"
-                        "- macro（宏观数据与政策）：央行货币政策/利率/加息概率、财政政策、国际政局与关税地缘、CPI/PPI/PCE/GDP/非农数据、国际黄金/原油期货/美债利率与汇率大势（民生类国内成品油零售调价直接 drop！）。\n"
-                        "- market（市场表现）：A股/美股/港股/日股/韩股/欧股等整体指数走势、回调、大涨大跌、成交额、ETF资金流、股市救市/稳市措施、以及投行对股市大盘/指数的策略研判（如「摩根大通：日股这轮回调还没到头」「高盛看涨标普500」均归 market！）。\n"
-                        "- companies（海外公司事件与财报）：宁缺毋滥！仅限全球或中国高关注度大型科技与行业龙头（如英伟达、苹果、微软、谷歌、亚马逊、Meta、特斯拉、台积电、AMD、英特尔、博通、美光、阿斯麦、戴尔、甲骨文、OpenAI、Anthropic、小米、阿里、腾讯、字节、拼多多、比亚迪、宁德时代、华为、美团、京东、平头哥、伯克希尔及大型跨国龙头）的重大事件、财报或权威评级变动（如「标普将英伟达列入负面观察」）。海外冷门小盘/微盘公司（普通投资者不熟悉的小市值工业、加密或地区小公司）的常规季报或订单，一律直接判 drop（sig<40、reson<30）！\n"
-                        "- drop（严格淘汰）：海外冷门小公司财报/订单、国内汽油零售调价等民生稿、财经早餐/早报汇总/盘前必读合集、例行公文会议、小盘股琐事、低增量口水评论、花边生活稿（含富豪慈善捐赠等非经营事件）。\n"
-                        "若本批次两条新闻讲述同一具体事件，在较弱那条填写 duplicateOf 为更强那条的 reportKey。\n"
-                        "返回严格 JSON 数组，每项字段：reportKey, sig, nov, reson, cred (均为 0-100 整数), bucket (macro|market|companies|drop), duplicateOf(可选)：\n"
+                        "1. sig（实质份量 35%）：高(80-100)改写大类资产定价逻辑(央行超预期利率/降准、CPI/PCE/非农大幅偏离预期、重大关税/地缘、核心龙头重大突发或业绩明显超/不及预期、主要指数放量剧烈异动、油金美债大幅波动)；中(50-79)影响重点赛道或中期预期(大行定调、龙头常规财报、行业政策)；低(0-49)边缘小盘琐事、例行公文、纯情绪口水、花边捐赠。\n"
+                        "2. nov（信息增量 25%）：高(80-100)一手新事实/反共识/新阶段转折/首次披露关键数据；中(50-79)已有预期的新细则或量化测算；低(0-49)炒冷饭、无新数字评论、早报汇总。\n"
+                        "3. reson（市场关注度 25%，参考 independentSources）：高(80-100)全市场核心交易主线且多源交叉报道；中(50-79)机构明确关注；低(0-49)冷门边缘话题。\n"
+                        "4. cred（证据强度 15%）：高(80-100)官方发布/财报/实盘数据/当事人具名表态；中(50-79)权威媒体信源或头部投行研报；低(0-49)小作文或无数据猜测。\n"
+                        "【三栏归类与宁缺毋滥硬标准（看事件主体是谁）】\n"
+                        "- macro：央行货币政策/利率、财政、关税地缘、CPI/PPI/PCE/GDP/非农、国际油金美债汇率（国内汽油零售调价直接 drop）。\n"
+                        "- market：A/美/港/日/韩/欧股市指数走势、成交额、ETF资金流、稳市救市、投行对股市大盘/板块策略研判（如摩根大通看日股、汇丰看AI科技股均归 market）。\n"
+                        "- companies：宁缺毋滥，仅限知名大型科技与行业龙头（英伟达、苹果、微软、谷歌、亚马逊、Meta、特斯拉、台积电、OpenAI、小米、阿里、腾讯、字节、比亚迪、宁德时代、华为等）的重大事件/财报/评级；海外冷门小盘公司一律 drop（sig<40, reson<30）。\n"
+                        "- drop：冷门小公司财报、国内汽油零售调价、财经早餐汇总、例行公文、花边捐赠（含富豪慈善赠送股票等非经营事件）。\n"
+                        "若两条讲同一具体事件，较弱那条填 duplicateOf 为更强那条的 reportKey。\n"
+                        "只返回严格 JSON 数组，每项字段：reportKey, sig, nov, reson, cred (0-100整数), bucket (macro|market|companies|drop), duplicateOf(可选)：\n"
                         + json.dumps(chunk, ensure_ascii=False)
                     ),
-                    timeout_seconds=75,
+                    timeout_seconds=45,
                     disable_thinking=True,
-                    max_tokens=2200,
+                    max_tokens=None,
                 )
                 if isinstance(res, list):
                     return res
@@ -1168,15 +1158,15 @@ class FinancialDailyService:
                 logger.exception("AIHOT-style scoring chunk failed")
                 return []
 
-        diag_errors: list[str] = []
-        # 拆小批次(8条/批)并串行调用，彻底避开大模型并发429限流与长思考超时
-        chunks = [compact[i : i + 8] for i in range(0, len(compact), 8)]
+        # 拆小批次(6条/批) + 温和2并发，兼顾低延迟与零429限流，总耗时封顶90秒
+        chunks = [compact[i : i + 6] for i in range(0, len(compact), 6)]
         all_rows: list[dict[str, Any]] = []
-        for ch in chunks:
-            part = _eval_chunk(ch)
-            if not part and ch:
-                part = _eval_chunk(ch)
-            all_rows.extend(part)
+        if len(chunks) == 1:
+            all_rows = _eval_chunk(chunks[0])
+        else:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                for part in pool.map(_eval_chunk, chunks):
+                    all_rows.extend(part)
 
         llm_used = False
         scored_keys: set[str] = set()
