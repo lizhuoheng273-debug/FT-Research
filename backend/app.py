@@ -459,6 +459,20 @@ def ai_reports_index(kind: str = Query("daily"), refresh: bool = Query(False), f
     return {"kind": kind, "items": items}
 
 
+@app.get("/api/ai/reports/items/{item_id}")
+def ai_reports_item_detail(item_id: str, lang: Literal["zh", "original"] = Query("zh")):
+    try:
+        return aihot_edition_client.item_detail(item_id, lang=lang)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            raise HTTPException(404, "该资讯详情不存在") from exc
+        raise HTTPException(502, "资讯详情暂不可用") from exc
+    except Exception as exc:
+        raise HTTPException(502, "资讯详情暂不可用") from exc
+
+
 @app.get("/api/ai/reports/editions/{kind}")
 def ai_reports_editions(kind: Literal["daily", "weekly", "monthly"]):
     try:

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpRight, BookOpen, ChevronDown } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { ArrowUpRight, BookOpen, ChevronDown, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
 import { apiUrl, authHeaders } from "@/lib/api";
 
 type Kind = "daily" | "weekly" | "monthly";
 type Links = { aihot?: string; original?: string };
-type Story = { title: string; summary?: string; publishedAt?: string; source?: { name?: string }; links?: Links };
+type Story = { id?: string; title: string; summary?: string; publishedAt?: string; source?: { name?: string }; links?: Links };
 type Section = { label: string; summary?: string; items?: Story[] };
 type Edition = { period: string; periodStart?: string; leadTitle?: string; headline?: string; links?: Links };
 type HeadlineImage = {url: string; alt?: string; width?: number; height?: number; layout?: "banner" | "inline"; aspectRatio?: number};
@@ -42,7 +42,19 @@ function editionPeriod(report: Report, kind: Kind, period: string) {
     ? `${dateText(report.periodStart, true)} — ${dateText(report.periodEnd)}` : period;
 }
 
-function Archive({ entries, kind, active, choose, compact = false }: { entries: Edition[]; kind: Kind; active: string; choose: (period: string) => void; compact?: boolean }) {
+function initialAiRailOpen(): boolean {
+  try {
+    const saved = typeof window !== "undefined" && window.localStorage ? window.localStorage.getItem("ft_ai_daily_rail_open") : null;
+    if (saved === "1") return true;
+    if (saved === "0") return false;
+    if (typeof window !== "undefined" && typeof window.innerWidth === "number") return window.innerWidth >= 1440;
+  } catch {
+    // Ignore storage access failures
+  }
+  return false;
+}
+
+function Archive({ entries, kind, active, choose, onCollapse, compact = false }: { entries: Edition[]; kind: Kind; active: string; choose: (period: string) => void; onCollapse?: () => void; compact?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const groups = useMemo(() => {
     const result = new Map<string, Edition[]>();
@@ -54,7 +66,13 @@ function Archive({ entries, kind, active, choose, compact = false }: { entries: 
     return [...result];
   }, [entries, kind]);
   return <aside className="edition-archive min-w-0">
-      {!compact && <div className="px-2 py-3 text-sm font-semibold">往期</div>}
+      {!compact && <div className="flex items-center justify-between px-2 py-2.5">
+        <span className="text-sm font-semibold">往期</span>
+        {onCollapse && <button type="button" onClick={onCollapse} title="收起往期侧栏" aria-label="收起往期侧栏"
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-[var(--edition-muted)] transition-colors hover:bg-[var(--edition-tint)] hover:text-[var(--edition-accent)]">
+          <PanelLeftClose className="h-3.5 w-3.5" /><span>收起</span>
+        </button>}
+      </div>}
       {compact && <button type="button" aria-expanded={expanded} aria-controls="edition-archive-entries" onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center justify-between border-b border-[var(--edition-line)] px-2 py-2 text-sm font-semibold">
         往期 <ChevronDown className={`h-4 w-4 ${expanded ? "rotate-180" : ""}`} />
@@ -75,14 +93,62 @@ function Archive({ entries, kind, active, choose, compact = false }: { entries: 
   </aside>;
 }
 
-function StoryTitle({ story }: { story: Story }) {
-  const href = safe(story.links?.aihot) || safe(story.links?.original);
-  return href ? <a href={href} rel="noreferrer" target="_blank" className="hover:text-[var(--edition-accent)]">{story.title}</a> : <>{story.title}</>;
+function internalStoryPath(story: Story): string | undefined {
+  if (story.id && /^[A-Za-z0-9_-]{6,64}$/.test(story.id)) {
+    return `/ai/daily/item/${encodeURIComponent(story.id)}`;
+  }
+  const aihotUrl = story.links?.aihot || "";
+  const itemMatch = aihotUrl.match(/\/items\/([A-Za-z0-9_-]{6,64})(?:[/?#]|$)/);
+  if (itemMatch) return `/ai/daily/item/${encodeURIComponent(itemMatch[1])}`;
+  const storyMatch = aihotUrl.match(/\/stor(?:y|ies)\/([A-Za-z0-9_-]{6,64})(?:[/?#]|$)/);
+  if (storyMatch) return `/ai/news/story/${encodeURIComponent(storyMatch[1])}`;
+  return undefined;
 }
 
-function Origin({ story }: { story: Story }) {
+function StoryTitle({ story }: { story: Story }) {
+  const internalTo = internalStoryPath(story);
+  if (internalTo) {
+    return (
+      <Link
+        to={internalTo}
+        state={{ fallback: story }}
+        className="transition-colors duration-150 hover:text-[var(--edition-accent)]"
+      >
+        {story.title}
+      </Link>
+    );
+  }
+  const href = safe(story.links?.original) || safe(story.links?.aihot);
+  return href ? <a href={href} rel="noreferrer" target="_blank" className="transition-colors duration-150 hover:text-[var(--edition-accent)]">{story.title}</a> : <>{story.title}</>;
+}
+
+function Origin({ story, isLead = false }: { story: Story; isLead?: boolean }) {
+  const internalTo = internalStoryPath(story);
   const href = safe(story.links?.original);
-  return href ? <a href={href} rel="noreferrer" target="_blank" className="mt-3 inline-flex items-center gap-0.5 text-xs font-medium text-[var(--edition-accent)] hover:underline">原文 <ArrowUpRight className="h-3 w-3" /></a> : null;
+  if (!internalTo && !href) return null;
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-4 text-xs">
+      {internalTo && (
+        <Link
+          to={internalTo}
+          state={{ fallback: story }}
+          className="font-medium text-[var(--edition-accent)] hover:underline"
+        >
+          {isLead ? "阅读全文 →" : "查看详情"}
+        </Link>
+      )}
+      {href && (
+        <a
+          href={href}
+          rel="noreferrer"
+          target="_blank"
+          className="inline-flex items-center gap-0.5 text-[var(--edition-muted)] transition-colors hover:text-[var(--edition-accent)]"
+        >
+          原文 <ArrowUpRight className="h-3 w-3" />
+        </a>
+      )}
+    </div>
+  );
 }
 
 function HeadlinePicture({ image, onError }: { image: HeadlineImage; onError: () => void }) {
@@ -97,7 +163,7 @@ function HeadlinePicture({ image, onError }: { image: HeadlineImage; onError: ()
   </figure>;
 }
 
-function EditionArticle({ report, kind, period }: { report: Report; kind: Kind; period: string }) {
+function EditionArticle({ report, kind, period, railOpen, onExpandRail, chooseKind }: { report: Report; kind: Kind; period: string; railOpen: boolean; onExpandRail: () => void; chooseKind: (value: Kind) => void }) {
   const [image, setImage] = useState<HeadlineImage>();
   useEffect(() => {
     const controller = new AbortController();
@@ -132,7 +198,25 @@ function EditionArticle({ report, kind, period }: { report: Report; kind: Kind; 
       <div className="edition-masthead-content flex items-center justify-between gap-4 py-5">
         <div>
           <h1 className="edition-masthead-title text-3xl font-black tracking-tight">AI {LABELS[kind]}</h1>
-          {canonical && <a href={canonical} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--edition-muted)] hover:text-[var(--edition-accent)]">{report.attribution?.name || "AIHOT"} 原刊 <ArrowUpRight className="h-3 w-3" /></a>}
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            {!railOpen && (
+              <>
+                <button type="button" onClick={onExpandRail} title="展开往期侧栏" aria-label="展开往期侧栏"
+                  className="hidden min-[1180px]:inline-flex items-center gap-1 rounded-md border border-[var(--edition-line)] px-2.5 py-1 text-xs text-[var(--edition-muted)] transition-colors hover:border-[var(--edition-accent)]/40 hover:text-[var(--edition-accent)]">
+                  <PanelLeftOpen className="h-3.5 w-3.5" />往期
+                </button>
+                <div className="hidden min-[1180px]:inline-flex gap-0.5 rounded-md border border-[var(--edition-line)] bg-[var(--edition-surface)] p-0.5">
+                  {(Object.keys(LABELS) as Kind[]).map(value => (
+                    <button key={value} type="button" aria-pressed={kind === value} onClick={() => chooseKind(value)}
+                      className={`whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium transition-colors hover:text-[var(--edition-accent)] ${kind === value ? "bg-[var(--edition-tint)] text-[var(--edition-accent)]" : "text-[var(--edition-muted)]"}`}>
+                      {LABELS[value]}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            {canonical && <a href={canonical} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-[var(--edition-muted)] hover:text-[var(--edition-accent)]">{report.attribution?.name || "AIHOT"} 原刊 <ArrowUpRight className="h-3 w-3" /></a>}
+          </div>
         </div>
         <div className="flex shrink-0 items-baseline gap-1 border-l border-[var(--edition-line)] pl-2 font-mono text-[var(--edition-accent)] sm:pl-6"><span className="text-3xl font-semibold leading-none sm:text-7xl">{dayNumber}</span><span className="text-xs">{kind === "weekly" ? "周" : kind === "monthly" ? "月" : "日"}</span></div>
       </div>
@@ -152,7 +236,7 @@ function EditionArticle({ report, kind, period }: { report: Report; kind: Kind; 
               <p className="min-w-0 break-words text-[15px] leading-[1.85]">{report.lead?.leadParagraph || leadStory?.summary}</p>}
             {inlineCover && cover}
           </div>
-          {leadStory && <Origin story={leadStory} />}
+          {leadStory && <Origin story={leadStory} isLead />}
         </>}
       </div>
       <aside className="edition-picks min-w-0 border-t border-[var(--edition-line)] py-7">
@@ -188,6 +272,15 @@ export function AIDaily() {
   const [archive, setArchive] = useState<{ kind: Kind; entries: Edition[] }>();
   const [edition, setEdition] = useState<{ key: string; report: Report; period: string }>();
   const [error, setError] = useState<{ key: string; text: string }>();
+  const [railOpen, setRailOpen] = useState<boolean>(initialAiRailOpen);
+  const toggleRail = (next: boolean) => {
+    setRailOpen(next);
+    try {
+      if (typeof window !== "undefined" && window.localStorage) window.localStorage.setItem("ft_ai_daily_rail_open", next ? "1" : "0");
+    } catch {
+      // Ignore storage access failures
+    }
+  };
   const key = `${kind}:${requested}`;
   useEffect(() => {
     const controller = new AbortController();
@@ -209,10 +302,10 @@ export function AIDaily() {
     setParams(period ? { kind: value, period } : { kind: value });
     document.querySelector("main")?.scrollTo(0, 0);
   }
-  return <div className="ai-report-paper">
+  return <div className={`ai-report-paper ${railOpen ? "" : "rail-collapsed"}`}>
     <div className="edition-archive-rail">
-      <nav aria-label="报告周期" className="mb-3"><PeriodButtons kind={kind} choose={choose} /></nav>
-      <Archive entries={currentArchive} kind={kind} active={active?.period || requested} choose={period => choose(kind, period)} />
+      <nav aria-label="报告周期" className="mb-2.5"><PeriodButtons kind={kind} choose={choose} /></nav>
+      <Archive entries={currentArchive} kind={kind} active={active?.period || requested} choose={period => choose(kind, period)} onCollapse={() => toggleRail(false)} />
     </div>
     <div className="edition-reading-area min-w-0">
       <div className="edition-reading-inner">
@@ -220,7 +313,7 @@ export function AIDaily() {
           <nav aria-label="报告周期" className="mb-4"><PeriodButtons kind={kind} choose={choose} /></nav>
           <Archive compact entries={currentArchive} kind={kind} active={active?.period || requested} choose={period => choose(kind, period)} />
         </div>
-        {active ? <EditionArticle key={`${kind}:${active.period}`} report={active.report} kind={kind} period={active.period} /> : <p role="status" className="py-6 text-sm">{error?.key === key ? error.text : "加载中…"}</p>}
+        {active ? <EditionArticle key={`${kind}:${active.period}`} report={active.report} kind={kind} period={active.period} railOpen={railOpen} onExpandRail={() => toggleRail(true)} chooseKind={choose} /> : <p role="status" className="py-6 text-sm">{error?.key === key ? error.text : "加载中…"}</p>}
       </div>
     </div>
   </div>;

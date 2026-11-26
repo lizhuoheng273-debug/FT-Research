@@ -14,6 +14,7 @@ import { Notes } from "@/pages/Notes";
 import { Settings } from "@/pages/Settings";
 import { AINews } from "@/pages/AINews";
 import { AIDaily } from "@/pages/AIDaily";
+import { AIDailyItemDetail } from "@/pages/AIDailyItemDetail";
 import { AINewsDetail } from "@/pages/AINewsDetail";
 import { StockDetail } from "@/pages/StockDetail";
 import { IndexDetail } from "@/pages/IndexDetail";
@@ -45,6 +46,7 @@ export const router = createBrowserRouter([
       { path: "/ai/news/story/:storyId", element: <AINewsDetail /> },
       { path: "/ai/news/:tab", element: <AINews /> },
       { path: "/ai/daily", element: <AIDaily /> },
+      { path: "/ai/daily/item/:itemId", element: <AIDailyItemDetail /> },
       { path: "/ai/conversations", element: <AiConversationWorkspace /> },
       { path: "/finance/news", element: <FinancialNews /> },
       { path: "/finance/news/story/:eventId", element: <FinancialNewsDetail /> },
