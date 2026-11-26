@@ -138,27 +138,65 @@ def _check_base_url(url: str) -> None:
                 raise RuntimeError("Base URL 解析到了不允许的内网地址")
 
 
-def _call_llm(cfg: dict, messages: list, use_tools: bool, *, timeout_seconds: int = 90) -> dict:
+def _call_llm(
+    cfg: dict,
+    messages: list,
+    use_tools: bool,
+    *,
+    timeout_seconds: int = 90,
+    disable_thinking: bool = False,
+    max_tokens: int | None = None,
+) -> dict:
     _check_base_url(cfg.get("baseURL", ""))
     base = cfg["baseURL"].rstrip("/")
     if not base.endswith(("/v1", "/v3", "/api/v3", "/v4")):
         # 多数 OpenAI 兼容端点需要 /v1；已带版本段则不动。
         base = base + "/v1"
-    payload = {"model": cfg["model"], "messages": messages, "temperature": 0.3}
+    payload: dict = {"model": cfg["model"], "messages": messages, "temperature": 0.3}
+    if max_tokens is not None:
+        payload["max_tokens"] = int(max_tokens)
     if use_tools:
         payload["tools"] = TOOLS
         payload["tool_choice"] = "auto"
-    r = requests.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {cfg['apiKey']}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=timeout_seconds,
+    is_zhipu = (
+        "bigmodel.cn" in base.lower()
+        or "zhipu" in base.lower()
+        or "glm" in str(cfg.get("model") or "").lower()
     )
-    if r.status_code != 200:
-        status = r.status_code
-        r.close()
-        raise RuntimeError(f"模型接口 HTTP {status}")
-    return r.json()
+    if disable_thinking and is_zhipu:
+        payload["thinking"] = {"type": "disabled"}
+
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {cfg['apiKey']}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout_seconds,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_err = exc
+            if attempt < 2:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            raise
+        if r.status_code == 400 and "thinking" in payload:
+            # 某些不支持 thinking 参数的旧模型或中转代理，去掉该字段后立刻重试一次
+            payload.pop("thinking", None)
+            r.close()
+            continue
+        if r.status_code in {429, 502, 503, 504} and attempt < 2:
+            r.close()
+            time.sleep(2.5 * (attempt + 1))
+            continue
+        if r.status_code != 200:
+            status = r.status_code
+            snippet = (r.text or "")[:160].replace("\n", " ").strip()
+            r.close()
+            raise RuntimeError(f"模型接口 HTTP {status}: {snippet}" if snippet else f"模型接口 HTTP {status}")
+        return r.json()
+    raise last_err or RuntimeError("模型接口调用失败")
 
 
 def run_chat(cfg: dict, user_messages: list, context: str = "", analysis_scope: research_framework.AnalysisScope = "general", allowed_tool_names: set[str] | None = None) -> dict:

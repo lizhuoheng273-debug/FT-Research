@@ -976,7 +976,8 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
                     out.append({"reportKey": r["reportKey"], "sig": 25, "nov": 20, "reson": 90, "cred": 50, "bucket": "companies"})
                 else:
                     out.append({"reportKey": r["reportKey"], "sig": 75, "nov": 72, "reson": 75, "cred": 80, "bucket": r["bucket"]})
-            return out
+            # Wrap in a JSON object to verify dict-wrapped LLM arrays are unwrapped cleanly instead of falling back to rule
+            return {"items": out}
         if "summaryZh" in user_msg:
             return []  # Simulate GLM writing failure to test deterministic body-to-summary fallback & bare-stub drop
         return {}
@@ -1012,5 +1013,11 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
     pce_item = next(it for it in all_items if "核心PCE" in it["title"])
     assert pce_item["summary"] != pce_item["title"]
     assert "3.4%" in pce_item["summary"]
+    assert edition["editorialEngine"] == "glm"
+    bd = pce_item["scoreBreakdown"]
+    assert bd["engine"] == "glm"
+    assert bd["sig"] == 95.0 and bd["nov"] == 92.0 and bd["reson"] == 94.0 and bd["cred"] == 98.0
+    assert bd["weightedScore"] == 94.5
+    assert bd["finalScore"] == pce_item["finalScore"]
 
 

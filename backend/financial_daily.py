@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v5.2"
+PROMPT_VERSION = "financial-daily-v5.3"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -446,7 +446,15 @@ class FinancialDailyService:
     def is_refreshing(self) -> bool:
         return bool(self._refresh_lock.locked() or self._compose_active)
 
-    def _call_llm_json(self, system_prompt: str, user_prompt: str, *, timeout_seconds: int = 45) -> Any:
+    def _call_llm_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        timeout_seconds: int = 75,
+        disable_thinking: bool = True,
+        max_tokens: int | None = 2500,
+    ) -> Any:
         if self.llm_call is not None:
             raw = self.llm_call([
                 {"role": "system", "content": system_prompt},
@@ -467,8 +475,11 @@ class FinancialDailyService:
                 ],
                 use_tools=False,
                 timeout_seconds=timeout_seconds,
+                disable_thinking=disable_thinking,
+                max_tokens=max_tokens,
             )
-            raw = resp["choices"][0]["message"].get("content") or ""
+            msg = resp["choices"][0]["message"]
+            raw = msg.get("content") or msg.get("reasoning_content") or ""
         if isinstance(raw, (dict, list)):
             return raw
         cleaned = re.sub(r"^```(?:json)?|```$", "", str(raw).strip(), flags=re.I | re.M).strip()
@@ -1105,7 +1116,7 @@ class FinancialDailyService:
 
         def _eval_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
-                rows = self._call_llm_json(
+                res = self._call_llm_json(
                     "你是严格遵循 AIHOT 分项细则标准的客观金融日报选稿评审。只看事件本身对投资者的实质价值，不按媒体名气给分，只返回严格 JSON 数组。",
                     (
                         "请对以下候选新闻按 4 个维度分别打 0-100 分，并判定准确栏目 bucket：\n"
@@ -1130,25 +1141,42 @@ class FinancialDailyService:
                         "- macro（宏观数据与政策）：央行货币政策/利率/加息概率、财政政策、国际政局与关税地缘、CPI/PPI/PCE/GDP/非农数据、国际黄金/原油期货/美债利率与汇率大势（民生类国内成品油零售调价直接 drop！）。\n"
                         "- market（市场表现）：A股/美股/港股/日股/韩股/欧股等整体指数走势、回调、大涨大跌、成交额、ETF资金流、股市救市/稳市措施、以及投行对股市大盘/指数的策略研判（如「摩根大通：日股这轮回调还没到头」「高盛看涨标普500」均归 market！）。\n"
                         "- companies（海外公司事件与财报）：宁缺毋滥！仅限全球或中国高关注度大型科技与行业龙头（如英伟达、苹果、微软、谷歌、亚马逊、Meta、特斯拉、台积电、AMD、英特尔、博通、美光、阿斯麦、戴尔、甲骨文、OpenAI、Anthropic、小米、阿里、腾讯、字节、拼多多、比亚迪、宁德时代、华为、美团、京东、平头哥、伯克希尔及大型跨国龙头）的重大事件、财报或权威评级变动（如「标普将英伟达列入负面观察」）。海外冷门小盘/微盘公司（普通投资者不熟悉的小市值工业、加密或地区小公司）的常规季报或订单，一律直接判 drop（sig<40、reson<30）！\n"
-                        "- drop（严格淘汰）：海外冷门小公司财报/订单、国内汽油零售调价等民生稿、财经早餐/早报汇总/盘前必读合集、例行公文会议、小盘股琐事、低增量口水评论、花边生活稿。\n"
+                        "- drop（严格淘汰）：海外冷门小公司财报/订单、国内汽油零售调价等民生稿、财经早餐/早报汇总/盘前必读合集、例行公文会议、小盘股琐事、低增量口水评论、花边生活稿（含富豪慈善捐赠等非经营事件）。\n"
                         "若本批次两条新闻讲述同一具体事件，在较弱那条填写 duplicateOf 为更强那条的 reportKey。\n"
                         "返回严格 JSON 数组，每项字段：reportKey, sig, nov, reson, cred (均为 0-100 整数), bucket (macro|market|companies|drop), duplicateOf(可选)：\n"
                         + json.dumps(chunk, ensure_ascii=False)
                     ),
+                    timeout_seconds=75,
+                    disable_thinking=True,
+                    max_tokens=2200,
                 )
-                return rows if isinstance(rows, list) else []
-            except Exception:  # noqa: BLE001
+                if isinstance(res, list):
+                    return res
+                if isinstance(res, dict):
+                    if res.get("reportKey"):
+                        return [res]
+                    for v in res.values():
+                        if isinstance(v, list) and any(isinstance(x, dict) for x in v):
+                            return v
+                if res is None:
+                    diag_errors.append("no_api_key_or_empty_response")
+                else:
+                    diag_errors.append(f"unexpected_type:{type(res).__name__}")
+                return []
+            except Exception as exc:  # noqa: BLE001
+                diag_errors.append(f"{type(exc).__name__}:{str(exc)[:100]}")
                 logger.exception("AIHOT-style scoring chunk failed")
                 return []
 
-        chunks = [compact[i : i + 12] for i in range(0, len(compact), 12)]
+        diag_errors: list[str] = []
+        # 拆小批次(8条/批)并串行调用，彻底避开大模型并发429限流与长思考超时
+        chunks = [compact[i : i + 8] for i in range(0, len(compact), 8)]
         all_rows: list[dict[str, Any]] = []
-        if len(chunks) == 1:
-            all_rows = _eval_chunk(chunks[0])
-        else:
-            with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
-                for part in pool.map(_eval_chunk, chunks):
-                    all_rows.extend(part)
+        for ch in chunks:
+            part = _eval_chunk(ch)
+            if not part and ch:
+                part = _eval_chunk(ch)
+            all_rows.extend(part)
 
         llm_used = False
         scored_keys: set[str] = set()
@@ -1159,17 +1187,21 @@ class FinancialDailyService:
             if rkey not in scores:
                 continue
             sub_keys = ("sig", "nov", "reson", "cred")
+            sig_val: float | None = None
+            nov_val: float | None = None
+            reson_val: float | None = None
+            cred_val: float | None = None
             if all(row.get(k) is not None for k in sub_keys):
                 try:
-                    sig = max(0.0, min(100.0, float(row["sig"])))
-                    nov = max(0.0, min(100.0, float(row["nov"])))
-                    reson = max(0.0, min(100.0, float(row["reson"])))
-                    cred = max(0.0, min(100.0, float(row["cred"])))
+                    sig_val = max(0.0, min(100.0, float(row["sig"])))
+                    nov_val = max(0.0, min(100.0, float(row["nov"])))
+                    reson_val = max(0.0, min(100.0, float(row["reson"])))
+                    cred_val = max(0.0, min(100.0, float(row["cred"])))
                 except (TypeError, ValueError):
                     continue
-                val = 0.35 * sig + 0.25 * nov + 0.25 * reson + 0.15 * cred
+                val = 0.35 * sig_val + 0.25 * nov_val + 0.25 * reson_val + 0.15 * cred_val
                 # 宁缺毋滥硬淘汰线：四维单项一票否决
-                veto = sig < 55.0 or nov < 50.0 or reson < 45.0 or cred < 50.0
+                veto = sig_val < 55.0 or nov_val < 50.0 or reson_val < 45.0 or cred_val < 50.0
             else:
                 try:
                     val = max(0.0, min(100.0, float(row.get("score"))))
@@ -1183,9 +1215,20 @@ class FinancialDailyService:
             dup_of = str(row.get("duplicateOf") or "").strip()
             if dup_of == rkey or dup_of not in cand_by_key:
                 dup_of = ""
-            scores[rkey] = {"score": round(val, 1), "bucket": bucket, "drop": drop, "duplicateOf": dup_of}
+            scores[rkey] = {
+                "score": round(val, 1),
+                "bucket": bucket,
+                "drop": drop,
+                "duplicateOf": dup_of,
+                "sig": round(sig_val, 1) if sig_val is not None else None,
+                "nov": round(nov_val, 1) if nov_val is not None else None,
+                "reson": round(reson_val, 1) if reson_val is not None else None,
+                "cred": round(cred_val, 1) if cred_val is not None else None,
+                "engine": "glm",
+            }
             scored_keys.add(rkey)
             llm_used = True
+        self._last_scoring_diag = "" if llm_used else ("; ".join(dict.fromkeys(diag_errors))[:240])
         if llm_used:
             # 未被模型返回评分的候选同样卡死 62 分底线，不给漏网通行证
             for rkey, sc_row in scores.items():
@@ -1623,7 +1666,19 @@ class FinancialDailyService:
             if cand["bucket"] == "companies" and allow_llm:
                 if not _MAJOR_COMPANIES_RE.search(f"{title_txt} {summary_txt[:240]}") and cand["independentCount"] < 2:
                     continue
-            cand["finalScore"] = round(float(sc["score"]) + min(10.0, (cand["independentCount"] - 1) * 3.0), 2)
+            multi_bonus = round(min(10.0, (cand["independentCount"] - 1) * 3.0), 1)
+            weighted_score = round(float(sc["score"]), 1)
+            cand["finalScore"] = round(weighted_score + multi_bonus, 2)
+            cand["scoreBreakdown"] = {
+                "sig": sc.get("sig"),
+                "nov": sc.get("nov"),
+                "reson": sc.get("reson"),
+                "cred": sc.get("cred"),
+                "weightedScore": weighted_score,
+                "multiSourceBonus": multi_bonus,
+                "finalScore": cand["finalScore"],
+                "engine": sc.get("engine") or ("glm" if llm_used else "rule"),
+            }
             filtered.append(cand)
         filtered.sort(key=lambda item: (item["finalScore"], item["independentCount"]), reverse=True)
 
@@ -1852,6 +1907,7 @@ class FinancialDailyService:
             "calendar": calendar_data,
             "storyCount": len(selected_cards),
             "editorialEngine": "glm" if llm_used else "rule",
+            "scoringDiagnostic": getattr(self, "_last_scoring_diag", ""),
         }
         snap_hash = hashlib.sha1(json.dumps(
             {"lead": lead_clean["reportKey"] if lead_clean else None, "sections": [i["reportKey"] for i in all_section_items]},
@@ -2205,8 +2261,24 @@ class FinancialDailyScheduler:
 
         # Prioritize the currently active edition first (evening first after 18:00),
         # and reuse the freshly fetched 44-source cache if backfilling the earlier edition.
-        ordered_types = ("evening", "morning") if now_bj.hour >= 18 else ("morning",)
+        # Between 00:00 and 07:59, if yesterday's evening edition already exists on an older
+        # promptVersion, upgrade it in place so the currently displayed latest edition stays fresh.
         refreshed_this_cycle = False
+        if now_bj.hour < 8:
+            prev_day = (now_bj - timedelta(days=1)).strftime("%Y-%m-%d")
+            prev_ed_key = f"{prev_day}-evening"
+            prev_existing = self.service.get_edition(prev_ed_key)
+            if prev_existing and prev_existing.get("promptVersion") != PROMPT_VERSION:
+                self.service.compose_edition(
+                    edition_date=prev_day,
+                    edition_type="evening",
+                    refresh_upstream=self.refresh_upstream,
+                    allow_llm=True,
+                )
+                refreshed_this_cycle = True
+                generated.append(prev_ed_key)
+
+        ordered_types = ("evening", "morning") if now_bj.hour >= 18 else ("morning",)
         for ed_type in ordered_types:
             min_hour = 18 if ed_type == "evening" else 8
             if now_bj.hour < min_hour:
