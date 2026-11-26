@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v4.1"
+PROMPT_VERSION = "financial-daily-v4.2"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -1118,12 +1118,13 @@ class FinancialDailyService:
             llm_used = True
         return scores, llm_used
 
-    def _enrich_and_write_selected(self, items: list[dict[str, Any]], *, allow_llm: bool) -> bool:
+    def _enrich_and_write_selected(self, items: list[dict[str, Any]], *, allow_llm: bool, lead_key: str = "") -> bool:
         """Fetch full bodies where helpful, write answer-first Chinese headline+summary, and prepare long-read Markdown + TOC + K-line."""
         if not items:
             return False
 
         # Step 1: Concurrently fetch public article body for selected stories with short snippets
+        # (and borrow fuller same-milestone corroborating body if the chosen headline came from a brief stub)
         def _maybe_fetch_body(it: dict[str, Any]) -> tuple[str, str]:
             existing = str(it.get("bodyText") or "").strip()
             if len(existing) >= 450:
@@ -1132,14 +1133,25 @@ class FinancialDailyService:
             if spec and spec.allow_body_fetch and it.get("originalUrl"):
                 fetched = self.body_fetcher(it["originalUrl"])
                 if len(fetched) > len(existing):
-                    return it["reportKey"], fetched
+                    existing = fetched
+            if len(existing) < 420 and it.get("storyId"):
+                st = self.store.get_tracked_story(it["storyId"])
+                if st:
+                    ms_id = it.get("milestoneId")
+                    for ms in st.get("milestones") or []:
+                        if ms_id and ms.get("milestoneId") != ms_id:
+                            continue
+                        for rep in ms.get("reports") or []:
+                            cand_body = str(rep.get("bodyText") or rep.get("bodyMarkdown") or "").strip()
+                            if len(cand_body) > len(existing) and len(cand_body) >= 450:
+                                existing = cand_body
             return it["reportKey"], existing
 
         if allow_llm:
             body_executor = ThreadPoolExecutor(max_workers=6)
             body_futs = {body_executor.submit(_maybe_fetch_body, it): it for it in items}
             try:
-                done_b, _ = wait(body_futs.keys(), timeout=10)
+                done_b, _ = wait(body_futs.keys(), timeout=12)
                 for fut in done_b:
                     try:
                         rk, b = fut.result()
@@ -1150,15 +1162,16 @@ class FinancialDailyService:
             finally:
                 body_executor.shutdown(wait=False, cancel_futures=True)
 
-        # Step 2: AIHOT Answer-First Chinese headline + complete factual summary (80-160 chars)
+        # Step 2: AIHOT Answer-First Chinese headline + complete factual summary (80-160 chars; Lead 140-220 chars)
         changed = False
         if allow_llm:
             def _write_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 payload = [
                     {
                         "reportKey": it["reportKey"],
+                        "isLead": bool(lead_key and it["reportKey"] == lead_key),
                         "title": it["title"][:160],
-                        "material": (str(it.get("bodyText") or it.get("summary") or it["title"]))[:900],
+                        "material": (str(it.get("bodyText") or it.get("summary") or it["title"]))[:1400],
                     }
                     for it in chunk
                 ]
@@ -1168,8 +1181,9 @@ class FinancialDailyService:
                         (
                             "请根据提供的标题和原文材料，为每条新闻生成高质量中文标题与答案前置事实摘要：\n"
                             "1. titleZh：100%自然简练的中文标题（英文新闻必须完整译成中文，保留 Nvidia/OpenAI/Meta/CPI/PCE/GDP 等常见缩写与原数字，不换算单位）。\n"
-                            "2. summaryZh：80-160字答案前置中文摘要，2-3个紧凑陈述句。第一句直接交代「谁做了什么、核心数字或结果是什么」；"
-                            "后接1-2句原文中最关键的支撑事实、背景原因或市场反应。禁用「据报道」「本文介绍」「文章讨论」等套话，不得短于标题，不得预测涨跌或给买卖建议。\n"
+                            "2. summaryZh：答案前置中文摘要。若 isLead=true（头条），请写 140-220 字（3-4个紧凑陈述句），充分交代核心结论、关键数字、背景成因及市场影响；"
+                            "普通条目写 90-160 字（2-3个紧凑陈述句）。第一句直接交代「谁做了什么、核心数字或结果是什么」；"
+                            "禁用「据报道」「本文介绍」「文章讨论」等套话，不得短于标题，不得预测涨跌或给买卖建议。\n"
                             "返回严格 JSON 数组，每项字段：reportKey, titleZh, summaryZh：\n"
                             + json.dumps(payload, ensure_ascii=False)
                         ),
@@ -1199,7 +1213,7 @@ class FinancialDailyService:
                     continue
                 corpus = f"{it['title']} {it.get('summary', '')} {str(it.get('bodyText') or '')[:3000]}"
                 t_zh = _clean_text(row.get("titleZh") or "", max_len=140)
-                s_zh = _clean_text(row.get("summaryZh") or "", max_len=240)
+                s_zh = _clean_text(row.get("summaryZh") or "", max_len=300 if rk == lead_key else 240)
                 if t_zh and _passes_guardrails(t_zh, corpus):
                     it.setdefault("originalTitle", it["title"])
                     it["title"] = t_zh
@@ -1225,7 +1239,7 @@ class FinancialDailyService:
                         continue
                     corpus = f"{it['title']} {it.get('summary', '')} {str(it.get('bodyText') or '')[:3000]}"
                     t_zh = _clean_text(row.get("titleZh") or "", max_len=140)
-                    s_zh = _clean_text(row.get("summaryZh") or "", max_len=240)
+                    s_zh = _clean_text(row.get("summaryZh") or "", max_len=300 if rk == lead_key else 240)
                     if t_zh and not _is_mostly_english(t_zh) and _passes_guardrails(t_zh, corpus):
                         it.setdefault("originalTitle", it["title"])
                         it["title"] = t_zh
@@ -1234,15 +1248,20 @@ class FinancialDailyService:
                         it["summary"] = s_zh
                         changed = True
 
-        # Cap English long-body GLM translations to top 4 stories to keep compose fast & predictable
+        # Prioritize flagship Lead + top-scored English long bodies for Chinese Markdown translation (up to 6)
         en_translate_keys: set[str] = set()
         if allow_llm:
-            for it in items:
+            prioritized = sorted(
+                items,
+                key=lambda x: (1 if x["reportKey"] == lead_key else 0, float(x.get("finalScore") or 0.0)),
+                reverse=True,
+            )
+            for it in prioritized:
                 rb = str(it.get("bodyText") or "").strip()
-                ml = 800 if it.get("bucket") == "market" else 420
-                if len(rb) >= ml and len(rb) >= len(it.get("summary") or "") * 2.0 and _is_mostly_english(rb):
+                ml = 700 if it.get("bucket") == "market" else 380
+                if len(rb) >= ml and len(rb) >= len(it.get("summary") or "") * 1.8 and _is_mostly_english(rb):
                     en_translate_keys.add(it["reportKey"])
-                    if len(en_translate_keys) >= 4:
+                    if len(en_translate_keys) >= 6:
                         break
 
         # Step 3: Decide bodyMode ("full" vs "summary"), translate English long bodies to Chinese Markdown + TOC, attach K-line for market
@@ -1250,8 +1269,8 @@ class FinancialDailyService:
             rk = it["reportKey"]
             market_chart = detect_market_chart(it["title"], it.get("summary", "")) if it.get("bucket") == "market" else None
             raw_body = str(it.get("bodyText") or "").strip()
-            min_len = 800 if it.get("bucket") == "market" else 420
-            has_depth = len(raw_body) >= min_len and len(raw_body) >= len(it.get("summary") or "") * 2.0
+            min_len = 700 if it.get("bucket") == "market" else 380
+            has_depth = len(raw_body) >= min_len and len(raw_body) >= len(it.get("summary") or "") * 1.8
             if not has_depth:
                 return rk, "", "summary", [], market_chart
 
@@ -1496,8 +1515,24 @@ class FinancialDailyService:
             filtered.append(cand)
         filtered.sort(key=lambda item: (item["finalScore"], item["independentCount"]), reverse=True)
 
-        # Stage C: 1 Lead + 3 Thematic Sections (up to 4 each, strict cross-section dedup + company entity cap) + 3 Key Picks
-        lead = filtered[0] if filtered else None
+        # Stage C: 1 Lead (strongly preferring stories with full article depth) + 3 Thematic Sections + 3 Key Picks
+        def _depth_potential(c: dict[str, Any]) -> bool:
+            if len(str(c.get("bodyText") or "")) >= 400 or len(str(c.get("summary") or "")) >= 180:
+                return True
+            spec = SOURCE_SPEC_BY_NAME.get(c.get("sourceName") or "")
+            return bool(spec and spec.allow_body_fetch)
+
+        lead = (
+            max(
+                filtered[:10],
+                key=lambda item: (
+                    float(item["finalScore"]) + (10.0 if _depth_potential(item) else -10.0),
+                    len(str(item.get("bodyText") or "")),
+                    item["independentCount"],
+                ),
+            )
+            if filtered else None
+        )
         chosen_all: list[dict[str, Any]] = [lead] if lead else []
         source_counts: dict[str, int] = {lead["sourceName"]: 1} if lead else {}
         lead_company_ents = (extract_entities(lead["title"], lead.get("summary", "")) & _COMPANY_ENTITIES) if lead else set()
@@ -1549,12 +1584,39 @@ class FinancialDailyService:
 
         # Stage D: Full-body fetch + Answer-first Chinese writing + Long-body translation/TOC + Market K-line
         selected_cards = ([lead_clean] if lead_clean else []) + all_section_items
-        enriched_any = self._enrich_and_write_selected(selected_cards, allow_llm=allow_llm)
+        enriched_any = self._enrich_and_write_selected(
+            selected_cards,
+            allow_llm=allow_llm,
+            lead_key=(lead_clean["reportKey"] if lead_clean else ""),
+        )
         for card in selected_cards:
             card.pop("bodyText", None)
 
-        # Pick 3 Key Picks strictly from the 3 sections (preferring 1 from each section first)
-        picks_pool = sorted(all_section_items, key=lambda item: item["finalScore"], reverse=True)
+        # Guarantee Lead has substantive depth: if Lead still ended up without full body & with a short summary,
+        # promote the highest-scoring full-body story from sections and place the old lead into its section.
+        if lead_clean and lead_clean.get("bodyMode") != "full" and len(str(lead_clean.get("summary") or "")) < 130:
+            full_candidates = [
+                (sec, idx, it)
+                for sec in sections_out
+                for idx, it in enumerate(sec["items"])
+                if it.get("bodyMode") == "full" and float(it.get("finalScore") or 0) >= float(lead_clean.get("finalScore") or 0) - 12.0
+            ]
+            if full_candidates:
+                full_candidates.sort(key=lambda tup: float(tup[2].get("finalScore") or 0), reverse=True)
+                best_sec, best_idx, best_item = full_candidates[0]
+                old_lead = lead_clean
+                lead_clean = best_item
+                best_sec["items"].pop(best_idx)
+                target_sec = next((s for s in sections_out if s["key"] == old_lead["bucket"]), best_sec)
+                target_sec["items"].insert(0, old_lead)
+                all_section_items = [it for sec in sections_out for it in sec["items"]]
+
+        # Pick 3 Key Picks strictly from the 3 sections, strongly preferring stories with full body or K-line chart
+        def _pick_rank(item: dict[str, Any]) -> tuple[float, float, int]:
+            depth_tier = 2.0 if item.get("bodyMode") == "full" else (1.0 if item.get("marketChart") else 0.0)
+            return (depth_tier, float(item.get("finalScore") or 0.0), len(str(item.get("summary") or "")))
+
+        picks_pool = sorted(all_section_items, key=_pick_rank, reverse=True)
         key_picks: list[dict[str, Any]] = []
         seen_pick_buckets: set[str] = set()
         for item in picks_pool:

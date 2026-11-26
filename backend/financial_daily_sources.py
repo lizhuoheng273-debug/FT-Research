@@ -99,10 +99,10 @@ DAILY_SOURCES: tuple[DailySourceSpec, ...] = (
     DailySourceSpec("wallstreetcn", "华尔街见闻", "media_cn", "rss", "https://dedicated.wallstreetcn.com/rss.xml", "A", 32, False, "macro", (), False),
     DailySourceSpec("ftchinese", "FT中文网", "media_cn", "rss", "https://www.ftchinese.com/rss/news", "A", 30, False, "companies", (), True),
     DailySourceSpec("nikkei-cn", "日经中文网", "media_cn", "rss", "https://cn.nikkei.com/rss.html", "A", 28, False, "macro", (), True),
-    DailySourceSpec("eastmoney-news", "东方财富资讯", "media_cn", "rss", "http://rss.eastmoney.com/rss_partener.xml", "A", 26, False, "market", (), False),
+    DailySourceSpec("eastmoney-news", "东方财富资讯", "media_cn", "rss", "http://rss.eastmoney.com/rss_partener.xml", "A", 26, False, "market", (), True),
     DailySourceSpec("cns-finance", "中新网财经", "media_cn", "rss", "https://www.chinanews.com.cn/rss/finance.xml", "A", 28, False, "macro", (), True),
     DailySourceSpec("economic-observer", "经济观察网", "media_cn", "rss", "https://www.eeo.com.cn/rss.xml", "A", 28, False, "macro", (), True),
-    DailySourceSpec("cls-headline", "财联社要闻", "media_cn", "hotlist", "https://www.cls.cn/", "A", 30, False, "market", (), False),
+    DailySourceSpec("cls-headline", "财联社要闻", "media_cn", "hotlist", "https://www.cls.cn/", "A", 30, False, "market", (), True),
     DailySourceSpec("em-yaowen", "东方财富要闻", "media_cn", "hotlist", "https://finance.eastmoney.com/yaowen.html", "A", 26, False, "market", (), True),
     # --- 海外核心市场、大宗与公司事件/财报媒体 (14) ---
     DailySourceSpec("bloomberg-markets", "Bloomberg Markets", "media_global", "rss", "https://feeds.bloomberg.com/markets/news.rss", "A", 32, False, "market", (), False),
@@ -504,6 +504,23 @@ def fetch_article_body(url: str, *, timeout: int = 6) -> str:
             return ""
         resp.encoding = resp.apparent_encoding or resp.encoding or "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
+        # Support Next.js SSR JSON articles (e.g., cls.cn /detail/...) before stripping scripts
+        next_data_node = soup.find("script", id="__NEXT_DATA__")
+        if next_data_node and next_data_node.string:
+            try:
+                nd = json.loads(next_data_node.string)
+                props = nd.get("props") or {}
+                det = (props.get("pageProps") or {}).get("articleDetail") or (
+                    (props.get("initialState") or {}).get("detail") or {}
+                ).get("articleDetail")
+                if isinstance(det, dict):
+                    raw_content = str(det.get("content") or det.get("brief") or "").strip()
+                    if raw_content:
+                        md_next = _html_to_clean_markdown(raw_content, max_chars=MAX_BODY_CHARS)
+                        if len(md_next) >= 240:
+                            return md_next
+            except Exception:  # noqa: BLE001
+                pass
         _strip_boilerplate_nodes(soup)
         # Prefer explicit article/content containers before falling back to readability scorer (NEVER whole soup.body)
         container = None

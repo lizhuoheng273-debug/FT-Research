@@ -158,26 +158,32 @@
   .edition-section-title { font-size: 24px; line-height: 1.25; letter-spacing: -0.02em; }
   .edition-story h3 { font-size: 19px; letter-spacing: -0.01em; }
   @media (min-width: 941px) {
+    .edition-reading-area { padding: 28px 28px 56px; }
+    .edition-reading-inner { max-width: 1120px; }
+  }
+  @media (min-width: 1440px) {
     .edition-reading-area { padding: 36px 40px 64px; }
     .edition-reading-inner { max-width: 1160px; }
   }
   @media (min-width: 1180px) {
-    .ai-report-paper { grid-template: "rail reading" / 280px minmax(0, 1fr); }
+    .ai-report-paper { grid-template: "rail reading" / 220px minmax(0, 1fr); }
+    .ai-report-paper.rail-collapsed { grid-template: "reading" / minmax(0, 1fr); }
     .edition-archive-rail {
       display: block;
       position: sticky;
       top: 0;
       align-self: start;
       height: 100dvh;
-      padding: 24px 12px 12px 20px;
+      padding: 20px 10px 12px 14px;
       border-right: 1px solid var(--edition-line);
       background: color-mix(in srgb, var(--edition-surface) 60%, transparent);
     }
+    .ai-report-paper.rail-collapsed .edition-archive-rail { display: none; }
     .edition-reading-archive { display: none; }
     .edition-archive-rail .edition-archive-entries { max-height: calc(100dvh - 125px); }
   }
   @container edition (min-width: 520px) {
-    .edition-headline-title { font-size: 40px; }
+    .edition-headline-title { font-size: 38px; }
   }
   @container edition (min-width: 560px) {
     .edition-headline-top > .edition-headline-picture { order: -1; }
@@ -185,26 +191,26 @@
   @container edition (min-width: 640px) {
     .edition-headline-split:has(> p) { grid-template-columns: minmax(0, 1fr) minmax(0, 38%); gap: 24px; }
   }
-  @container edition (min-width: 760px) {
+  @container edition (min-width: 720px) {
     .edition-section-stories { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .edition-story:nth-child(odd) { padding-right: 40px; }
-    .edition-story:nth-child(even) { padding-left: 40px; border-left: 1px solid var(--edition-line); }
+    .edition-story:nth-child(odd) { padding-right: 32px; }
+    .edition-story:nth-child(even) { padding-left: 32px; border-left: 1px solid var(--edition-line); }
   }
-  @container edition (min-width: 880px) {
-    .edition-feature { grid-template-columns: minmax(0, 1fr) 300px; }
-    .edition-headline-column { padding: 40px 40px 40px 0; border-right: 1px solid var(--edition-line); }
-    .edition-picks { border-top: 0; padding: 40px 0 40px 32px; }
-    .edition-masthead-content { padding-block: 32px; }
-    .edition-masthead-title { font-size: 48px; }
-    .edition-section { padding-top: 64px; }
-    .edition-section-title { font-size: 28px; }
-    .edition-story h3 { font-size: 20px; }
+  @container edition (min-width: 820px) {
+    .edition-feature { grid-template-columns: minmax(0, 1fr) 290px; }
+    .edition-headline-column { padding: 36px 36px 36px 0; border-right: 1px solid var(--edition-line); }
+    .edition-picks { border-top: 0; padding: 36px 0 36px 28px; }
+    .edition-masthead-content { padding-block: 28px; }
+    .edition-masthead-title { font-size: 44px; }
+    .edition-section { padding-top: 56px; }
+    .edition-section-title { font-size: 26px; }
+    .edition-story h3 { font-size: 19px; }
   }
-  @container edition (min-width: 1040px) {
-    .edition-feature { grid-template-columns: minmax(0, 1fr) 340px; }
-    .edition-headline-title { font-size: 48px; line-height: 1.22; }
-    .edition-story:nth-child(odd) { padding-right: 48px; }
-    .edition-story:nth-child(even) { padding-left: 48px; }
+  @container edition (min-width: 1020px) {
+    .edition-feature { grid-template-columns: minmax(0, 1fr) 330px; }
+    .edition-headline-title { font-size: 46px; line-height: 1.22; }
+    .edition-story:nth-child(odd) { padding-right: 44px; }
+    .edition-story:nth-child(even) { padding-left: 44px; }
   }
 
   /* 玻璃卡：半透明填充 + 发丝边框 + 柔投影 + 顶部内高光（EP26 高级感配方） */

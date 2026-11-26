@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpRight, BookOpen, ChevronDown, Loader2, RefreshCw } from "lucide-react";
+import { ArrowUpRight, BookOpen, ChevronDown, Loader2, PanelLeftClose, PanelLeftOpen, RefreshCw } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
@@ -30,15 +30,31 @@ function currentBeijingEditionType(): "morning" | "evening" {
   return bjHour >= 18 ? "evening" : "morning";
 }
 
+function initialRailOpen(): boolean {
+  try {
+    const saved = typeof window !== "undefined" && window.localStorage ? window.localStorage.getItem("ft_finance_daily_rail_open") : null;
+    if (saved === "1") return true;
+    if (saved === "0") return false;
+    if (typeof window !== "undefined" && typeof window.innerWidth === "number") {
+      return window.innerWidth >= 1440;
+    }
+  } catch {
+    // Ignore storage access failures
+  }
+  return false;
+}
+
 function FinanceArchive({
   entries,
   activeKey,
   onSelect,
+  onCollapse,
   compact = false,
 }: {
   entries: FinancialDailyEditionSummary[];
   activeKey: string;
   onSelect: (key: string) => void;
+  onCollapse?: () => void;
   compact?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -46,7 +62,23 @@ function FinanceArchive({
 
   return (
     <aside className="edition-archive min-w-0">
-      {!compact && <div className="px-2 py-3 text-sm font-semibold">往期</div>}
+      {!compact && (
+        <div className="flex items-center justify-between px-2 py-2.5">
+          <span className="text-sm font-semibold">往期</span>
+          {onCollapse && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              title="收起往期侧栏"
+              aria-label="收起往期侧栏"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-[var(--edition-muted)] transition-colors hover:bg-[var(--edition-tint)] hover:text-[var(--edition-accent)]"
+            >
+              <PanelLeftClose className="h-3.5 w-3.5" />
+              <span>收起</span>
+            </button>
+          )}
+        </div>
+      )}
       {compact && (
         <button
           type="button"
@@ -116,6 +148,18 @@ export function FinancialNews() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
   const [revision, setRevision] = useState(0);
+  const [railOpen, setRailOpen] = useState<boolean>(initialRailOpen);
+
+  const toggleRail = (next: boolean) => {
+    setRailOpen(next);
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem("ft_finance_daily_rail_open", next ? "1" : "0");
+      }
+    } catch {
+      // Ignore storage access failures
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -319,17 +363,17 @@ export function FinancialNews() {
   const leadOriginHref = safeUrl(edition?.lead?.originalUrl);
 
   return (
-    <div className="ai-report-paper min-h-[calc(100vh-1rem)]">
+    <div className={`ai-report-paper min-h-[calc(100vh-1rem)] ${railOpen ? "" : "rail-collapsed"}`}>
       {editions.length > 0 && (
         <div className="edition-archive-rail">
-          <div className="mb-3 inline-flex max-w-full flex-wrap gap-1 rounded-lg border border-[var(--edition-line)] bg-[var(--edition-surface)] p-0.5">
+          <div className="mb-2.5 inline-flex w-full gap-1 rounded-lg border border-[var(--edition-line)] bg-[var(--edition-surface)] p-0.5">
             {(["morning", "evening"] as const).map((val) => (
               <button
                 key={val}
                 type="button"
                 aria-pressed={activeType === val}
                 onClick={() => switchEditionType(val)}
-                className={`whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold transition-colors hover:text-[var(--edition-accent)] ${
+                className={`flex-1 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition-colors hover:text-[var(--edition-accent)] ${
                   activeType === val ? "bg-[var(--edition-tint)] text-[var(--edition-accent)]" : "text-[var(--edition-muted)]"
                 }`}
               >
@@ -337,7 +381,12 @@ export function FinancialNews() {
               </button>
             ))}
           </div>
-          <FinanceArchive entries={editions} activeKey={edition?.editionKey || requestedEditionKey} onSelect={selectEditionKey} />
+          <FinanceArchive
+            entries={editions}
+            activeKey={edition?.editionKey || requestedEditionKey}
+            onSelect={selectEditionKey}
+            onCollapse={() => toggleRail(false)}
+          />
         </div>
       )}
 
@@ -398,7 +447,36 @@ export function FinancialNews() {
                 <div className="edition-masthead-content flex items-center justify-between gap-4 py-5">
                   <div className="min-w-0">
                     <h1 className="edition-masthead-title text-3xl font-black tracking-tight">金融日报</h1>
-                    <div className="mt-2.5 flex flex-wrap items-center gap-2.5">
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                      {!railOpen && editions.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => toggleRail(true)}
+                            title="展开往期侧栏"
+                            aria-label="展开往期侧栏"
+                            className="hidden min-[1180px]:inline-flex items-center gap-1 rounded-md border border-[var(--edition-line)] px-2.5 py-1 text-xs text-[var(--edition-muted)] transition-colors hover:border-[var(--edition-accent)]/40 hover:text-[var(--edition-accent)]"
+                          >
+                            <PanelLeftOpen className="h-3.5 w-3.5" />
+                            往期
+                          </button>
+                          <div className="hidden min-[1180px]:inline-flex gap-0.5 rounded-md border border-[var(--edition-line)] bg-[var(--edition-surface)] p-0.5">
+                            {(["morning", "evening"] as const).map((val) => (
+                              <button
+                                key={val}
+                                type="button"
+                                aria-pressed={activeType === val}
+                                onClick={() => switchEditionType(val)}
+                                className={`whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium transition-colors hover:text-[var(--edition-accent)] ${
+                                  activeType === val ? "bg-[var(--edition-tint)] text-[var(--edition-accent)]" : "text-[var(--edition-muted)]"
+                                }`}
+                              >
+                                {val === "morning" ? "早报" : "晚报"}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
                       <AskAiButton
                         context={aiContext}
                         workspaceSource="news"
@@ -485,14 +563,21 @@ export function FinancialNews() {
                       <h2 className="font-semibold">今日看点</h2>
                       <ol className="mt-1 divide-y divide-[var(--edition-line)]">
                         {(edition.keyPicks || []).map((pick, i) => (
-                          <li key={pick.reportKey} className="flex items-baseline gap-2.5 py-2.5 text-sm leading-snug">
-                            <span className="font-mono text-[var(--edition-accent)]">{i + 1}</span>
-                            <Link
-                              to={`/finance/news/story/${pick.reportKey}`}
-                              className="transition-colors hover:text-[var(--edition-accent)]"
-                            >
-                              {pick.title}
-                            </Link>
+                          <li key={pick.reportKey} className="flex items-start gap-2.5 py-3 text-sm leading-snug">
+                            <span className="mt-0.5 shrink-0 font-mono text-[var(--edition-accent)]">{i + 1}</span>
+                            <div className="min-w-0 flex-1">
+                              <Link
+                                to={`/finance/news/story/${pick.reportKey}`}
+                                className="block font-medium transition-colors duration-150 hover:text-[var(--edition-accent)]"
+                              >
+                                {pick.title}
+                              </Link>
+                              {pick.summary && pick.summary !== pick.title && (
+                                <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[var(--edition-muted)]">
+                                  {pick.summary}
+                                </p>
+                              )}
+                            </div>
                           </li>
                         ))}
                       </ol>
