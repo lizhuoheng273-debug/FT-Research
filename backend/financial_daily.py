@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v5.5"
+PROMPT_VERSION = "financial-daily-v5.6"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -67,8 +67,8 @@ _NUMERIC_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?%?")
 
 _NOISE_RE = re.compile(
     r"在互动平台表示|互动平台回复|投资者互动平台|互动易回复|回复投资者提问|董秘回复|"
-    r"财经早餐|早报汇总|早间必读|新闻联播|要闻汇总|隔夜外盘|每日必读|"
-    r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总|"
+    r"财经早餐|华尔街见闻早餐|早餐FM-Radio|FM-Radio|早报汇总|早间必读|新闻联播|要闻汇总|隔夜外盘|每日必读|"
+    r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总|\|\s*环球市场\s*$|"
     r"开展\d+亿元.*逆回购|公开市场业务交易公告|股东户数|过街码|地铁.*试点|党内法规|地方委员会工作条例|"
     r"加满一箱.*汽油|92号汽油|95号汽油|成品油调价|国内油价(?:上调|下调|调整)|汽柴油(?:价格|零售价)|"
     r"豪爽捐赠|慈善捐赠|每名.*儿童.*获得.*股票|个人捐款|"
@@ -1110,11 +1110,11 @@ class FinancialDailyService:
             {
                 "reportKey": c["reportKey"],
                 "bucket": c["bucket"],
-                "title": c["title"][:120],
-                "summary": c["summary"][:160],
+                "title": c["title"][:110],
+                "summary": c["summary"][:130],
                 "independentSources": c["independentCount"],
             }
-            for c in sorted(candidates, key=lambda x: x.get("_ruleScore", 0.0), reverse=True)[:24]
+            for c in sorted(candidates, key=lambda x: x.get("_ruleScore", 0.0), reverse=True)[:18]
         ]
 
         diag_errors: list[str] = []
@@ -1139,7 +1139,7 @@ class FinancialDailyService:
                         "只返回严格 JSON 数组，每项字段：reportKey, sig, nov, reson, cred (0-100整数), bucket (macro|market|companies|drop), duplicateOf(可选)：\n"
                         + json.dumps(chunk, ensure_ascii=False)
                     ),
-                    timeout_seconds=45,
+                    timeout_seconds=75,
                     disable_thinking=True,
                     max_tokens=None,
                 )
@@ -1161,8 +1161,8 @@ class FinancialDailyService:
                 logger.exception("AIHOT-style scoring chunk failed")
                 return []
 
-        # 拆小批次(6条/批) + 温和2并发，兼顾低延迟与零429限流，总耗时封顶90秒
-        chunks = [compact[i : i + 6] for i in range(0, len(compact), 6)]
+        # 拆超小批次(3条/批) + 2并发 + 75秒超时，彻底避免推理模型在白天高峰期单批超时
+        chunks = [compact[i : i + 3] for i in range(0, len(compact), 3)]
         all_rows: list[dict[str, Any]] = []
         if len(chunks) == 1:
             all_rows = _eval_chunk(chunks[0])
@@ -1227,11 +1227,11 @@ class FinancialDailyService:
 
         _ingest_rows(all_rows)
 
-        # 对漏返的候选（如某批次偶发失败或漏项）做一次定向串行补审，避免误杀好新闻
+        # 对漏返的候选（如某批次偶发失败或漏项）做一次定向串行补审（3条/批），避免误杀好新闻
         missing_items = [item for item in compact if item["reportKey"] not in scored_keys]
         if llm_used and missing_items:
-            for i in range(0, min(len(missing_items), 12), 6):
-                retry_rows = _eval_chunk(missing_items[i : i + 6])
+            for i in range(0, min(len(missing_items), 6), 3):
+                retry_rows = _eval_chunk(missing_items[i : i + 3])
                 _ingest_rows(retry_rows)
 
         self._last_scoring_diag = "" if llm_used else ("; ".join(dict.fromkeys(diag_errors))[:240])
@@ -1239,6 +1239,11 @@ class FinancialDailyService:
             # 彻底堵死“初筛分保送上榜”漏洞：只要 AI 引擎正常工作，未拿到 AI 四维分项评分的新闻一律淘汰
             for rkey, sc_row in scores.items():
                 if rkey not in scored_keys:
+                    sc_row["drop"] = True
+        else:
+            # 即便外部 AI 接口极端故障退回规则兜底，也绝不放行低于 62 分的低质新闻
+            for sc_row in scores.values():
+                if float(sc_row.get("score") or 0.0) < 62.0:
                     sc_row["drop"] = True
         return scores, llm_used
 

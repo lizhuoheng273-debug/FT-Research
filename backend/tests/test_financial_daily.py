@@ -533,10 +533,10 @@ def test_bucket_precedence_aihot_glm_scoring_translation_and_same_node_dedup(tmp
             return [{"reportKey": r["reportKey"], "action": "NEW_STORY"} for r in payload]
         if "实质份量" in user_msg:
             payload = json.loads(user_msg.rsplit("：\n", 1)[1])
-            bbc_key = next(r["reportKey"] for r in payload if "tariffs on 12 global" in r["title"].lower())
+            bbc_key = next((r["reportKey"] for r in payload if "tariffs on 12 global" in r["title"].lower()), "")
             out = []
             for r in payload:
-                if r["reportKey"] == bbc_key:
+                if bbc_key and r["reportKey"] == bbc_key:
                     out.append({"reportKey": r["reportKey"], "score": 92, "bucket": "macro"})
                 elif "tariffs on 12 major" in r["title"].lower():
                     out.append({"reportKey": r["reportKey"], "score": 84, "bucket": "macro", "duplicateOf": bbc_key})
