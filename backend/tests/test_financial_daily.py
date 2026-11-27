@@ -939,6 +939,23 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
             "originalUrl": "https://chinanews.com.cn/us-inflation-rate-hike",
         },
         {
+            "title": "马斯克豪爽捐赠：每名美国儿童将获得两股SpaceX股票",
+            "summary": "全球首富、SpaceX和特斯拉公司创始人马斯克宣布捐赠计划。",
+            "publishedAt": (now - timedelta(hours=1)).astimezone(UTC).isoformat(),
+            "source": "东方财富资讯",
+            "sourceLevel": "A",
+            "originalUrl": "https://eastmoney.com/musk-donation",
+        },
+        {
+            "title": "未获AI评分的假想高初筛分宏观快评",
+            "summary": "美联储利率预期引发热议，本文正文充实但模拟AI批次遗漏未返回评分。",
+            "bodyText": "美联储利率预期讨论持续升温。" * 40,
+            "publishedAt": (now - timedelta(hours=1)).astimezone(UTC).isoformat(),
+            "source": "华尔街见闻",
+            "sourceLevel": "A",
+            "originalUrl": "https://wallstreetcn.com/unscored-high-rule",
+        },
+        {
             "title": "商务部：坚决反对美对中国等经济体加征301关税",
             "summary": "商务部：坚决反对美对中国等经济体加征301关税",
             "publishedAt": (now - timedelta(hours=2)).astimezone(UTC).isoformat(),
@@ -971,6 +988,9 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
                 elif "美国通胀超预期" in r["title"]:
                     # Even if GLM misclassifies pure macro inflation/rate headline as companies, deterministic guard fixes to macro!
                     out.append({"reportKey": r["reportKey"], "sig": 82, "nov": 76, "reson": 80, "cred": 82, "bucket": "companies"})
+                elif "未获AI评分" in r["title"]:
+                    # Simulate LLM omitting this item even on retry -> MUST be hard-dropped, never snuck in by _ruleScore!
+                    continue
                 elif "苹果" in r["title"]:
                     # High resonance (90) but low sig (25) and low nov (20) -> MUST be vetoed!
                     out.append({"reportKey": r["reportKey"], "sig": 25, "nov": 20, "reson": 90, "cred": 50, "bucket": "companies"})
@@ -999,7 +1019,14 @@ def test_strict_edition_windows_4axis_rubric_veto_and_bucket_disambiguation(tmp_
     assert not any("92号汽油" in t for t in titles)
     assert not any("K33" in t for t in titles)
     assert not any("Schoeller-Bleck" in t for t in titles)  # obscure single-source small cap blocked even if LLM scored >=62!
+    assert not any("豪爽捐赠" in t for t in titles)  # celebrity charity fluff blocked!
+    assert not any("未获AI评分" in t for t in titles)  # unscored item NEVER snuck in by high _ruleScore!
     assert not any("301关税" in t for t in titles)  # bare 1-line stub without bodyText dropped!
+    # Every single surviving item in an AI-scored edition MUST have full 4-axis GLM sub-scores
+    for it in all_items:
+        bd = it["scoreBreakdown"]
+        assert bd["engine"] == "glm"
+        assert all(bd[k] is not None for k in ("sig", "nov", "reson", "cred"))
 
     # Pure macro inflation/rate headline must land in macro even if LLM mislabeled it as companies
     inflation_item = next(it for it in all_items if "美国通胀超预期" in it["title"])

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 SHANGHAI = timezone(timedelta(hours=8))
-PROMPT_VERSION = "financial-daily-v5.4"
+PROMPT_VERSION = "financial-daily-v5.5"
 TRACKED_WINDOW_DAYS = 30
 
 # User-defined 3 thematic sections
@@ -71,6 +71,7 @@ _NOISE_RE = re.compile(
     r"盘前必读|早盘必读|操盘必读|午间公告一览|晚间公告一览|热点前瞻|一周综述|每日复盘汇总|"
     r"开展\d+亿元.*逆回购|公开市场业务交易公告|股东户数|过街码|地铁.*试点|党内法规|地方委员会工作条例|"
     r"加满一箱.*汽油|92号汽油|95号汽油|成品油调价|国内油价(?:上调|下调|调整)|汽柴油(?:价格|零售价)|"
+    r"豪爽捐赠|慈善捐赠|每名.*儿童.*获得.*股票|个人捐款|"
     r"三峡水运|常态化帮扶资金|thanksgiving|grocery stores|black friday deals|holiday shopping|"
     r"弃皮衣|穿迪奥|棉夹克|售价\d+元.*售罄|同款标价|街拍|衣品|造型首秀|穿搭|"
     r"gta\s*6|video game|declares\s+\$[\d.]+\s+dividend|monthly distribution|quarterly distribution|"
@@ -1071,10 +1072,12 @@ class FinancialDailyService:
         title = str(rep.get("title") or "")
         summary = str(rep.get("summary") or "")
         body_len = len(str(rep.get("bodyText") or ""))
-        blob = f"{title} {summary[:240]}"
+        blob = f"{title} {summary[:160]}"
         pts = 20.0
-        # Reward substantive market/company/macro catalysts
-        if re.search(r"降息|加息|降准|CPI|PPI|PCE|GDP|非农|关税|制裁|霍尔木兹|原油|黄金|美债|财报|不及预期|超预期|暴涨|暴跌|大跌|大涨|放量|黄仁勋|英伟达|小米|苹果|微软|特斯拉|美联储", blob, re.I):
+        # Reward substantive market/company/macro catalysts (company names must appear in title to avoid bio-mention false positives)
+        if re.search(r"降息|加息|降准|CPI|PPI|PCE|GDP|非农|关税|制裁|霍尔木兹|原油|黄金|美债|财报|业绩不及预期|业绩超预期|暴涨|暴跌|大跌|大涨|放量|美联储", blob, re.I) or re.search(
+            r"黄仁勋|英伟达|小米|苹果|微软|特斯拉|阿里|腾讯|华为|台积电|OpenAI", title, re.I
+        ):
             pts += 22.0
         if body_len >= 400:
             pts += 8.0
@@ -1170,59 +1173,72 @@ class FinancialDailyService:
 
         llm_used = False
         scored_keys: set[str] = set()
-        for row in all_rows:
-            if not isinstance(row, dict):
-                continue
-            rkey = str(row.get("reportKey") or "")
-            if rkey not in scores:
-                continue
-            sub_keys = ("sig", "nov", "reson", "cred")
-            sig_val: float | None = None
-            nov_val: float | None = None
-            reson_val: float | None = None
-            cred_val: float | None = None
-            if all(row.get(k) is not None for k in sub_keys):
-                try:
-                    sig_val = max(0.0, min(100.0, float(row["sig"])))
-                    nov_val = max(0.0, min(100.0, float(row["nov"])))
-                    reson_val = max(0.0, min(100.0, float(row["reson"])))
-                    cred_val = max(0.0, min(100.0, float(row["cred"])))
-                except (TypeError, ValueError):
+
+        def _ingest_rows(rows_batch: list[dict[str, Any]]) -> None:
+            nonlocal llm_used
+            for row in rows_batch:
+                if not isinstance(row, dict):
                     continue
-                val = 0.35 * sig_val + 0.25 * nov_val + 0.25 * reson_val + 0.15 * cred_val
-                # 宁缺毋滥硬淘汰线：四维单项一票否决
-                veto = sig_val < 55.0 or nov_val < 50.0 or reson_val < 45.0 or cred_val < 50.0
-            else:
-                try:
-                    val = max(0.0, min(100.0, float(row.get("score"))))
-                except (TypeError, ValueError):
+                rkey = str(row.get("reportKey") or "")
+                if rkey not in scores:
                     continue
-                veto = False
-            raw_bucket = str(row.get("bucket") or scores[rkey]["bucket"]).strip().lower()
-            # 宁缺毋滥总分硬门槛：低于 62 分一律淘汰，绝不凑数
-            drop = raw_bucket == "drop" or veto or val < 62.0
-            bucket = raw_bucket if raw_bucket in _BUCKET_BY_KEY else scores[rkey]["bucket"]
-            dup_of = str(row.get("duplicateOf") or "").strip()
-            if dup_of == rkey or dup_of not in cand_by_key:
-                dup_of = ""
-            scores[rkey] = {
-                "score": round(val, 1),
-                "bucket": bucket,
-                "drop": drop,
-                "duplicateOf": dup_of,
-                "sig": round(sig_val, 1) if sig_val is not None else None,
-                "nov": round(nov_val, 1) if nov_val is not None else None,
-                "reson": round(reson_val, 1) if reson_val is not None else None,
-                "cred": round(cred_val, 1) if cred_val is not None else None,
-                "engine": "glm",
-            }
-            scored_keys.add(rkey)
-            llm_used = True
+                sub_keys = ("sig", "nov", "reson", "cred")
+                sig_val: float | None = None
+                nov_val: float | None = None
+                reson_val: float | None = None
+                cred_val: float | None = None
+                if all(row.get(k) is not None for k in sub_keys):
+                    try:
+                        sig_val = max(0.0, min(100.0, float(row["sig"])))
+                        nov_val = max(0.0, min(100.0, float(row["nov"])))
+                        reson_val = max(0.0, min(100.0, float(row["reson"])))
+                        cred_val = max(0.0, min(100.0, float(row["cred"])))
+                    except (TypeError, ValueError):
+                        continue
+                    val = 0.35 * sig_val + 0.25 * nov_val + 0.25 * reson_val + 0.15 * cred_val
+                    # 宁缺毋滥硬淘汰线：四维单项一票否决
+                    veto = sig_val < 55.0 or nov_val < 50.0 or reson_val < 45.0 or cred_val < 50.0
+                else:
+                    try:
+                        val = max(0.0, min(100.0, float(row.get("score"))))
+                    except (TypeError, ValueError):
+                        continue
+                    veto = False
+                raw_bucket = str(row.get("bucket") or scores[rkey]["bucket"]).strip().lower()
+                # 宁缺毋滥总分硬门槛：低于 62 分一律淘汰，绝不凑数
+                drop = raw_bucket == "drop" or veto or val < 62.0
+                bucket = raw_bucket if raw_bucket in _BUCKET_BY_KEY else scores[rkey]["bucket"]
+                dup_of = str(row.get("duplicateOf") or "").strip()
+                if dup_of == rkey or dup_of not in cand_by_key:
+                    dup_of = ""
+                scores[rkey] = {
+                    "score": round(val, 1),
+                    "bucket": bucket,
+                    "drop": drop,
+                    "duplicateOf": dup_of,
+                    "sig": round(sig_val, 1) if sig_val is not None else None,
+                    "nov": round(nov_val, 1) if nov_val is not None else None,
+                    "reson": round(reson_val, 1) if reson_val is not None else None,
+                    "cred": round(cred_val, 1) if cred_val is not None else None,
+                    "engine": "glm",
+                }
+                scored_keys.add(rkey)
+                llm_used = True
+
+        _ingest_rows(all_rows)
+
+        # 对漏返的候选（如某批次偶发失败或漏项）做一次定向串行补审，避免误杀好新闻
+        missing_items = [item for item in compact if item["reportKey"] not in scored_keys]
+        if llm_used and missing_items:
+            for i in range(0, min(len(missing_items), 12), 6):
+                retry_rows = _eval_chunk(missing_items[i : i + 6])
+                _ingest_rows(retry_rows)
+
         self._last_scoring_diag = "" if llm_used else ("; ".join(dict.fromkeys(diag_errors))[:240])
         if llm_used:
-            # 未被模型返回评分的候选同样卡死 62 分底线，不给漏网通行证
+            # 彻底堵死“初筛分保送上榜”漏洞：只要 AI 引擎正常工作，未拿到 AI 四维分项评分的新闻一律淘汰
             for rkey, sc_row in scores.items():
-                if rkey not in scored_keys and float(sc_row.get("score") or 0.0) < 62.0:
+                if rkey not in scored_keys:
                     sc_row["drop"] = True
         return scores, llm_used
 
@@ -1667,7 +1683,7 @@ class FinancialDailyService:
                 "weightedScore": weighted_score,
                 "multiSourceBonus": multi_bonus,
                 "finalScore": cand["finalScore"],
-                "engine": sc.get("engine") or ("glm" if llm_used else "rule"),
+                "engine": sc.get("engine") or "rule",
             }
             filtered.append(cand)
         filtered.sort(key=lambda item: (item["finalScore"], item["independentCount"]), reverse=True)
